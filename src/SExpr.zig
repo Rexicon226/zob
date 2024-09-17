@@ -147,6 +147,10 @@ pub const Parser = struct {
     const ident_delim: []const u8 = &.{ ' ', ')' };
 };
 
+pub fn isIdent(expr: *const SExpr) bool {
+    return expr.data == .atom and expr.data.atom[0] == '?';
+}
+
 pub fn deinit(expr: *const SExpr, allocator: std.mem.Allocator) void {
     switch (expr.data) {
         .atom => {},

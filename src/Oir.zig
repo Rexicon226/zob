@@ -144,9 +144,8 @@ const Rewrite = struct {
 
     /// The S-Expr that we're trying to match for.
     pattern: []const u8,
-    /// If a match was found, we're going to call `func` on the root index
-    /// being the first argument.
-    func: *const fn (*Oir, Node.Index) Error!void,
+    /// When we find a match, we're going to apply this rewrite.
+    rewrite: []const u8,
 };
 
 /// This is the main POI. This function will apply the given rewrite to
@@ -173,15 +172,72 @@ pub fn applyRewrite(oir: *Oir, rewrite: Rewrite) !void {
 
     // TODO: parse sexprs at comptime in order to not parse them each time here
     var parser: SExpr.Parser = .{ .buffer = rewrite.pattern };
-    const expr = try parser.parse(allocator);
-    defer expr.deinit(allocator);
+    const match_expr = try parser.parse(allocator);
+    defer match_expr.deinit(allocator);
 
-    const found_matches = try oir.search(expr);
+    const found_matches = try oir.search(match_expr);
     defer allocator.free(found_matches);
 
+    parser = .{ .buffer = rewrite.rewrite };
+    const rewrite_expr = try parser.parse(allocator);
+    defer rewrite_expr.deinit(allocator);
+
     for (found_matches) |found_match| {
-        log.debug("matched {} for {s}", .{ found_match, rewrite.pattern });
-        try rewrite.func(oir, found_match);
+        log.debug("matched {} for {s} -> {s}", .{
+            found_match,
+            rewrite.pattern,
+            rewrite.rewrite,
+        });
+
+        // sanity check that the match is the same root as the matching expression
+        const match_node = oir.getNode(found_match);
+        assert(match_node.tag == match_expr.tag);
+        const match_class = try oir.findClass(found_match);
+
+        // we run into the commutative problem here again, since we don't actually know which
+        // version of the graph was matched. this is usually not a problem, but it can become one
+        // when we use more procedural s-exprs.
+
+        // we're saying that node is the root of match_expr, meaning the class the node is in is
+        // the root of the match_expr.
+        // we're going to create a new class that will be "equivalent" to the class the match is in
+        // then union them together. this propogates equality throughput the e-graph.
+
+        // create the new root node of the expression
+        const root_node_idx = try oir.add(.{
+            .tag = rewrite_expr.tag,
+            .data = .none,
+        });
+        const root_node = &oir.nodes.items[@intFromEnum(root_node_idx)];
+        // since we just created it, it'll be the only node in the class.
+        const root_class = try oir.findClass(root_node_idx);
+
+        // now we walk the sub expressions of the target expression and create those
+        // connections. we don't need any extra handling for commutative tags here
+        // since, if it is commutative then the order doesn't matter, and if it isn't
+        // the rewrite expression will have them listed in the right order.
+        // TODO: support more procedural expressions, where the new root has a different amount of
+        // children
+        for (rewrite_expr.data.list, 0..) |rewrite_sub_expr, i| {
+            assert(rewrite_sub_expr.data == .atom); // TODO: support nested rewrites
+            if (rewrite_sub_expr.isIdent()) {
+                // look at the matching child of the old expression
+                // TODO: we should be looking at the binding here
+
+                const old_class = match_node.out.items[i];
+                try root_node.out.append(allocator, old_class);
+            } else {
+                const value = try std.fmt.parseInt(i64, rewrite_sub_expr.data.atom, 10);
+                const const_node = try oir.add(.{
+                    .tag = .constant,
+                    .data = .{ .constant = value },
+                });
+                const const_class = try oir.findClass(const_node);
+                try root_node.out.append(allocator, const_class);
+            }
+        }
+
+        try oir.@"union"(match_class, root_class);
     }
 }
 
