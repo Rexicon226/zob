@@ -1,6 +1,7 @@
 const std = @import("std");
 const IR = @import("Ir.zig");
 const Oir = @import("Oir.zig");
+const rewrites = @import("rewrites.zig");
 const print_oir = @import("print_oir.zig");
 
 pub fn main() !void {
@@ -31,7 +32,7 @@ pub fn main() !void {
     defer oir.deinit();
 
     // apply the rewrite
-    try oir.applyRewrite(.{ .pattern = "(mul ?x 2)", .rewrite = "(shl ?x 1)" });
+    try oir.applyRewrite(.{ .pattern = "(mul ?x 2)", .rewrite = rewrites.mulRewriteLhs });
 
     // dump to a graphviz file
     const graphviz_file = try std.fs.cwd().createFile("out.dot", .{});

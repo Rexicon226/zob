@@ -4,6 +4,8 @@ allocator: std.mem.Allocator,
 ir: IR,
 ir_to_node: std.AutoHashMapUnmanaged(IR.Inst.Index, Node.Index) = .{},
 
+cost_strat: CostStrategy = .num_nodes,
+
 nodes: std.ArrayListUnmanaged(Node) = .{},
 classes: std.ArrayListUnmanaged(Class) = .{},
 
@@ -78,6 +80,12 @@ pub const Class = struct {
     };
 };
 
+pub const CostStrategy = enum {
+    /// A super basic cost strategy that simply looks at the number of child nodes
+    /// a particular node has to determine its cost.
+    num_nodes,
+};
+
 pub fn fromIr(ir: IR, allocator: std.mem.Allocator) !Oir {
     var oir: Oir = .{
         .ir = ir,
@@ -134,8 +142,8 @@ pub fn fromIr(ir: IR, allocator: std.mem.Allocator) !Oir {
     return oir;
 }
 
-const Rewrite = struct {
-    const Error = error{
+pub const Rewrite = struct {
+    pub const Error = error{
         OutOfMemory,
         ClassNotFound,
         Overflow,
@@ -144,29 +152,10 @@ const Rewrite = struct {
 
     /// The S-Expr that we're trying to match for.
     pattern: []const u8,
-    /// When we find a match, we're going to apply this rewrite.
-    rewrite: []const u8,
+    /// A rewrite function that's given the root index of the matched rewrite.
+    rewrite: *const fn (*Oir, Node.Index) Error!void,
 };
 
-/// This is the main POI. This function will apply the given rewrite to
-/// its E-Graph, ensuring that it remains equivalent and consistent.
-/// A major benifit of E-Graphs is that rewriting never removes information
-/// only provides peepholes for discovering new optimization paths. This means
-/// the order of application should never matter.
-///
-/// There are a few ways we can go about this, including
-/// purposefully not rebuilding the graph until a certain batch of rewrites
-/// is applied, however we're not going to do that here. That requires us to enforce
-/// application order of batches of rewrites in order to not miss. We force rebuilds
-/// before and after the rewrite to be safe.
-///
-/// Strategy:
-///     - Iterate through every node, trying to match this node as the "root" of the expression
-///       we're given. When we find a matching e-match, we apply the rewrite to it and union
-///       the E-Graph. This is important, since we need to maintain equivalance throughout the
-///       optimization process.
-///
-/// TODO: compute whether a specific rewrite will require a rebuild before/after application
 pub fn applyRewrite(oir: *Oir, rewrite: Rewrite) !void {
     const allocator = oir.allocator;
 
@@ -178,66 +167,8 @@ pub fn applyRewrite(oir: *Oir, rewrite: Rewrite) !void {
     const found_matches = try oir.search(match_expr);
     defer allocator.free(found_matches);
 
-    parser = .{ .buffer = rewrite.rewrite };
-    const rewrite_expr = try parser.parse(allocator);
-    defer rewrite_expr.deinit(allocator);
-
-    for (found_matches) |found_match| {
-        log.debug("matched {} for {s} -> {s}", .{
-            found_match,
-            rewrite.pattern,
-            rewrite.rewrite,
-        });
-
-        // sanity check that the match is the same root as the matching expression
-        const match_node = oir.getNode(found_match);
-        assert(match_node.tag == match_expr.tag);
-        const match_class = try oir.findClass(found_match);
-
-        // we run into the commutative problem here again, since we don't actually know which
-        // version of the graph was matched. this is usually not a problem, but it can become one
-        // when we use more procedural s-exprs.
-
-        // we're saying that node is the root of match_expr, meaning the class the node is in is
-        // the root of the match_expr.
-        // we're going to create a new class that will be "equivalent" to the class the match is in
-        // then union them together. this propogates equality throughput the e-graph.
-
-        // create the new root node of the expression
-        const root_node_idx = try oir.add(.{
-            .tag = rewrite_expr.tag,
-            .data = .none,
-        });
-        const root_node = &oir.nodes.items[@intFromEnum(root_node_idx)];
-        // since we just created it, it'll be the only node in the class.
-        const root_class = try oir.findClass(root_node_idx);
-
-        // now we walk the sub expressions of the target expression and create those
-        // connections. we don't need any extra handling for commutative tags here
-        // since, if it is commutative then the order doesn't matter, and if it isn't
-        // the rewrite expression will have them listed in the right order.
-        // TODO: support more procedural expressions, where the new root has a different amount of
-        // children
-        for (rewrite_expr.data.list, 0..) |rewrite_sub_expr, i| {
-            assert(rewrite_sub_expr.data == .atom); // TODO: support nested rewrites
-            if (rewrite_sub_expr.isIdent()) {
-                // look at the matching child of the old expression
-                // TODO: we should be looking at the binding here
-
-                const old_class = match_node.out.items[i];
-                try root_node.out.append(allocator, old_class);
-            } else {
-                const value = try std.fmt.parseInt(i64, rewrite_sub_expr.data.atom, 10);
-                const const_node = try oir.add(.{
-                    .tag = .constant,
-                    .data = .{ .constant = value },
-                });
-                const const_class = try oir.findClass(const_node);
-                try root_node.out.append(allocator, const_class);
-            }
-        }
-
-        try oir.@"union"(match_class, root_class);
+    for (found_matches) |node_idx| {
+        try rewrite.rewrite(oir, node_idx);
     }
 }
 
@@ -401,6 +332,7 @@ fn match(
     }
 }
 
+/// Given an class index, returns whether any nodes in it match the given pattern.
 fn matchClass(
     oir: *Oir,
     class_idx: Class.Index,
@@ -418,6 +350,14 @@ fn matchClass(
         if (!found_match) found_match = is_match;
     }
     return found_match;
+}
+
+/// Extracts the best pattern of IR from the E-Graph given a cost model.
+pub fn extract(oir: *Oir) ![]const IR.Inst {
+    // First we need to find what the root class is. This will usually be the class containing a `ret`,
+    // or something similar.
+    _ = oir;
+    return &.{};
 }
 
 /// Adds an ENode to the EGraph, giving the node its own class.
