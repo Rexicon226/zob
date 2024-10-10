@@ -26,6 +26,8 @@ pub const Inst = struct {
             rhs: Index,
         },
         value: i64,
+        /// The arg number, meant to be persistent across all optimizations.
+        arg: usize,
     };
 
     pub const Index = enum(u32) {
@@ -102,6 +104,72 @@ pub const Builder = struct {
         return result_index;
     }
 };
+
+/// Only call when you're the direct owner of the IR. Make
+/// sure it hasn't been passed into an OIR.
+pub fn deinit(ir: *IR, allocator: std.mem.Allocator) void {
+    ir.instructions.deinit(allocator);
+}
+
+const Writer = struct {
+    ir: *const IR,
+    indent: usize,
+
+    fn printInst(w: *Writer, inst: IR.Inst.Index, s: anytype) @TypeOf(s).Error!void {
+        const tag = w.ir.instructions.items(.tag)[@intFromEnum(inst)];
+        try s.writeByteNTimes(' ', w.indent);
+        try s.print("%{d} = {s}(", .{ @intFromEnum(inst), @tagName(tag) });
+        switch (tag) {
+            .ret,
+            => try w.writeUnOp(inst, s),
+            .mul,
+            .shl,
+            => try w.writeBinOp(inst, s),
+            .arg,
+            => try w.writeArg(inst, s),
+            .constant,
+            => try w.writeConstant(inst, s),
+            else => std.debug.panic("TODO: {s}", .{@tagName(tag)}),
+        }
+        try s.writeAll(")");
+    }
+
+    fn writeBinOp(w: *Writer, inst: IR.Inst.Index, s: anytype) @TypeOf(s).Error!void {
+        const bin_op = w.ir.instructions.items(.data)[@intFromEnum(inst)].bin_op;
+        try s.print("%{d}", .{@intFromEnum(bin_op.lhs)});
+        try s.writeAll(", ");
+        try s.print("%{d}", .{@intFromEnum(bin_op.rhs)});
+    }
+
+    fn writeUnOp(w: *Writer, inst: IR.Inst.Index, s: anytype) @TypeOf(s).Error!void {
+        const un_op = w.ir.instructions.items(.data)[@intFromEnum(inst)].un_op;
+        try s.print("%{d}", .{@intFromEnum(un_op)});
+    }
+
+    fn writeConstant(w: *Writer, inst: IR.Inst.Index, s: anytype) @TypeOf(s).Error!void {
+        const value = w.ir.instructions.items(.data)[@intFromEnum(inst)].value;
+        try s.print("${d}", .{value});
+    }
+
+    fn writeArg(w: *Writer, inst: IR.Inst.Index, s: anytype) @TypeOf(s).Error!void {
+        _ = w;
+        _ = inst;
+        // try s.print("{d}", .{arg});
+    }
+};
+
+/// Dumps the IR in a human-readable form.
+pub fn dump(ir: *const IR, writer: anytype) !void {
+    var w: Writer = .{
+        .ir = ir,
+        .indent = 0,
+    };
+
+    for (0..ir.instructions.len) |i| {
+        try w.printInst(@enumFromInt(i), writer);
+        try writer.writeByte('\n');
+    }
+}
 
 const IR = @This();
 const std = @import("std");

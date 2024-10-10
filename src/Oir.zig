@@ -40,19 +40,6 @@ pub const Node = struct {
         div_exact,
         ret,
         constant,
-
-        pub fn isCommutative(tag: Tag) bool {
-            return switch (tag) {
-                .add,
-                .mul,
-                => true,
-                .div_trunc,
-                .div_exact,
-                .shl,
-                => false,
-                else => false, // not a node that can have this property
-            };
-        }
     };
 
     const Data = union(enum) {
@@ -252,82 +239,15 @@ fn match(
             // remove all cases of this.
             if (list.len != root_node.out.items.len) return false;
 
-            // we're faced with an interesting problem now. commutative patterns!
-            // they require us to check all the permutations of the children
-            // since there's no well-defined rhs and lhs.
-            //
-            // here's an example to make this easier to understand:
-            // root_node is 2 * x
-            // the pattern wants (mul ?x 2)
-            // the optimization we're going for here is to rewrite (mul ?x 2) -> (shl ?x 1)
-            //
-            // does this mean we need to miss out because it doesn't match? well no, since
-            // the pattern is still valid.
-
-            // so how do we do it?
-            // for commutative tags, both equivalence classes of the root_node
-            // are allowed to match with both sub-expressions of the pattern.
-            if (pattern.tag.isCommutative()) {
-                // are we the first class in the node's out bag?
-                var is_first: bool = true;
-                // has a class before us already matched with the first sub_pattern of the expression?
-                var matched_first: bool = false;
-
-                for (root_node.out.items) |class_idx| {
-                    // class_idx will be either %0 or %1,
-                    // and since the pattern is commutative, it can match with either
-                    // ?x or ?y *assuming* that it's the first class.
-                    //
-                    // if we're the second class, that means the first class
-                    // *must* have matched with something, and we no longer have
-                    // to check both ?x and ?y, only the *other* one.
-                    //
-                    // better explained, %0 == ?y means %1 *must* == ?x, or it fails.
-
-                    // we order the one that can still be matched first
-                    const sub_patterns = if (is_first) list else &.{
-                        list[@intFromBool(matched_first)],
-                        list[@intFromBool(!matched_first)],
-                    };
-
-                    for (sub_patterns, 0..) |sub_pattern, i| {
-                        // if we've already matched the first sub_pattern,
-                        // we don't want to pollute the second pattern's bindings
-                        if (is_first and matched_first) continue;
-
-                        const result = try oir.matchClass(class_idx, sub_pattern, bindings);
-                        if (is_first) {
-                            // this is the first go, we still have a chance to match with the second pattern
-                            if (i == 0) {
-                                // if we matched, then we matched. the second run will tell.
-                                matched_first = result;
-                                continue;
-                            }
-                            // if we matched the first one, great, we can continue to the second class.
-                            // otherwise, there's no way to get a match anymore.
-                            if (!matched_first and !result) {
-                                return false;
-                            }
-                        } else {
-                            // we weren't the first class. it doesn't matter the result of the
-                            // first class, since this will make an invalid expression.
-                            // the ordering above ensures that we've checked the one possible option here.
-                            //
-                            // TODO: we are assuming that there are only two arguments, but that is fine for now
-                            assert(i == 0);
-                            return result;
-                        }
-                        is_first = false;
-                    }
-                    return true;
+            // now we're left with a list of expressions and a graph.
+            // since the "out" field of the nodes is ordered from left to right, we're going to
+            // iterate through it inline with the expression list, and just recursively match with match()
+            for (root_node.out.items, list) |sub_node_idx, expr| {
+                if (!try oir.matchClass(sub_node_idx, expr, bindings)) {
+                    return false;
                 }
-                return false;
             }
-            // otherwise, we can check them in order, because as a nice implementation detail
-            // i've made it so that the out array list contains the lhs first, then the rhs.
-            else {
-                @panic("TODO");
-            }
+            return true;
         },
     }
 }
@@ -353,11 +273,97 @@ fn matchClass(
 }
 
 /// Extracts the best pattern of IR from the E-Graph given a cost model.
-pub fn extract(oir: *Oir) ![]const IR.Inst {
+pub fn extract(oir: *Oir) !IR {
     // First we need to find what the root class is. This will usually be the class containing a `ret`,
     // or something similar.
-    _ = oir;
-    return &.{};
+
+    // TODO: don't just search for a `ret` node,
+    // instead compute the mathemtical leaves of the graph
+
+    const ret_node_idx: Node.Index = idx: for (oir.classes.items) |class| {
+        for (class.bag.items) |node_idx| {
+            const node = oir.getNode(node_idx);
+            if (node.tag == .ret) break :idx node_idx;
+        }
+    } else @panic("no ret in extract() input IR");
+
+    // walk back up and find the best node from each class
+    var ir_builder: IR.Builder = .{
+        .allocator = oir.allocator,
+        .instructions = .{},
+    };
+    _ = try oir.extractNode(ret_node_idx, &ir_builder);
+    return ir_builder.toIr();
+}
+
+/// Given a node index, recursively resolves information from the graph
+/// as needed to fill everything in. Returns an index into `insts` with the node.
+fn extractNode(
+    oir: *Oir,
+    node_idx: Node.Index,
+    builder: *IR.Builder,
+) !IR.Inst.Index {
+    const node = oir.getNode(node_idx);
+
+    // TODO: unify the two Tag enums
+    const convert_tag: IR.Inst.Tag = switch (node.tag) {
+        .ret => .ret,
+        .mul => .mul,
+        .arg => .arg,
+        .shl => .shl,
+        .constant => .constant,
+        else => std.debug.panic("TODO: {s}", .{@tagName(node.tag)}),
+    };
+
+    switch (node.tag) {
+        // Instructions with 0 arguments
+        .arg => {
+            assert(node.out.items.len == 0);
+            return builder.addNone(convert_tag);
+        },
+        // Instructions with 1 argument
+        .ret => {
+            assert(node.out.items.len == 1);
+            const arg_class_idx = node.out.items[0];
+
+            const arg_idx = oir.extractClass(arg_class_idx);
+            const resolved_arg = try oir.extractNode(arg_idx, builder);
+
+            return builder.addUnOp(convert_tag, resolved_arg);
+        },
+        // Instructions with 2 arguments
+        .mul,
+        .shl,
+        => {
+            assert(node.out.items.len == 2);
+
+            const lhs_class_idx = node.out.items[0];
+            const rhs_class_idx = node.out.items[1];
+
+            const lhs_node_idx = oir.extractClass(lhs_class_idx);
+            const rhs_node_idx = oir.extractClass(rhs_class_idx);
+
+            const lhs_node = try oir.extractNode(lhs_node_idx, builder);
+            const rhs_node = try oir.extractNode(rhs_node_idx, builder);
+
+            return builder.addBinOp(convert_tag, lhs_node, rhs_node);
+        },
+        // Constants
+        .constant => {
+            assert(node.out.items.len == 0);
+            const value = node.data.constant;
+            return builder.addConstant(value);
+        },
+        else => std.debug.panic("TODO: {s}", .{@tagName(node.tag)}),
+    }
+}
+
+/// Given a class, extract the "best" node from it.
+fn extractClass(oir: *Oir, class_idx: Class.Index) Node.Index {
+    // for now, just select the first node in the class bag
+    const class = oir.getClass(class_idx);
+    const index: usize = if (class.bag.items.len > 1) 1 else 0;
+    return class.bag.items[index];
 }
 
 /// Adds an ENode to the EGraph, giving the node its own class.

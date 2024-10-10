@@ -8,9 +8,8 @@ pub fn mulRewriteLhs(
     const node = oir.getNode(node_idx);
     assert(node.tag == .mul);
 
-    // const lhs_idx = node.out.items[0];
+    const lhs_idx = node.out.items[0];
     const rhs_idx = node.out.items[1];
-    // const lhs = oir.getClass(lhs_idx);
     const rhs = oir.getClass(rhs_idx);
 
     // the rhs class is supposed to contain a constant which we'll
@@ -33,6 +32,9 @@ pub fn mulRewriteLhs(
     // create the relationship between the "shl" and the value node
     const shl_node = &oir.nodes.items[@intFromEnum(shl_idx)];
     try shl_node.out.append(oir.allocator, try oir.findClass(shift_idx));
+
+    // create the relationship betwen the "shl" and the previous ?x node
+    try shl_node.out.append(oir.allocator, lhs_idx);
 
     // finally, union the two classes
     const root_class_idx = try oir.findClass(node_idx);

@@ -25,17 +25,20 @@ pub fn dumpGraphViz(
 
         for (class.bag.items) |node_idx| {
             const node = oir.getNode(node_idx);
+            _ = node;
             try file_writer.print("    node{d} [label=\"", .{@intFromEnum(node_idx)});
-            switch (node.tag) {
-                .constant => {
-                    const val = node.data.constant;
-                    try file_writer.print("constant:{d}", .{val});
-                },
-                .arg => {
-                    try file_writer.print("arg({d})", .{@intFromEnum(node_idx)});
-                },
-                else => try file_writer.writeAll(@tagName(node.tag)),
-            }
+            // switch (node.tag) {
+            // .constant => {
+            //     const val = node.data.constant;
+            //     try file_writer.print("constant:{d}", .{val});
+            // },
+            // .arg => {
+            //     try file_writer.print("arg({d})", .{@intFromEnum(node_idx)});
+            // },
+            // else => try file_writer.writeAll(@tagName(node.tag)),
+
+            // }
+            try file_writer.print("{}", .{node_idx});
             try file_writer.writeAll("\", color=\"grey\"];\n");
         }
 
