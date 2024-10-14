@@ -340,12 +340,18 @@ const Optimizations = struct {
                     did_something = true;
 
                     switch (node.tag) {
-                        .add => {
+                        .add,
+                        .mul,
+                        => {
                             const lhs, const rhs = buffer.items[0..2].*;
                             const lhs_value = oir.getNode(lhs).data.constant;
                             const rhs_value = oir.getNode(rhs).data.constant;
 
-                            const result = lhs_value + rhs_value;
+                            const result = switch (node.tag) {
+                                .add => lhs_value + rhs_value,
+                                .mul => lhs_value * rhs_value,
+                                else => unreachable,
+                            };
                             const result_node = try oir.add(.{
                                 .tag = .constant,
                                 .data = .{ .constant = result },
@@ -354,8 +360,9 @@ const Optimizations = struct {
                             try class.bag.append(oir.allocator, result_node);
                         },
                         // `ret` is a special case where it could be pointing at constant nodes,
-                        // but there isn't any optimization we can do. TODO: make a "isVolatile" function
-                        // and check for it here, make sure we can actually remove "node".
+                        // but there isn't any optimization we can do.
+                        // TODO: make a "isVolatile" function and check for it here, make sure
+                        // we can actually remove "node".
                         .ret => {
                             did_something = false;
                         },
@@ -367,6 +374,9 @@ const Optimizations = struct {
 
         return did_something;
     }
+
+    /// Replaces trivially expensive operations with cheaper equivalents.
+    fn strengthReduce(oir: *Oir) !bool {}
 };
 
 const passes = &.{
@@ -376,7 +386,7 @@ const passes = &.{
 pub fn optimize(oir: *Oir, mode: enum {
     /// Optimize until running all passes creates no new changes.
     /// NOTE: likely will be very slow for any large input
-    until_no_change,
+    saturate,
 }) !void {
     _ = mode;
 

@@ -20,7 +20,8 @@ pub fn main() !void {
         \\%0 = constant(3)
         \\%1 = constant(4)
         \\%2 = add(%0, %1)
-        \\%3 = ret(%2)
+        \\%3 = mul(%1, %0)
+        \\%4 = ret(%3)
     ;
 
     var ir = try Ir.Parser.parse(allocator, input);
@@ -33,7 +34,7 @@ pub fn main() !void {
     var oir = try Oir.fromIr(ir, allocator);
     defer oir.deinit();
 
-    try oir.optimize(.until_no_change);
+    try oir.optimize(.saturate);
 
     // output IR
     var optimized_ir = try oir.extract();
