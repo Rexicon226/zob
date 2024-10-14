@@ -20,6 +20,7 @@ pub fn build(b: *std.Build) !void {
         .optimize = optimize,
         .root_source_file = b.path("src/test.zig"),
     });
+
     const test_step = b.step("test", "Run the tests");
     test_step.dependOn(&b.addRunArtifact(test_exe).step);
 }

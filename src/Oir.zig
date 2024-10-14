@@ -40,6 +40,29 @@ pub const Node = struct {
         div_exact,
         ret,
         constant,
+        load,
+        store,
+
+        /// Returns the number of arguments that are other nodes.
+        /// Does not include constants,
+        pub fn numNodeArgs(tag: Tag) u32 {
+            return switch (tag) {
+                .arg,
+                .constant,
+                => 0,
+                .ret,
+                .load,
+                => 1,
+                .add,
+                .sub,
+                .mul,
+                .shl,
+                .div_trunc,
+                .div_exact,
+                .store,
+                => 2,
+            };
+        }
     };
 
     const Data = union(enum) {
@@ -85,15 +108,22 @@ pub fn fromIr(ir: IR, allocator: std.mem.Allocator) !Oir {
     for (tags, data, 0..) |tag, payload, i| {
         log.debug("tag: {s} : {s}", .{ @tagName(tag), @tagName(payload) });
 
+        // TODO: unify the two Tag enums
+        const convert_tag: Oir.Node.Tag = switch (tag) {
+            .ret => .ret,
+            .mul => .mul,
+            .arg => .arg,
+            .shl => .shl,
+            .constant => .constant,
+            .load => .load,
+            .store => .store,
+            else => std.debug.panic("TODO: {s}", .{@tagName(tag)}),
+        };
+
         const inst: IR.Inst.Index = @enumFromInt(i);
-        switch (tag) {
-            .arg => {
-                const node: Node = .{ .tag = .arg };
-                const idx = try oir.add(node);
-                try oir.ir_to_node.put(allocator, inst, idx);
-            },
-            .ret => {
-                var node: Node = .{ .tag = .ret };
+        switch (tag.numNodeArgs()) {
+            1 => {
+                var node: Node = .{ .tag = convert_tag };
 
                 const op = payload.un_op;
                 const op_idx = oir.resolveNode(op).?;
@@ -103,8 +133,9 @@ pub fn fromIr(ir: IR, allocator: std.mem.Allocator) !Oir {
                 const idx = try oir.add(node);
                 try oir.ir_to_node.put(allocator, inst, idx);
             },
-            .mul => {
-                var node: Node = .{ .tag = .mul };
+            2,
+            => {
+                var node: Node = .{ .tag = convert_tag };
 
                 const bin_op = payload.bin_op;
                 inline for (.{ bin_op.lhs, bin_op.rhs }) |idx| {
@@ -116,9 +147,12 @@ pub fn fromIr(ir: IR, allocator: std.mem.Allocator) !Oir {
                 const idx = try oir.add(node);
                 try oir.ir_to_node.put(allocator, inst, idx);
             },
-            .constant => {
-                var node: Node = .{ .tag = .constant };
-                node.data = .{ .constant = payload.value };
+            0,
+            => {
+                const node: Node = .{
+                    .tag = convert_tag,
+                    .data = .{ .constant = payload.value },
+                };
                 const idx = try oir.add(node);
                 try oir.ir_to_node.put(allocator, inst, idx);
             },
@@ -312,17 +346,15 @@ fn extractNode(
         .arg => .arg,
         .shl => .shl,
         .constant => .constant,
+        .load => .load,
+        .store => .store,
         else => std.debug.panic("TODO: {s}", .{@tagName(node.tag)}),
     };
 
-    switch (node.tag) {
-        // Instructions with 0 arguments
-        .arg => {
-            assert(node.out.items.len == 0);
-            return builder.addNone(convert_tag);
-        },
+    switch (node.tag.numNodeArgs()) {
         // Instructions with 1 argument
-        .ret => {
+        1,
+        => {
             assert(node.out.items.len == 1);
             const arg_class_idx = node.out.items[0];
 
@@ -332,9 +364,7 @@ fn extractNode(
             return builder.addUnOp(convert_tag, resolved_arg);
         },
         // Instructions with 2 arguments
-        .mul,
-        .shl,
-        => {
+        2 => {
             assert(node.out.items.len == 2);
 
             const lhs_class_idx = node.out.items[0];
@@ -349,10 +379,11 @@ fn extractNode(
             return builder.addBinOp(convert_tag, lhs_node, rhs_node);
         },
         // Constants
-        .constant => {
+        0,
+        => {
             assert(node.out.items.len == 0);
             const value = node.data.constant;
-            return builder.addConstant(value);
+            return builder.addConstant(convert_tag, value);
         },
         else => std.debug.panic("TODO: {s}", .{@tagName(node.tag)}),
     }
