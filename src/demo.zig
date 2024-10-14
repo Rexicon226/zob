@@ -16,14 +16,11 @@ pub fn main() !void {
     defer builder.deinit();
     const stdout = std.io.getStdOut().writer();
 
-    // in this example we're trying to trigger the (mul ?x 2) -> (shl ?x 1) rewrite
-
     const input =
-        \\%0 = arg(0)
-        \\%1 = load(%0)
-        \\%2 = load(%0)
-        \\%3 = mul(%1, %2)
-        \\%4 = ret(%3)
+        \\%0 = constant(3)
+        \\%1 = constant(4)
+        \\%2 = add(%0, %1)
+        \\%3 = ret(%2)
     ;
 
     var ir = try Ir.Parser.parse(allocator, input);
@@ -36,8 +33,7 @@ pub fn main() !void {
     var oir = try Oir.fromIr(ir, allocator);
     defer oir.deinit();
 
-    // apply the rewrite
-    try oir.applyRewrite(.{ .pattern = "(mul ?x 2)", .rewrite = rewrites.mulRewriteLhs });
+    try oir.optimize(.until_no_change);
 
     // output IR
     var optimized_ir = try oir.extract();

@@ -63,9 +63,7 @@ pub const Builder = struct {
     instructions: std.MultiArrayList(Inst),
 
     pub fn toIr(b: *Builder) Ir {
-        return .{
-            .instructions = b.instructions.toOwnedSlice(),
-        };
+        return .{ .instructions = b.instructions.toOwnedSlice() };
     }
 
     pub fn deinit(b: *Builder) void {
@@ -149,6 +147,10 @@ const Writer = struct {
             => try w.writeUnOp(inst, s),
             .mul,
             .shl,
+            .add,
+            .sub,
+            .div_trunc,
+            .div_exact,
             => try w.writeBinOp(inst, s),
             .arg,
             => try w.writeArg(inst, s),
@@ -266,7 +268,6 @@ pub const Parser = struct {
             }
 
             const result_number = try parseNodeNumber(result_node);
-
             try list.insert(allocator, result_number, .{
                 .tag = tag,
                 .data = data,
