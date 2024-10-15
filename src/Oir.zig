@@ -2,12 +2,12 @@
 
 allocator: std.mem.Allocator,
 ir: IR,
-ir_to_node: std.AutoHashMapUnmanaged(IR.Inst.Index, Node.Index) = .{},
 
-cost_strat: CostStrategy = .num_nodes,
+cost_strategy: CostStrategy = .num_nodes,
 
 nodes: std.ArrayListUnmanaged(Node) = .{},
 classes: std.ArrayListUnmanaged(Class) = .{},
+node_to_class: std.AutoHashMapUnmanaged(Node.Index, Class.Index) = .{},
 
 pub const Node = struct {
     tag: Tag,
@@ -97,6 +97,13 @@ pub const Class = struct {
             try writer.print("%{d}", .{@intFromEnum(idx)});
         }
     };
+
+    /// Creates a new node and adds it to the class.
+    fn addNode(class: *Class, oir: *Oir, node: Node) !void {
+        const new_idx: Node.Index = @enumFromInt(oir.nodes.items.len);
+        try oir.nodes.append(oir.allocator, node);
+        try class.bag.append(oir.allocator, new_idx);
+    }
 };
 
 pub const CostStrategy = enum {
@@ -113,6 +120,9 @@ pub fn fromIr(ir: IR, allocator: std.mem.Allocator) !Oir {
 
     const tags = ir.instructions.items(.tag);
     const data = ir.instructions.items(.data);
+
+    var ir_to_class: std.AutoHashMapUnmanaged(IR.Inst.Index, Class.Index) = .{};
+    defer ir_to_class.deinit(allocator);
 
     for (tags, data, 0..) |tag, payload, i| {
         log.debug("tag: {s} : {s}", .{ @tagName(tag), @tagName(payload) });
@@ -138,12 +148,11 @@ pub fn fromIr(ir: IR, allocator: std.mem.Allocator) !Oir {
                 var node: Node = .{ .tag = convert_tag };
 
                 const op = payload.un_op;
-                const op_idx = oir.resolveNode(op).?;
-                const class_idx = try oir.findClass(op_idx);
+                const class_idx = ir_to_class.get(op).?;
                 try node.out.append(allocator, class_idx);
 
                 const idx = try oir.add(node);
-                try oir.ir_to_node.put(allocator, inst, idx);
+                try ir_to_class.put(allocator, inst, idx);
             },
             2,
             => {
@@ -151,13 +160,12 @@ pub fn fromIr(ir: IR, allocator: std.mem.Allocator) !Oir {
 
                 const bin_op = payload.bin_op;
                 inline for (.{ bin_op.lhs, bin_op.rhs }) |idx| {
-                    const node_idx = oir.resolveNode(idx).?;
-                    const class_idx = try oir.findClass(node_idx);
+                    const class_idx = ir_to_class.get(idx).?;
                     try node.out.append(allocator, class_idx);
                 }
 
                 const idx = try oir.add(node);
-                try oir.ir_to_node.put(allocator, inst, idx);
+                try ir_to_class.put(allocator, inst, idx);
             },
             0,
             => {
@@ -166,7 +174,7 @@ pub fn fromIr(ir: IR, allocator: std.mem.Allocator) !Oir {
                     .data = .{ .constant = payload.value },
                 };
                 const idx = try oir.add(node);
-                try oir.ir_to_node.put(allocator, inst, idx);
+                try ir_to_class.put(allocator, inst, idx);
             },
             else => std.debug.panic("TODO: find {s}", .{@tagName(tag)}),
         }
@@ -191,7 +199,7 @@ pub const Rewrite = struct {
     pub fn applyRewrite(oir: *Oir, rewrite: Rewrite) !void {
         const allocator = oir.allocator;
 
-        // TODO: parse sexprs at comptime in order to not parse them each time here
+        // TODO: parse s-exprs at comptime in order to not parse them each time here
         var parser: SExpr.Parser = .{ .buffer = rewrite.pattern };
         const match_expr = try parser.parse(allocator);
         defer match_expr.deinit(allocator);
@@ -254,10 +262,10 @@ pub const Rewrite = struct {
                         // if both nodes are in the same class, they *must* be equal.
                         // this is one of the reasons why we need to rebuild before
                         // doing rewrites, to allow checks like this.
-                        return gop.value_ptr.* == (try oir.findClass(node_idx));
+                        return gop.value_ptr.* == (oir.findClass(node_idx));
                     } else {
                         // make sure to remember for further matches
-                        gop.value_ptr.* = try oir.findClass(node_idx);
+                        gop.value_ptr.* = oir.findClass(node_idx);
                         // we haven't seen this class yet. it's a match, since unique identifiers
                         // could mean anything.
                         return true;
@@ -364,12 +372,10 @@ const Optimizations = struct {
                                 .mul => lhs_value * rhs_value,
                                 else => unreachable,
                             };
-                            const result_node = try oir.add(.{
+                            try class.addNode(oir, .{
                                 .tag = .constant,
                                 .data = .{ .constant = result },
                             });
-
-                            try class.bag.append(oir.allocator, result_node);
                         },
                         else => std.debug.panic("TODO: constant fold {s}", .{@tagName(node.tag)}),
                     }
@@ -406,14 +412,13 @@ const Optimizations = struct {
                         }
                     }
 
-                    const mul_class_idx = try oir.findClass(@enumFromInt(node_idx));
-                    const mul_class = oir.getClass(mul_class_idx);
+                    const mul_class_idx = oir.findClass(@enumFromInt(node_idx));
 
                     // TODO: to avoid infinite loops, just check if a "shl" node already exists in the class
                     // this isn't a very good solution since there could be multiple non-identical shl in the class.
                     // node tagging maybe?
 
-                    for (mul_class.bag.items) |mul_node_idx| {
+                    for (oir.getClass(mul_class_idx).bag.items) |mul_node_idx| {
                         const mul_node = oir.getNode(mul_node_idx);
                         if (mul_node.tag == .shl) return false;
                     }
@@ -422,22 +427,18 @@ const Optimizations = struct {
                         const value = resolved_meta.value;
                         const new_value = std.math.log2_int(u64, value);
 
-                        // create the (shl ?x @log2($)) node
-                        const new_value_node = try oir.add(.{
+                        // create the (shl ?x @log2($)) node instead of the mul class
+                        const shift_value_idx = try oir.add(.{
                             .tag = .constant,
                             .data = .{ .constant = @intCast(new_value) },
                         });
-                        const new_value_class = try oir.findClass(new_value_node);
 
-                        const new_node_index = try oir.add(.{ .tag = .shl });
-
-                        const new_node = &oir.nodes.items[@intFromEnum(new_node_index)];
+                        var new_node: Node = .{ .tag = .shl };
                         try new_node.out.append(oir.allocator, resolved_meta.other_class);
-                        try new_node.out.append(oir.allocator, new_value_class);
+                        try new_node.out.append(oir.allocator, shift_value_idx);
 
-                        // union the shl's class with the mul's class
-                        const new_class_idx = try oir.findClass(new_node_index);
-                        try oir.@"union"(mul_class_idx, new_class_idx);
+                        const class_ptr = oir.getClassPtr(mul_class_idx);
+                        try class_ptr.addNode(oir, new_node);
 
                         return true;
                     }
@@ -482,7 +483,7 @@ pub fn extract(oir: *Oir) !IR {
     // or something similar.
 
     // TODO: don't just search for a `ret` node,
-    // instead compute the mathemtical leaves of the graph
+    // instead compute the mathematical leaves of the graph
 
     const ret_node_idx: Node.Index = idx: for (oir.classes.items) |class| {
         for (class.bag.items) |node_idx| {
@@ -571,21 +572,30 @@ fn extractClass(oir: *Oir, class_idx: Class.Index) Node.Index {
 }
 
 /// Adds an ENode to the EGraph, giving the node its own class.
-pub fn add(oir: *Oir, node: Node) !Node.Index {
+/// Returns the EClass index the ENode was placed in.
+pub fn add(oir: *Oir, node: Node) !Class.Index {
     const node_idx: Node.Index = @enumFromInt(oir.nodes.items.len);
     try oir.nodes.append(oir.allocator, node);
 
     var class: Class = .{};
     try class.bag.append(oir.allocator, node_idx);
+
+    const class_idx: Class.Index = @enumFromInt(oir.classes.items.len);
     try oir.classes.append(oir.allocator, class);
 
-    log.debug("birth node {}", .{node_idx});
-    return node_idx;
+    // store this relationship in node_to_class
+    try oir.node_to_class.put(oir.allocator, node_idx, class_idx);
+
+    return class_idx;
 }
 
+/// Performs the "union" operation on the graph.
+///
+/// This can be thought of as "merging" two classes. When they were
+/// proven to be equivalent.
 pub fn @"union"(oir: *Oir, a_idx: Class.Index, b_idx: Class.Index) !void {
     if (a_idx != b_idx) {
-        log.debug("unioning class {} -> {}", .{ a_idx, b_idx });
+        log.debug("union class {} -> {}", .{ a_idx, b_idx });
 
         const class_a = &oir.classes.items[@intFromEnum(a_idx)];
         const class_b = &oir.classes.items[@intFromEnum(b_idx)];
@@ -611,7 +621,7 @@ pub fn @"union"(oir: *Oir, a_idx: Class.Index, b_idx: Class.Index) !void {
 
 pub fn deinit(oir: *Oir) void {
     const allocator = oir.allocator;
-    oir.ir_to_node.deinit(allocator);
+    oir.node_to_class.deinit(allocator);
     oir.ir.instructions.deinit(allocator);
 
     for (oir.nodes.items) |*node| {
@@ -625,28 +635,29 @@ pub fn deinit(oir: *Oir) void {
     oir.classes.deinit(allocator);
 }
 
-fn resolveNode(oir: *Oir, idx: IR.Inst.Index) ?Node.Index {
-    return oir.ir_to_node.get(idx);
-}
-
-/// Finds which class `idx` is in.
-/// NOTE: very expensive, call this are rarely as possible.
-/// TODO: improve via bimapping
-pub fn findClass(oir: *Oir, idx: Node.Index) !Class.Index {
-    for (oir.classes.items, 0..) |class, i| {
-        for (class.bag.items) |node| {
-            if (node == idx) return @enumFromInt(i);
-        }
-    }
-    return error.ClassNotFound;
+/// Returns the `Class.Index` that the provided `idx` is in.
+pub fn findClass(oir: *Oir, idx: Node.Index) Class.Index {
+    return oir.node_to_class.get(idx).?;
 }
 
 pub fn getNode(oir: *Oir, idx: Node.Index) Node {
     return oir.nodes.items[@intFromEnum(idx)];
 }
 
+/// Returns a pointer to the node. Only valid until a new node is added
+/// to the graph.
+pub fn getNodePtr(oir: *Oir, idx: Node.Index) *Node {
+    return &oir.nodes.items[@intFromEnum(idx)];
+}
+
 pub fn getClass(oir: *Oir, idx: Class.Index) Class {
     return oir.classes.items[@intFromEnum(idx)];
+}
+
+/// Returns a pointer to the class. Only valid until a new class is added
+/// to the graph.
+pub fn getClassPtr(oir: *Oir, idx: Class.Index) *Class {
+    return &oir.classes.items[@intFromEnum(idx)];
 }
 
 /// Checks if a class contains a constant equivalence node, and returns it.

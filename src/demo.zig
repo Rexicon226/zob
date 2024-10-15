@@ -5,7 +5,7 @@ const rewrites = @import("rewrites.zig");
 const print_oir = @import("print_oir.zig");
 
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.GeneralPurposeAllocator(.{ .stack_trace_frames = 100 }){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
