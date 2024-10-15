@@ -9,52 +9,57 @@ pub fn dumpGraphViz(
 ) !void {
     try file_writer.writeAll(
         \\digraph G {
+        \\  compound=true
+        \\  clusterrank=local
         \\  graph [fontsize=14 compound=true]
         \\  node [shape=box, stlye=filled];
         \\
     );
 
-    for (oir.classes.items, 0..) |class, i| {
+    for (oir.classes.items, 0..) |class, class_idx| {
         try file_writer.print(
             \\  subgraph cluster_{d} {{
             \\    style=dotted
             \\
-        ,
-            .{i},
-        );
+        , .{class_idx});
 
-        for (class.bag.items) |node_idx| {
+        for (class.bag.items, 0..) |node_idx, i| {
             const node = oir.getNode(node_idx);
-            try file_writer.print("    node{d} [label=\"", .{@intFromEnum(node_idx)});
+            try file_writer.print("    {}.{} [label=\"", .{ class_idx, i });
             switch (node.tag) {
                 .constant => {
                     const val = node.data.constant;
                     try file_writer.print("constant:{d}", .{val});
                 },
                 .arg => {
-                    try file_writer.print("arg({d})", .{@intFromEnum(node_idx)});
+                    try file_writer.print(
+                        "arg({d})",
+                        .{@intFromEnum(node_idx)},
+                    );
                 },
                 else => try file_writer.writeAll(@tagName(node.tag)),
             }
-            // try file_writer.print("{}", .{node_idx});
             try file_writer.writeAll("\", color=\"grey\"];\n");
         }
-
         try file_writer.writeAll("  }\n");
     }
 
-    for (oir.nodes.items, 0..) |node, i| {
-        for (node.out.items) |class_idx| {
-            const class = oir.getClass(class_idx);
-            if (class.bag.items.len == 0) std.debug.panic(
-                "node %{d} connects to empty class %{d} empty for some reason",
-                .{ i, @intFromEnum(class_idx) },
-            );
-            const node_idx = class.bag.items[0];
-            try file_writer.print(
-                "  node{d} -> node{d} [lhead=\"cluster_{d}\"];\n",
-                .{ i, @intFromEnum(node_idx), @intFromEnum(class_idx) },
-            );
+    for (oir.classes.items, 0..) |class, class_idx| {
+        for (class.bag.items, 0..) |node_idx, i| {
+            var arg_i: usize = 0;
+            const node = oir.getNode(node_idx);
+            for (node.out.items) |child_idx| {
+                try file_writer.print(
+                    "  {}.{} -> {}.0 [lhead = cluster_{}]\n",
+                    .{
+                        class_idx,
+                        i,
+                        @intFromEnum(child_idx),
+                        @intFromEnum(child_idx),
+                    },
+                );
+                arg_i += 1;
+            }
         }
     }
 
