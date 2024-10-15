@@ -17,10 +17,10 @@ pub fn main() !void {
     const stdout = std.io.getStdOut().writer();
 
     const input =
-        \\%0 = constant(3)
+        \\%0 = arg(0)
         \\%1 = constant(4)
         \\%2 = add(%0, %1)
-        \\%3 = mul(%1, %0)
+        \\%3 = mul(%2, %1)
         \\%4 = ret(%3)
     ;
 

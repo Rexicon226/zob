@@ -63,6 +63,15 @@ pub const Node = struct {
                 => 2,
             };
         }
+
+        pub fn isVolatile(tag: Tag) bool {
+            return switch (tag) {
+                .arg,
+                .ret,
+                => true,
+                else => false,
+            };
+        }
     };
 
     const Data = union(enum) {
@@ -329,6 +338,7 @@ const Optimizations = struct {
                 defer buffer.clearRetainingCapacity();
 
                 const node = oir.getNode(node_idx);
+
                 for (node.out.items) |child_idx| {
                     if (oir.classContainsConstant(child_idx)) |constant_idx| {
                         try buffer.append(oir.allocator, constant_idx);
@@ -336,7 +346,9 @@ const Optimizations = struct {
                 }
 
                 // all nodes are constants
-                if (buffer.items.len == node.tag.numNodeArgs()) {
+                if (buffer.items.len == node.tag.numNodeArgs() and
+                    !node.tag.isVolatile())
+                {
                     did_something = true;
 
                     switch (node.tag) {
@@ -359,13 +371,6 @@ const Optimizations = struct {
 
                             try class.bag.append(oir.allocator, result_node);
                         },
-                        // `ret` is a special case where it could be pointing at constant nodes,
-                        // but there isn't any optimization we can do.
-                        // TODO: make a "isVolatile" function and check for it here, make sure
-                        // we can actually remove "node".
-                        .ret => {
-                            did_something = false;
-                        },
                         else => std.debug.panic("TODO: constant fold {s}", .{@tagName(node.tag)}),
                     }
                 }
@@ -376,11 +381,81 @@ const Optimizations = struct {
     }
 
     /// Replaces trivially expensive operations with cheaper equivalents.
-    fn strengthReduce(oir: *Oir) !bool {}
+    fn strengthReduce(oir: *Oir) !bool {
+        for (oir.nodes.items, 0..) |node, node_idx| {
+            if (node.tag.isVolatile()) continue;
+
+            switch (node.tag) {
+                .mul => {
+                    // metadata for the pass
+                    const Meta = struct {
+                        value: u64,
+                        other_class: Class.Index,
+                    };
+                    var meta: ?Meta = null;
+
+                    for (node.out.items, 0..) |class_idx, i| {
+                        if (oir.classContainsConstant(class_idx)) |value_idx| {
+                            const value: u64 = @intCast(oir.getNode(value_idx).data.constant);
+                            if (std.math.isPowerOfTwo(value)) {
+                                meta = .{
+                                    .value = value,
+                                    .other_class = node.out.items[i ^ 1], // trick to get the other one
+                                };
+                            }
+                        }
+                    }
+
+                    const mul_class_idx = try oir.findClass(@enumFromInt(node_idx));
+                    const mul_class = oir.getClass(mul_class_idx);
+
+                    // TODO: to avoid infinite loops, just check if a "shl" node already exists in the class
+                    // this isn't a very good solution since there could be multiple non-identical shl in the class.
+                    // node tagging maybe?
+
+                    for (mul_class.bag.items) |mul_node_idx| {
+                        const mul_node = oir.getNode(mul_node_idx);
+                        if (mul_node.tag == .shl) return false;
+                    }
+
+                    if (meta) |resolved_meta| {
+                        const value = resolved_meta.value;
+                        const new_value = std.math.log2_int(u64, value);
+
+                        // create the (shl ?x @log2($)) node
+                        const new_value_node = try oir.add(.{
+                            .tag = .constant,
+                            .data = .{ .constant = @intCast(new_value) },
+                        });
+                        const new_value_class = try oir.findClass(new_value_node);
+
+                        const new_node_index = try oir.add(.{ .tag = .shl });
+
+                        const new_node = &oir.nodes.items[@intFromEnum(new_node_index)];
+                        try new_node.out.append(oir.allocator, resolved_meta.other_class);
+                        try new_node.out.append(oir.allocator, new_value_class);
+
+                        // union the shl's class with the mul's class
+                        const new_class_idx = try oir.findClass(new_node_index);
+                        try oir.@"union"(mul_class_idx, new_class_idx);
+
+                        return true;
+                    }
+                },
+                .constant,
+                .add,
+                => {},
+                else => std.debug.panic("TODO: strength {s}", .{@tagName(node.tag)}),
+            }
+        }
+
+        return false;
+    }
 };
 
 const passes = &.{
     Optimizations.constantFold,
+    Optimizations.strengthReduce,
 };
 
 pub fn optimize(oir: *Oir, mode: enum {
@@ -576,14 +651,15 @@ pub fn getClass(oir: *Oir, idx: Class.Index) Class {
 
 /// Checks if a class contains a constant equivalence node, and returns it.
 /// Otherwise returns `null`.
+///
+/// Can only return absorbing element types such as `constant`.
 pub fn classContainsConstant(oir: *Oir, idx: Class.Index) ?Node.Index {
     const class = oir.getClass(idx);
     for (class.bag.items) |node_idx| {
         const node = oir.getNode(node_idx);
 
-        // There should be at-most one constant node per
-        // class. We can early return.
-
+        // There should be at-most one constant node per class.
+        // We can early return.
         if (node.tag == .constant) return node_idx;
     }
 
