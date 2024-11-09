@@ -19,7 +19,9 @@ pub fn main() !void {
     // meant to sort of look like AIR
     const input =
         \\%0 = arg(0)
-        \\%1 = ret(%0)
+        \\%1 = arg(1)
+        \\%2 = add(%0, %1)
+        \\%3 = ret(%2)
     ;
 
     // parse the input IR
@@ -48,12 +50,10 @@ pub fn main() !void {
     };
     try extractor.extract();
 
+    try mir.run();
+
     // dump to a graphviz file
     const graphviz_file = try std.fs.cwd().createFile("out.dot", .{});
     defer graphviz_file.close();
     try print_oir.dumpGraphViz(&oir, graphviz_file.writer());
-
-    // dump the MIR to stdout
-    try stdout.writeAll("\n-----------\nMIR:\n");
-    try mir.dump(stdout);
 }

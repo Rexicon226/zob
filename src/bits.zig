@@ -164,15 +164,14 @@ pub const Class = enum {
 };
 
 pub const VirtualRegister = struct {
-    class: Class,
+    class: Register.Class,
+    /// TODO: remove the `index` field, it should be represented as the index in the
+    /// vreg allocator. this leaves the possiblity of clobbering with two vregs having
+    /// the same index but different classes.
     index: Index,
 
     pub const Index = enum(u32) {
         _,
-    };
-
-    pub const Class = enum {
-        gpr,
     };
 };
 

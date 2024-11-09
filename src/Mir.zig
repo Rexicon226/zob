@@ -1,6 +1,5 @@
 gpa: std.mem.Allocator,
 
-liveins: std.ArrayListUnmanaged(Register) = .{},
 instructions: std.MultiArrayList(Instruction) = .{},
 frame_allocs: std.MultiArrayList(bits.FrameAlloc) = .{},
 
@@ -16,36 +15,51 @@ virt_regs: u32 = 1,
 /// TODO: this is a very crude solution to basic livein tracking.
 arg_regs: u32 = 0,
 
-const Instruction = struct {
+pub const Instruction = struct {
     tag: Tag,
     data: Data,
 
-    const Data = union(enum) {
+    pub const Data = union(enum) {
         /// A RISC-V Register.
         ///
         /// Preferable to use in cases where an instruction *only* takes a RISC-V Register
         /// and not any Value.
         reg: Register,
-        /// Two values.
+        /// Two inputs + One output,
         bin_op: BinOp,
-        /// One value.
-        un_op: Value,
     };
 
     const Index = enum(u32) {
         _,
     };
 
-    const BinOp = struct {
+    pub const BinOp = struct {
         lhs: Value,
         rhs: Value,
+        dst: Value,
+    };
+
+    const UnOp = struct {
+        op: Value,
+        dst: Value,
     };
 
     pub const Tag = enum {
         copy,
         pseudo_ret,
 
-        add,
+        addw,
+
+        dead,
+
+        pub fn canHaveVRegOperand(tag: Tag) bool {
+            return switch (tag) {
+                .copy,
+                .addw,
+                => true,
+                else => false,
+            };
+        }
     };
 };
 
@@ -108,7 +122,6 @@ pub const Extractor = struct {
         e: *Extractor,
         node_idx: Node.Index,
     ) !Value {
-        const gpa = e.mir.gpa;
         const oir = e.oir;
         const mir = e.mir;
         const node = oir.getNode(node_idx);
@@ -117,16 +130,11 @@ pub const Extractor = struct {
             .arg => {
                 assert(node.out.items.len == 0);
                 // TODO: we're just assuming each argument takes 1 input register for now
-                defer {
-                    mir.arg_regs += 1;
-                    mir.virt_regs += 1;
-                }
+                defer mir.arg_regs += 1;
 
                 const arg_reg: Register = bits.Registers.Integer.function_arg_regs[mir.arg_regs];
-                try mir.liveins.append(gpa, arg_reg);
-
                 const arg_value: Value = .{ .register = arg_reg };
-                const dst_value: Value = .{ .virtual = try mir.allocVirtualReg(.gpr) };
+                const dst_value: Value = .{ .virtual = try mir.allocVirtualReg(.int) };
 
                 try mir.copyValue(dst_value, arg_value);
 
@@ -147,6 +155,31 @@ pub const Extractor = struct {
                 });
                 return .none;
             },
+            .add => {
+                assert(node.out.items.len == 2);
+
+                const rhs_class_idx = node.out.items[0];
+                const lhs_class_idx = node.out.items[1];
+
+                const rhs_idx = e.extractClass(rhs_class_idx);
+                const lhs_idx = e.extractClass(lhs_class_idx);
+
+                const rhs_value = try e.extractNode(rhs_idx);
+                const lhs_value = try e.extractNode(lhs_idx);
+
+                const dst_value: Value = .{ .virtual = try mir.allocVirtualReg(.int) };
+
+                _ = try mir.addUnOp(.{
+                    .tag = .addw,
+                    .data = .{ .bin_op = .{
+                        .rhs = rhs_value,
+                        .lhs = lhs_value,
+                        .dst = dst_value,
+                    } },
+                });
+
+                return dst_value;
+            },
             else => std.debug.panic("TODO: mir extractNode {s}", .{@tagName(node.tag)}),
         }
     }
@@ -159,6 +192,26 @@ pub const Extractor = struct {
         return class.bag.items[index];
     }
 };
+
+/// Runs passes on the MIR.
+///
+/// After `run` is called, the MIR will have no
+/// - Virtual Registers
+/// - COPY instructions, which work with VRegs.
+pub fn run(mir: *Mir) !void {
+    const stdout = std.io.getStdOut().writer();
+    try stdout.writeAll("\n-----------\nMIR before passes:\n");
+    try mir.dump(stdout);
+    try stdout.writeAll("-----------\n");
+
+    inline for (passes.list) |pass| {
+        try pass.func(mir);
+
+        try stdout.print("\n-----------\nMIR after {s}:\n", .{pass.name});
+        try mir.dump(stdout);
+        try stdout.writeAll("-----------\n");
+    }
+}
 
 fn addUnOp(mir: *Mir, op: Instruction) !Instruction.Index {
     const idx: Instruction.Index = @enumFromInt(mir.instructions.len);
@@ -173,12 +226,18 @@ fn addUnOp(mir: *Mir, op: Instruction) !Instruction.Index {
 //     return frame_index;
 // }
 
-fn allocVirtualReg(mir: *Mir, class: VirtualRegister.Class) !VirtualRegister {
+fn allocVirtualReg(mir: *Mir, class: Register.Class) !VirtualRegister {
     defer mir.virt_regs += 1;
     return .{
         .class = class,
         .index = @enumFromInt(mir.virt_regs),
     };
+}
+
+pub fn allocPhysicalRegister(mir: *Mir, class: Register.Class) !Register {
+    _ = mir;
+    _ = class;
+    return .a5;
 }
 
 fn copyValue(mir: *Mir, dst: Value, src: Value) !void {
@@ -191,6 +250,7 @@ fn copyValue(mir: *Mir, dst: Value, src: Value) !void {
                 .data = .{ .bin_op = .{
                     .lhs = dst,
                     .rhs = src,
+                    .dst = .none,
                 } },
             };
             _ = try mir.addUnOp(instruction);
@@ -202,7 +262,6 @@ fn copyValue(mir: *Mir, dst: Value, src: Value) !void {
 pub fn deinit(mir: *Mir) void {
     const gpa = mir.gpa;
     mir.instructions.deinit(gpa);
-    mir.liveins.deinit(gpa);
 }
 
 pub fn dump(mir: *Mir, s: anytype) !void {
@@ -210,15 +269,6 @@ pub fn dump(mir: *Mir, s: anytype) !void {
         .mir = mir,
         .indent = 0,
     };
-
-    // print the liveins
-    try s.writeAll("liveins: { ");
-    for (mir.liveins.items, 0..) |reg, i| {
-        try s.writeAll(@tagName(reg));
-        if (i != mir.liveins.items.len - 1) try s.writeAll(",");
-        try s.writeAll(" ");
-    }
-    try s.writeAll("}\n");
 
     w.indent = 4;
     for (0..mir.instructions.len) |i| {
@@ -250,6 +300,14 @@ const Writer = struct {
                     copy.rhs,
                 });
             },
+            .addw => {
+                const add = data.bin_op;
+                try s.print("{} = ADDW {}, {}", .{
+                    add.dst,
+                    add.lhs,
+                    add.rhs,
+                });
+            },
             else => try s.print("TODO: Writer.printInst {s}", .{@tagName(tag)}),
         }
     }
@@ -259,6 +317,7 @@ const Mir = @This();
 const std = @import("std");
 const Oir = @import("Oir.zig");
 const bits = @import("bits.zig");
+const passes = @import("Mir/passes.zig");
 
 const Class = Oir.Class;
 const Node = Oir.Node;
