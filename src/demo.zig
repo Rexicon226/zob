@@ -1,7 +1,7 @@
 const std = @import("std");
 const Ir = @import("Ir.zig");
+const Mir = @import("Mir.zig");
 const Oir = @import("Oir.zig");
-const rewrites = @import("rewrites.zig");
 const print_oir = @import("print_oir.zig");
 
 pub fn main() !void {
@@ -16,37 +16,44 @@ pub fn main() !void {
     defer builder.deinit();
     const stdout = std.io.getStdOut().writer();
 
+    // meant to sort of look like AIR
     const input =
         \\%0 = arg(0)
-        \\%1 = constant(4)
-        \\%2 = add(%0, %1)
-        \\%3 = mul(%2, %1)
-        \\%4 = ret(%3)
+        \\%1 = ret(%0)
     ;
 
+    // parse the input IR
     var ir = try Ir.Parser.parse(allocator, input);
+    defer ir.deinit(allocator);
 
-    // print the "before", unoptimized IR
     try stdout.writeAll("\nunoptimized IR:\n");
     try ir.dump(stdout);
     try stdout.writeAll("\n");
 
+    // create the Oir from the IR.
     var oir = try Oir.fromIr(ir, allocator);
     defer oir.deinit();
 
+    // run optimization passes on the OIR
     try oir.optimize(.saturate);
 
-    // output IR
-    var optimized_ir = try oir.extract();
-    defer optimized_ir.deinit(allocator);
+    var mir: Mir = .{ .gpa = allocator };
+    defer mir.deinit();
+
+    // extract the best OIR solution into our MIR
+    var extractor: Mir.Extractor = .{
+        .cost_strategy = .num_nodes,
+        .oir = &oir,
+        .mir = &mir,
+    };
+    try extractor.extract();
 
     // dump to a graphviz file
     const graphviz_file = try std.fs.cwd().createFile("out.dot", .{});
     defer graphviz_file.close();
-
     try print_oir.dumpGraphViz(&oir, graphviz_file.writer());
 
-    // dump the optimized IR to stdout
-    try stdout.writeAll("\noptimized IR:\n");
-    try optimized_ir.dump(stdout);
+    // dump the MIR to stdout
+    try stdout.writeAll("\n-----------\nMIR:\n");
+    try mir.dump(stdout);
 }

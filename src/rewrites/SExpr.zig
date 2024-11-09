@@ -225,7 +225,7 @@ test "multi-layer, multi-variable" {
 }
 
 const SExpr = @This();
-const Tag = @import("Oir.zig").Node.Tag;
+const Tag = @import("../Oir.zig").Node.Tag;
 const std = @import("std");
 const expect = std.testing.expect;
 const assert = std.debug.assert;

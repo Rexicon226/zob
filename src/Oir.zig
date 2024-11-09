@@ -1,12 +1,17 @@
 //! Optimizable Intermediate Representation
 
 allocator: std.mem.Allocator,
-ir: IR,
 
-cost_strategy: CostStrategy = .num_nodes,
-
+/// Represents the list of all E-Nodes in the graph.
 nodes: std.ArrayListUnmanaged(Node) = .{},
+
+/// Represents the list of all E-Classes in the graph.
+///
+/// Each E-Class contains a bundle of nodes which are equivalent to each other.
 classes: std.ArrayListUnmanaged(Class) = .{},
+
+/// A map relating nodes to the classes they are in. Used as a fast way to determine
+/// what "parent" class a node is in.
 node_to_class: std.AutoHashMapUnmanaged(Node.Index, Class.Index) = .{},
 
 pub const Node = struct {
@@ -72,6 +77,15 @@ pub const Node = struct {
                 else => false,
             };
         }
+
+        /// TODO: is this function needed? are there any absorbing node
+        // types other than constant?
+        pub fn isAbsorbing(tag: Tag) bool {
+            return switch (tag) {
+                .constant => true,
+                else => false,
+            };
+        }
     };
 
     const Data = union(enum) {
@@ -112,11 +126,14 @@ pub const CostStrategy = enum {
     num_nodes,
 };
 
+/// Takes in an `IR`, meant to represent a basic version of Zig's AIR
+/// and does some basic analysis to convert it to an Oir. Since AIR is
+/// a linear graph, each new node has its own class.
+///
+/// TODO: run a rebuild of the graph at the end of constructing the Oir
+/// to remove things such as duplicate constants which wouldn't be caught.
 pub fn fromIr(ir: IR, allocator: std.mem.Allocator) !Oir {
-    var oir: Oir = .{
-        .ir = ir,
-        .allocator = allocator,
-    };
+    var oir: Oir = .{ .allocator = allocator };
 
     const tags = ir.instructions.items(.tag);
     const data = ir.instructions.items(.data);
@@ -183,150 +200,7 @@ pub fn fromIr(ir: IR, allocator: std.mem.Allocator) !Oir {
     return oir;
 }
 
-pub const Rewrite = struct {
-    pub const Error = error{
-        OutOfMemory,
-        ClassNotFound,
-        Overflow,
-        InvalidCharacter,
-    };
-
-    /// The S-Expr that we're trying to match for.
-    pattern: []const u8,
-    /// A rewrite function that's given the root index of the matched rewrite.
-    rewrite: *const fn (*Oir, Node.Index) Error!void,
-
-    pub fn applyRewrite(oir: *Oir, rewrite: Rewrite) !void {
-        const allocator = oir.allocator;
-
-        // TODO: parse s-exprs at comptime in order to not parse them each time here
-        var parser: SExpr.Parser = .{ .buffer = rewrite.pattern };
-        const match_expr = try parser.parse(allocator);
-        defer match_expr.deinit(allocator);
-
-        const found_matches = try oir.search(match_expr);
-        defer allocator.free(found_matches);
-
-        for (found_matches) |node_idx| {
-            try rewrite.rewrite(oir, node_idx);
-        }
-    }
-
-    /// Searches through all nodes in the E-Graph, trying to match it to the provided pattern.
-    fn search(oir: *Oir, pattern: SExpr) ![]const Node.Index {
-        const allocator = oir.allocator;
-        // contains the root nodes of all of the matches we got
-        var matches = std.ArrayList(Node.Index).init(allocator);
-        for (0..oir.nodes.items.len) |node_idx| {
-            const node_index: Node.Index = @enumFromInt(node_idx);
-
-            // matching requires us to prove equality between identifiers of the same name
-            // so something like (div_exact ?x ?x), needs us to prove that ?x and ?x are the same
-            // given an div_exact root node.
-            // We rely on the idea of graph equality and uniqueness.
-            // If they are in the same class they must be equal.
-            var bindings: std.StringHashMapUnmanaged(Class.Index) = .{};
-            defer bindings.deinit(allocator);
-
-            const matched = try oir.match(node_index, pattern, &bindings);
-            if (matched) {
-                try matches.append(node_index);
-            }
-        }
-        return matches.toOwnedSlice();
-    }
-
-    /// Given a root node index, returns whether it E-Matches the given pattern.
-    fn match(
-        oir: *Oir,
-        node_idx: Node.Index,
-        pattern: SExpr,
-        bindings: *std.StringHashMapUnmanaged(Class.Index),
-    ) Rewrite.Error!bool {
-        const allocator = oir.allocator;
-        const root_node = oir.getNode(node_idx);
-
-        switch (pattern.data) {
-            .atom => |constant| {
-                // is this an identifier?
-                if (constant[0] == '?') {
-                    const identifier = constant[1..];
-                    const gop = try bindings.getOrPut(allocator, identifier);
-                    if (gop.found_existing) {
-                        // we've already found this! is it the same as we found before?
-                        // NOTE: you may think the order in which we match identifiers
-                        // matters. fortunately, it doesn't! if "x" was found first,
-                        // and was equal to 10, it doesn't matter if another "x" was
-                        // found equal to 20. they would never match.
-
-                        // if both nodes are in the same class, they *must* be equal.
-                        // this is one of the reasons why we need to rebuild before
-                        // doing rewrites, to allow checks like this.
-                        return gop.value_ptr.* == (oir.findClass(node_idx));
-                    } else {
-                        // make sure to remember for further matches
-                        gop.value_ptr.* = oir.findClass(node_idx);
-                        // we haven't seen this class yet. it's a match, since unique identifiers
-                        // could mean anything.
-                        return true;
-                    }
-                } else {
-                    // must be a number
-                    if (root_node.tag != .constant) return false;
-
-                    const value = root_node.data.constant;
-                    const parsed_value = try std.fmt.parseInt(i64, constant, 10);
-
-                    return value == parsed_value;
-                }
-            },
-            .list => |list| {
-                assert(list.len != 0); // there shouldn't be any empty lists
-                // we cant immediately tell that it isn't equal if the tags don't match.
-                // i.e, root_node is a (mul 10 20), and the pattern wants (div_exact ?x ?y)
-                // as you can see, they could never match.
-                if (root_node.tag != pattern.tag) return false;
-                // if the amount of children isn't equal, they couldn't match.
-                // i.e root_node is a (mul 10 20), and the pattern wants (abs ?x)
-                // this is more of a sanity check, since the tag check above would probably
-                // remove all cases of this.
-                if (list.len != root_node.out.items.len) return false;
-
-                // now we're left with a list of expressions and a graph.
-                // since the "out" field of the nodes is ordered from left to right, we're going to
-                // iterate through it inline with the expression list, and just recursively match with match()
-                for (root_node.out.items, list) |sub_node_idx, expr| {
-                    if (!try oir.matchClass(sub_node_idx, expr, bindings)) {
-                        return false;
-                    }
-                }
-                return true;
-            },
-        }
-    }
-
-    /// Given an class index, returns whether any nodes in it match the given pattern.
-    fn matchClass(
-        oir: *Oir,
-        class_idx: Class.Index,
-        sub_pattern: SExpr,
-        bindings: *std.StringHashMapUnmanaged(Class.Index),
-    ) Rewrite.Error!bool {
-        const class = oir.getClass(class_idx);
-        var found_match: bool = false;
-        for (class.bag.items) |sub_node_idx| {
-            const is_match = try oir.match(
-                sub_node_idx,
-                sub_pattern,
-                bindings,
-            );
-            if (!found_match) found_match = is_match;
-        }
-        return found_match;
-    }
-};
-
-const Optimizations = struct {
+const Passes = struct {
     /// Iterates through all nodes in the E-Graph,
     /// checking if it's possible to evaluate them now.
     ///
@@ -340,7 +214,7 @@ const Optimizations = struct {
         var did_something: bool = false;
         for (oir.classes.items, 0..) |*class, class_idx| {
             // the class has already been solved for a constant, no need to do anything else!
-            if (oir.classContainsConstant(@enumFromInt(class_idx)) != null) continue;
+            if (oir.classContains(@enumFromInt(class_idx), .constant) != null) continue;
 
             for (class.bag.items) |node_idx| {
                 defer buffer.clearRetainingCapacity();
@@ -348,7 +222,7 @@ const Optimizations = struct {
                 const node = oir.getNode(node_idx);
 
                 for (node.out.items) |child_idx| {
-                    if (oir.classContainsConstant(child_idx)) |constant_idx| {
+                    if (oir.classContains(child_idx, .constant)) |constant_idx| {
                         try buffer.append(oir.allocator, constant_idx);
                     }
                 }
@@ -401,7 +275,7 @@ const Optimizations = struct {
                     var meta: ?Meta = null;
 
                     for (node.out.items, 0..) |class_idx, i| {
-                        if (oir.classContainsConstant(class_idx)) |value_idx| {
+                        if (oir.classContains(class_idx, .constant)) |value_idx| {
                             const value: u64 = @intCast(oir.getNode(value_idx).data.constant);
                             if (std.math.isPowerOfTwo(value)) {
                                 meta = .{
@@ -455,8 +329,8 @@ const Optimizations = struct {
 };
 
 const passes = &.{
-    Optimizations.constantFold,
-    Optimizations.strengthReduce,
+    Passes.constantFold,
+    Passes.strengthReduce,
 };
 
 pub fn optimize(oir: *Oir, mode: enum {
@@ -464,118 +338,23 @@ pub fn optimize(oir: *Oir, mode: enum {
     /// NOTE: likely will be very slow for any large input
     saturate,
 }) !void {
-    _ = mode;
-
-    while (true) {
-        var new_change: bool = false;
-
-        inline for (passes) |pass| {
-            if (try pass(oir)) new_change = true;
-        }
-
-        if (!new_change) break;
+    switch (mode) {
+        .saturate => {
+            while (true) {
+                var new_change: bool = false;
+                inline for (passes) |pass| {
+                    if (try pass(oir)) new_change = true;
+                }
+                if (!new_change) break;
+            }
+        },
     }
-}
-
-/// Extracts the best pattern of IR from the E-Graph given a cost model.
-pub fn extract(oir: *Oir) !IR {
-    // First we need to find what the root class is. This will usually be the class containing a `ret`,
-    // or something similar.
-
-    // TODO: don't just search for a `ret` node,
-    // instead compute the mathematical leaves of the graph
-
-    const ret_node_idx: Node.Index = idx: for (oir.classes.items) |class| {
-        for (class.bag.items) |node_idx| {
-            const node = oir.getNode(node_idx);
-            if (node.tag == .ret) break :idx node_idx;
-        }
-    } else @panic("no ret in extract() input IR");
-
-    // walk back up and find the best node from each class
-    var ir_builder: IR.Builder = .{
-        .allocator = oir.allocator,
-        .instructions = .{},
-    };
-    _ = try oir.extractNode(ret_node_idx, &ir_builder);
-    return ir_builder.toIr();
-}
-
-/// Given a node index, recursively resolves information from the graph
-/// as needed to fill everything in. Returns an index into `insts` with the node.
-fn extractNode(
-    oir: *Oir,
-    node_idx: Node.Index,
-    builder: *IR.Builder,
-) !IR.Inst.Index {
-    const node = oir.getNode(node_idx);
-
-    // TODO: unify the two Tag enums
-    const convert_tag: IR.Inst.Tag = switch (node.tag) {
-        .ret => .ret,
-        .mul => .mul,
-        .arg => .arg,
-        .shl => .shl,
-        .add => .add,
-        .sub => .sub,
-        .div_exact => .div_exact,
-        .div_trunc => .div_trunc,
-        .constant => .constant,
-        .load => .load,
-        .store => .store,
-    };
-
-    switch (node.tag.numNodeArgs()) {
-        // Instructions with 1 argument
-        1,
-        => {
-            assert(node.out.items.len == 1);
-            const arg_class_idx = node.out.items[0];
-
-            const arg_idx = oir.extractClass(arg_class_idx);
-            const resolved_arg = try oir.extractNode(arg_idx, builder);
-
-            return builder.addUnOp(convert_tag, resolved_arg);
-        },
-        // Instructions with 2 arguments
-        2 => {
-            assert(node.out.items.len == 2);
-
-            const lhs_class_idx = node.out.items[0];
-            const rhs_class_idx = node.out.items[1];
-
-            const lhs_node_idx = oir.extractClass(lhs_class_idx);
-            const rhs_node_idx = oir.extractClass(rhs_class_idx);
-
-            const lhs_node = try oir.extractNode(lhs_node_idx, builder);
-            const rhs_node = try oir.extractNode(rhs_node_idx, builder);
-
-            return builder.addBinOp(convert_tag, lhs_node, rhs_node);
-        },
-        // Constants
-        0,
-        => {
-            assert(node.out.items.len == 0);
-            const value = node.data.constant;
-            return builder.addConstant(convert_tag, value);
-        },
-        else => std.debug.panic("TODO: {s}", .{@tagName(node.tag)}),
-    }
-}
-
-/// Given a class, extract the "best" node from it.
-fn extractClass(oir: *Oir, class_idx: Class.Index) Node.Index {
-    // for now, just select the first node in the class bag
-    const class = oir.getClass(class_idx);
-    const index: usize = if (class.bag.items.len > 1) 1 else 0;
-    return class.bag.items[index];
 }
 
 /// Adds an ENode to the EGraph, giving the node its own class.
 /// Returns the EClass index the ENode was placed in.
 pub fn add(oir: *Oir, node: Node) !Class.Index {
-    const node_idx: Node.Index = @enumFromInt(oir.nodes.items.len);
-    try oir.nodes.append(oir.allocator, node);
+    const node_idx = try oir.addNode(node);
 
     var class: Class = .{};
     try class.bag.append(oir.allocator, node_idx);
@@ -589,6 +368,17 @@ pub fn add(oir: *Oir, node: Node) !Class.Index {
     return class_idx;
 }
 
+/// An internal function to simplify adding nodes to the Oir.
+///
+/// It should be used carefully as it invalidates the equality invariance of the graph.
+/// You need to either rebuild the graph, or this is for an extracted Oir which does not
+/// hold any invariance.
+fn addNode(oir: *Oir, node: Node) !Node.Index {
+    const node_idx: Node.Index = @enumFromInt(oir.nodes.items.len);
+    try oir.nodes.append(oir.allocator, node);
+    return node_idx;
+}
+
 /// Performs the "union" operation on the graph.
 ///
 /// This can be thought of as "merging" two classes. When they were
@@ -597,8 +387,8 @@ pub fn @"union"(oir: *Oir, a_idx: Class.Index, b_idx: Class.Index) !void {
     if (a_idx != b_idx) {
         log.debug("union class {} -> {}", .{ a_idx, b_idx });
 
-        const class_a = &oir.classes.items[@intFromEnum(a_idx)];
-        const class_b = &oir.classes.items[@intFromEnum(b_idx)];
+        const class_a = oir.getClassPtr(a_idx);
+        const class_b = oir.getClassPtr(b_idx);
 
         // Replace all connections to class_b with class_a
         for (oir.nodes.items) |*node| {
@@ -622,7 +412,6 @@ pub fn @"union"(oir: *Oir, a_idx: Class.Index, b_idx: Class.Index) !void {
 pub fn deinit(oir: *Oir) void {
     const allocator = oir.allocator;
     oir.node_to_class.deinit(allocator);
-    oir.ir.instructions.deinit(allocator);
 
     for (oir.nodes.items) |*node| {
         node.out.deinit(allocator);
@@ -664,14 +453,16 @@ pub fn getClassPtr(oir: *Oir, idx: Class.Index) *Class {
 /// Otherwise returns `null`.
 ///
 /// Can only return absorbing element types such as `constant`.
-pub fn classContainsConstant(oir: *Oir, idx: Class.Index) ?Node.Index {
+pub fn classContains(oir: *Oir, idx: Class.Index, comptime tag: Node.Tag) ?Node.Index {
+    comptime assert(tag.isAbsorbing());
+
     const class = oir.getClass(idx);
     for (class.bag.items) |node_idx| {
         const node = oir.getNode(node_idx);
 
-        // There should be at-most one constant node per class.
-        // We can early return.
-        if (node.tag == .constant) return node_idx;
+        // Since the node is aborbing, we can return early as no other
+        // instances of it are allowed in the same class.
+        if (node.tag == tag) return node_idx;
     }
 
     return null;
@@ -679,7 +470,6 @@ pub fn classContainsConstant(oir: *Oir, idx: Class.Index) ?Node.Index {
 
 const Oir = @This();
 const IR = @import("Ir.zig");
-const SExpr = @import("SExpr.zig");
 const std = @import("std");
 
 const log = std.log.scoped(.oir);

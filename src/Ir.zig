@@ -137,7 +137,7 @@ const Writer = struct {
     ir: *const Ir,
     indent: usize,
 
-    fn printInst(w: *Writer, inst: Ir.Inst.Index, s: anytype) @TypeOf(s).Error!void {
+    fn printInst(w: *Writer, inst: Inst.Index, s: anytype) @TypeOf(s).Error!void {
         const tag = w.ir.instructions.items(.tag)[@intFromEnum(inst)];
         try s.writeByteNTimes(' ', w.indent);
         try s.print("%{d} = {s}(", .{ @intFromEnum(inst), @tagName(tag) });
