@@ -3,6 +3,8 @@ gpa: std.mem.Allocator,
 instructions: std.MultiArrayList(Instruction) = .{},
 frame_allocs: std.MultiArrayList(bits.FrameAlloc) = .{},
 
+pass_data: std.StringHashMapUnmanaged(*anyopaque) = .{},
+
 /// The number of virtual registers allocated.
 ///
 /// TODO: we should copy the basic register allocator from Zig
@@ -24,9 +26,10 @@ pub const Instruction = struct {
         ///
         /// Preferable to use in cases where an instruction *only* takes a RISC-V Register
         /// and not any Value.
-        reg: Register,
+        register: Register,
         /// Two inputs + One output,
         bin_op: BinOp,
+        none: void,
     };
 
     const Index = enum(u32) {
@@ -50,7 +53,11 @@ pub const Instruction = struct {
 
         addw,
 
-        dead,
+        /// An instruction that is considered a tombstone.
+        /// Ignored by MIR printers, analysis passes, and other things.
+        /// TODO: write some sort of rebuilder that removes these and
+        /// recomputes other instruction's references.
+        tombstone,
 
         pub fn canHaveVRegOperand(tag: Tag) bool {
             return switch (tag) {
@@ -151,7 +158,7 @@ pub const Extractor = struct {
 
                 _ = try mir.addUnOp(.{
                     .tag = .pseudo_ret,
-                    .data = .{ .reg = .a0 },
+                    .data = .{ .register = .a0 },
                 });
                 return .none;
             },
@@ -204,12 +211,20 @@ pub fn run(mir: *Mir) !void {
     try mir.dump(stdout);
     try stdout.writeAll("-----------\n");
 
-    inline for (passes.list) |pass| {
-        try pass.func(mir);
+    inline for (
+        passes.map.values(),
+        passes.map.keys(),
+    ) |pass_type, name| {
+        const pass = try pass_type.init(mir);
+        defer pass.deinit(mir);
 
-        try stdout.print("\n-----------\nMIR after {s}:\n", .{pass.name});
+        try pass.run(mir);
+
+        try stdout.print("\n-----------\nMIR after {s}:\n", .{name});
         try mir.dump(stdout);
         try stdout.writeAll("-----------\n");
+
+        try pass.verify(mir);
     }
 }
 
@@ -219,12 +234,12 @@ fn addUnOp(mir: *Mir, op: Instruction) !Instruction.Index {
     return idx;
 }
 
-// fn allocFrameIndex(mir: *Mir, alloc: bits.FrameAlloc) !FrameIndex {
-//     const frame_index: FrameIndex = @enumFromInt(mir.frame_allocs.len);
-//     try mir.frame_allocs.append(mir.gpa, alloc);
-//     log.debug("allocated frame {}", .{frame_index});
-//     return frame_index;
-// }
+fn allocFrameIndex(mir: *Mir, alloc: bits.FrameAlloc) !FrameIndex {
+    const frame_index: FrameIndex = @enumFromInt(mir.frame_allocs.len);
+    try mir.frame_allocs.append(mir.gpa, alloc);
+    log.debug("allocated frame {}", .{frame_index});
+    return frame_index;
+}
 
 fn allocVirtualReg(mir: *Mir, class: Register.Class) !VirtualRegister {
     defer mir.virt_regs += 1;
@@ -270,10 +285,11 @@ pub fn dump(mir: *Mir, s: anytype) !void {
         .indent = 0,
     };
 
+    const instructions = mir.instructions;
     w.indent = 4;
-    for (0..mir.instructions.len) |i| {
+    for (0..instructions.len) |i| {
         try w.printInst(@enumFromInt(i), s);
-        try s.writeByte('\n');
+        if (instructions.get(i).tag != .tombstone) try s.writeByte('\n');
     }
 }
 
@@ -290,9 +306,12 @@ const Writer = struct {
         const tag = instructions.items(.tag)[@intFromEnum(inst)];
         const data = instructions.items(.data)[@intFromEnum(inst)];
 
+        // doesn't exist, we can simply skip it
+        if (tag == .tombstone) return;
+
         try s.writeByteNTimes(' ', w.indent);
         switch (tag) {
-            .pseudo_ret => try s.print("RET ${s}", .{@tagName(data.reg)}),
+            .pseudo_ret => try s.print("RET ${s}", .{@tagName(data.register)}),
             .copy => {
                 const copy = data.bin_op;
                 try s.print("{} = COPY {}", .{
@@ -308,7 +327,8 @@ const Writer = struct {
                     add.rhs,
                 });
             },
-            else => try s.print("TODO: Writer.printInst {s}", .{@tagName(tag)}),
+            .tombstone => unreachable,
+            // else => try s.print("TODO: Writer.printInst {s}", .{@tagName(tag)}),
         }
     }
 };
