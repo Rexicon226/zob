@@ -7,7 +7,10 @@ pub const map = std.StaticStringMap(type).initComptime(&.{
 });
 
 const RegAllocPass = struct {
-    something: []const u8 = "",
+    /// A map that ties a virtual register to a physically allocated register.
+    ///
+    /// Multiple virtual registers can point at the same physical register.
+    virt_to_physical: std.AutoHashMapUnmanaged(VirtualRegister, Register) = .{},
 
     const log = std.log.scoped(.reg_alloc_pass);
 
@@ -20,6 +23,7 @@ const RegAllocPass = struct {
 
     pub fn deinit(pass: *RegAllocPass, mir: *Mir) void {
         const gpa = mir.gpa;
+        pass.virt_to_physical.deinit(gpa);
         gpa.destroy(pass);
     }
 
@@ -29,12 +33,17 @@ const RegAllocPass = struct {
     /// TODO: we want to support "fast" and "greedy" modes
     /// of register allocation. this is currently just "fast" or "simple".
     pub fn run(pass: *RegAllocPass, mir: *Mir) Error!void {
-        _ = pass;
-        const gpa = mir.gpa;
-        var virt_to_reg: std.AutoHashMapUnmanaged(VirtualRegister, Register) = .{};
-        defer virt_to_reg.deinit(gpa);
+        try pass.coalesceRegisters(mir);
+        try pass.rewriteVRegisters(mir);
+    }
 
-        // start off by analysing the MIR and finding all usages of VRegs.
+    /// TODO: this should probably be split off into its own pass.
+    /// need to setup persistent storage of pass metadata in order to cache the
+    /// virtual to physical register map.
+    fn coalesceRegisters(pass: *RegAllocPass, mir: *Mir) !void {
+        const gpa = mir.gpa;
+
+        // start off by seeding the map by analysing the COPY instructions
         for (0..mir.instructions.len) |i| {
             const tag: Mir.Instruction.Tag = mir.instructions.items(.tag)[i];
             const data: Mir.Instruction.Data = mir.instructions.items(.data)[i];
@@ -42,22 +51,46 @@ const RegAllocPass = struct {
 
             switch (tag) {
                 .copy => {
-                    // COPY instructions are special in that they already have a physical
-                    // register for the virtual register.
-                    // every virtual register index is unique in the IR, so when we use the
-                    // virtual registers are the key to the map, we can point to the same physical
-                    // register with multiple virtual registers.
+                    // we want to get the most "up to date" version of the COPY we can
+                    // because virtual registers are always unique and allocated in order,
+                    // when we analyse this COPY instruction, we can look at the map and see if
+                    // any of the inputs have already been resolved to physical registers.
+                    //
+                    // this is needed to tell whether a COPY instructions has both operands as
+                    // physical registers, and needs to exist post register allocation.
                     const bin_op = data.bin_op;
+                    const lhs: Mir.Value = if (bin_op.lhs == .virtual) lhs: {
+                        if (pass.virt_to_physical.get(bin_op.lhs.virtual)) |reg| {
+                            break :lhs .{ .register = reg };
+                        }
+                        break :lhs bin_op.lhs;
+                    } else bin_op.lhs;
+
+                    const rhs: Mir.Value = if (bin_op.rhs == .virtual) rhs: {
+                        if (pass.virt_to_physical.get(bin_op.rhs.virtual)) |reg| {
+                            break :rhs .{ .register = reg };
+                        }
+                        break :rhs bin_op.rhs;
+                    } else bin_op.rhs;
+
+                    // the COPY can be removed if one or both of the operands is a virtual register,
+                    // even after checking the map.
+                    // COPY instructions between two physical registers need to stay, since we need
+                    // to move values between registers.
+                    // an example of this could be:
+                    // %0 = arg(0)
+                    // %1 = arg(1)
+                    // %2 = ret(%1)
+                    var should_remove: bool = true;
 
                     var physical: ?Register = null;
                     var virtual: ?VirtualRegister = null;
 
-                    inline for (.{ bin_op.lhs, bin_op.rhs }) |operand| {
+                    inline for (.{ lhs, rhs }) |operand| {
                         switch (operand) {
                             .register => |reg| {
-                                // TODO: investigate where a COPY could be going from a
-                                // virtual to a virtual or from a physical to a physical.
-                                assert(physical == null);
+                                // both operands are physical registers, we can't remove it.
+                                if (physical != null) should_remove = false;
                                 physical = reg;
                             },
                             .virtual => |vreg| {
@@ -67,12 +100,13 @@ const RegAllocPass = struct {
                             else => unreachable,
                         }
                     }
+                    if (!should_remove) continue;
 
                     if (physical == null or virtual == null) {
                         @panic("TODO: should this be possible? just not sure yet");
                     }
 
-                    try virt_to_reg.put(gpa, virtual.?, physical.?);
+                    try pass.virt_to_physical.put(gpa, virtual.?, physical.?);
 
                     // the final change we can make is setting this COPY instruction
                     // to a tombstone, since after this pass COPY instructions can't exist.
@@ -86,8 +120,12 @@ const RegAllocPass = struct {
                 else => {},
             }
         }
+    }
 
-        // now replace and allocate other instructions as needed
+    fn rewriteVRegisters(pass: *RegAllocPass, mir: *Mir) !void {
+        const gpa = mir.gpa;
+
+        // now replace other instructions and allocate as needed
         for (0..mir.instructions.len) |i| {
             const tag: Mir.Instruction.Tag = mir.instructions.items(.tag)[i];
             const data: Mir.Instruction.Data = mir.instructions.items(.data)[i];
@@ -109,7 +147,7 @@ const RegAllocPass = struct {
                     ) |operand, value| {
                         switch (operand) {
                             .virtual => |vreg| {
-                                const gop = try virt_to_reg.getOrPut(gpa, vreg);
+                                const gop = try pass.virt_to_physical.getOrPut(gpa, vreg);
                                 // another instruction or operand has already allocated a physical register
                                 // for this virtual register. we can simply set it here.
                                 if (gop.found_existing) {
@@ -144,11 +182,6 @@ const RegAllocPass = struct {
         const data = mir.instructions.items(.data);
 
         for (tags, data) |tag, inst| {
-            if (tag == .copy) {
-                log.err("COPY instruction found in verification step", .{});
-                return error.VerifyFailed;
-            }
-
             if (!tag.canHaveVRegOperand()) continue;
             switch (inst) {
                 .register => unreachable, // should be unreachable due to `canHaveVRegOperand` check.

@@ -20,8 +20,7 @@ pub fn main() !void {
     const input =
         \\%0 = arg(0)
         \\%1 = arg(1)
-        \\%2 = add(%0, %1)
-        \\%3 = ret(%2)
+        \\%2 = ret(%1)
     ;
 
     // parse the input IR

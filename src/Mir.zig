@@ -12,11 +12,6 @@ pass_data: std.StringHashMapUnmanaged(*anyopaque) = .{},
 /// have an infinite amount of virtual registers allocated at once.
 virt_regs: u32 = 1,
 
-/// The number of argument registers already used.
-///
-/// TODO: this is a very crude solution to basic livein tracking.
-arg_regs: u32 = 0,
-
 pub const Instruction = struct {
     tag: Tag,
     data: Data,
@@ -70,7 +65,7 @@ pub const Instruction = struct {
     };
 };
 
-const Value = union(enum) {
+pub const Value = union(enum) {
     none: void,
     register: Register,
     virtual: bits.VirtualRegister,
@@ -136,10 +131,8 @@ pub const Extractor = struct {
         switch (node.tag) {
             .arg => {
                 assert(node.out.items.len == 0);
-                // TODO: we're just assuming each argument takes 1 input register for now
-                defer mir.arg_regs += 1;
 
-                const arg_reg: Register = bits.Registers.Integer.function_arg_regs[mir.arg_regs];
+                const arg_reg: Register = bits.Registers.Integer.function_arg_regs[@intCast(node.data.constant)];
                 const arg_value: Value = .{ .register = arg_reg };
                 const dst_value: Value = .{ .virtual = try mir.allocVirtualReg(.int) };
 
