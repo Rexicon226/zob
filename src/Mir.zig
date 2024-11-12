@@ -24,6 +24,8 @@ pub const Instruction = struct {
         register: Register,
         /// Two inputs + One output,
         bin_op: BinOp,
+        /// One input + One output,
+        un_op: UnOp,
         none: void,
     };
 
@@ -37,16 +39,20 @@ pub const Instruction = struct {
         dst: Value,
     };
 
-    const UnOp = struct {
-        op: Value,
+    pub const UnOp = struct {
+        src: Value,
         dst: Value,
     };
 
     pub const Tag = enum {
+        // Pseudo instructions. Will be expanded before instruction encoded.
         copy,
         pseudo_ret,
 
-        addw,
+        /// Add
+        add,
+        /// Load Double
+        ld,
 
         /// An instruction that is considered a tombstone.
         /// Ignored by MIR printers, analysis passes, and other things.
@@ -56,10 +62,10 @@ pub const Instruction = struct {
 
         pub fn canHaveVRegOperand(tag: Tag) bool {
             return switch (tag) {
-                .copy,
-                .addw,
-                => true,
-                else => false,
+                .pseudo_ret,
+                .tombstone,
+                => false,
+                else => true,
             };
         }
     };
@@ -153,6 +159,25 @@ pub const Extractor = struct {
                 });
                 return .none;
             },
+            .load => {
+                assert(node.out.items.len == 1);
+                const class_idx = node.out.items[0];
+
+                const arg_idx = e.extractClass(class_idx);
+                const arg_value = try e.extractNode(arg_idx);
+
+                const dst_value: Value = .{ .virtual = try mir.allocVirtualReg(.int) };
+
+                _ = try mir.addUnOp(.{
+                    .tag = .ld,
+                    .data = .{ .un_op = .{
+                        .dst = dst_value,
+                        .src = arg_value,
+                    } },
+                });
+
+                return dst_value;
+            },
             .add => {
                 assert(node.out.items.len == 2);
 
@@ -168,7 +193,7 @@ pub const Extractor = struct {
                 const dst_value: Value = .{ .virtual = try mir.allocVirtualReg(.int) };
 
                 _ = try mir.addUnOp(.{
-                    .tag = .addw,
+                    .tag = .add,
                     .data = .{ .bin_op = .{
                         .rhs = rhs_value,
                         .lhs = lhs_value,
@@ -193,9 +218,8 @@ pub const Extractor = struct {
 
 /// Runs passes on the MIR.
 ///
-/// After `run` is called, the MIR will have no
-/// - Virtual Registers
-/// - COPY instructions, which work with VRegs.
+/// After `run` is called, the MIR will have no pseudo instructions
+/// and will be ready for encoding.
 pub fn run(mir: *Mir) !void {
     const stdout = std.io.getStdOut().writer();
     try stdout.writeAll("\nMIR before passes:\n-----------\n");
@@ -253,10 +277,9 @@ fn copyValue(mir: *Mir, dst: Value, src: Value) !void {
         => {
             const instruction: Instruction = .{
                 .tag = .copy,
-                .data = .{ .bin_op = .{
-                    .lhs = dst,
-                    .rhs = src,
-                    .dst = .none,
+                .data = .{ .un_op = .{
+                    .dst = dst,
+                    .src = src,
                 } },
             };
             _ = try mir.addUnOp(instruction);
@@ -301,18 +324,27 @@ const Writer = struct {
 
         try s.writeByteNTimes(' ', w.indent);
         switch (tag) {
-            .pseudo_ret => try s.print("RET ${s}", .{@tagName(data.register)}),
-            .copy => {
-                const copy = data.bin_op;
-                try s.print("{} = COPY {}", .{
-                    copy.lhs,
-                    copy.rhs,
+            .pseudo_ret,
+            => try s.print("{s} ${s}", .{
+                @tagName(tag),
+                @tagName(data.register),
+            }),
+            .copy,
+            .ld,
+            => {
+                const un_op = data.un_op;
+                try s.print("{} = {s} {}", .{
+                    un_op.dst,
+                    @tagName(tag),
+                    un_op.src,
                 });
             },
-            .addw => {
+            .add,
+            => {
                 const add = data.bin_op;
-                try s.print("{} = ADDW {}, {}", .{
+                try s.print("{} = {s} {}, {}", .{
                     add.dst,
+                    @tagName(tag),
                     add.lhs,
                     add.rhs,
                 });

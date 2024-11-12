@@ -317,10 +317,7 @@ const Passes = struct {
                         return true;
                     }
                 },
-                .constant,
-                .add,
-                => {},
-                else => std.debug.panic("TODO: strength {s}", .{@tagName(node.tag)}),
+                else => {},
             }
         }
 

@@ -29,4 +29,6 @@ pub fn build(b: *std.Build) !void {
 
     const test_case = b.step("test-cases", "Runs IR case tests");
     try tests.addCases(b, test_case, compiler);
+
+    test_step.dependOn(test_case);
 }

@@ -58,20 +58,20 @@ const RegAllocPass = struct {
                     //
                     // this is needed to tell whether a COPY instructions has both operands as
                     // physical registers, and needs to exist post register allocation.
-                    const bin_op = data.bin_op;
-                    const lhs: Mir.Value = if (bin_op.lhs == .virtual) lhs: {
-                        if (pass.virt_to_physical.get(bin_op.lhs.virtual)) |reg| {
+                    const un_op = data.un_op;
+                    const src: Mir.Value = if (un_op.src == .virtual) lhs: {
+                        if (pass.virt_to_physical.get(un_op.src.virtual)) |reg| {
                             break :lhs .{ .register = reg };
                         }
-                        break :lhs bin_op.lhs;
-                    } else bin_op.lhs;
+                        break :lhs un_op.src;
+                    } else un_op.src;
 
-                    const rhs: Mir.Value = if (bin_op.rhs == .virtual) rhs: {
-                        if (pass.virt_to_physical.get(bin_op.rhs.virtual)) |reg| {
+                    const dst: Mir.Value = if (un_op.dst == .virtual) rhs: {
+                        if (pass.virt_to_physical.get(un_op.dst.virtual)) |reg| {
                             break :rhs .{ .register = reg };
                         }
-                        break :rhs bin_op.rhs;
-                    } else bin_op.rhs;
+                        break :rhs un_op.dst;
+                    } else un_op.dst;
 
                     // the COPY can be removed if one or both of the operands is a virtual register,
                     // even after checking the map.
@@ -86,7 +86,7 @@ const RegAllocPass = struct {
                     var physical: ?Register = null;
                     var virtual: ?VirtualRegister = null;
 
-                    inline for (.{ lhs, rhs }) |operand| {
+                    inline for (.{ src, dst }) |operand| {
                         switch (operand) {
                             .register => |reg| {
                                 // both operands are physical registers, we can't remove it.
@@ -123,8 +123,6 @@ const RegAllocPass = struct {
     }
 
     fn rewriteVRegisters(pass: *RegAllocPass, mir: *Mir) !void {
-        const gpa = mir.gpa;
-
         // now replace other instructions and allocate as needed
         for (0..mir.instructions.len) |i| {
             const tag: Mir.Instruction.Tag = mir.instructions.items(.tag)[i];
@@ -146,19 +144,7 @@ const RegAllocPass = struct {
                         .{ &new_bin_op.lhs, &new_bin_op.rhs, &new_bin_op.dst },
                     ) |operand, value| {
                         switch (operand) {
-                            .virtual => |vreg| {
-                                const gop = try pass.virt_to_physical.getOrPut(gpa, vreg);
-                                // another instruction or operand has already allocated a physical register
-                                // for this virtual register. we can simply set it here.
-                                if (gop.found_existing) {
-                                    value.* = .{ .register = gop.value_ptr.* };
-                                } else {
-                                    // otherwise we need to allocate a new register to be used here
-                                    const allocated_register = try mir.allocPhysicalRegister(.int);
-                                    gop.value_ptr.* = allocated_register;
-                                    value.* = .{ .register = allocated_register };
-                                }
-                            },
+                            .virtual => |vreg| try pass.updateValue(mir, vreg, value),
                             else => {},
                         }
                     }
@@ -168,7 +154,49 @@ const RegAllocPass = struct {
                         .data = .{ .bin_op = new_bin_op },
                     });
                 },
+                .un_op => |un_op| {
+                    var new_un_op: Mir.Instruction.UnOp = .{
+                        .src = un_op.src,
+                        .dst = un_op.dst,
+                    };
+
+                    inline for (
+                        .{ un_op.src, un_op.dst },
+                        .{ &new_un_op.src, &new_un_op.dst },
+                    ) |operand, value| {
+                        switch (operand) {
+                            .virtual => |vreg| try pass.updateValue(mir, vreg, value),
+                            else => {},
+                        }
+                    }
+
+                    mir.instructions.set(i, .{
+                        .tag = tag,
+                        .data = .{ .un_op = new_un_op },
+                    });
+                },
             }
+        }
+    }
+
+    fn updateValue(
+        pass: *RegAllocPass,
+        mir: *Mir,
+        vreg: VirtualRegister,
+        value: *Mir.Value,
+    ) !void {
+        const gpa = mir.gpa;
+
+        const gop = try pass.virt_to_physical.getOrPut(gpa, vreg);
+        // another instruction or operand has already allocated a physical register
+        // for this virtual register. we can simply set it here.
+        if (gop.found_existing) {
+            value.* = .{ .register = gop.value_ptr.* };
+        } else {
+            // otherwise we need to allocate a new register to be used here
+            const allocated_register = try mir.allocPhysicalRegister(.int);
+            gop.value_ptr.* = allocated_register;
+            value.* = .{ .register = allocated_register };
         }
     }
 
@@ -188,6 +216,14 @@ const RegAllocPass = struct {
                 .none => unreachable, // should be unreachable due to `canHaveVRegOperand` check.
                 .bin_op => |bin_op| {
                     inline for (.{ bin_op.dst, bin_op.lhs, bin_op.rhs }) |val| {
+                        if (val == .virtual) {
+                            log.err("virtual register usage found in verification step", .{});
+                            return error.VerifyFailed;
+                        }
+                    }
+                },
+                .un_op => |un_op| {
+                    inline for (.{ un_op.dst, un_op.src }) |val| {
                         if (val == .virtual) {
                             log.err("virtual register usage found in verification step", .{});
                             return error.VerifyFailed;

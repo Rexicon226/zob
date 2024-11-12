@@ -7,15 +7,15 @@ end IR
 
 MIR before passes:
 -----------
-%1:int = COPY $a1
-%2:int = COPY $a0
-%3:int = ADDW %2:int, %1:int
-$a0 = COPY %3:int
-RET $a0
+%1:int = copy $a1
+%2:int = copy $a0
+%3:int = add %2:int, %1:int
+$a0 = copy %3:int
+pseudo_ret $a0
 -----------
 
 MIR after regAlloc:
 -----------
-$a0 = ADDW $a0, $a1
-RET $a0
+$a0 = add $a0, $a1
+pseudo_ret $a0
 -----------

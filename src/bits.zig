@@ -117,13 +117,13 @@ pub const Register = enum(u8) {
     v16, v17, v18, v19, v20, v21, v22, v23,
     v24, v25, v26, v27, v28, v29, v30, v31,
 
-pub const Class = enum {
-    int,
-    float,
-    vector,
-};
-
     // zig fmt: on
+
+    pub const Class = enum {
+        int,
+        float,
+        vector,
+    };
 
     /// in RISC-V registers are stored as 5 bit IDs and a register can have
     /// two names. Example being `zero` and `x0` are the same register and have the
