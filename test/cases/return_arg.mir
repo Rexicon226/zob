@@ -1,0 +1,18 @@
+input IR:
+%0 = arg(0)
+%1 = arg(1)
+%2 = ret(%1)
+end IR
+
+MIR before passes:
+-----------
+%1:int = COPY $a1
+$a0 = COPY %1:int
+RET $a0
+-----------
+
+MIR after regAlloc:
+-----------
+$a0 = COPY $a1
+RET $a0
+-----------

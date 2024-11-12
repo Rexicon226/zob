@@ -204,10 +204,12 @@ pub const Parser = struct {
 
         var list: std.MultiArrayList(Inst) = .{};
         var args_buffer = std.ArrayList(usize).init(allocator);
+        errdefer list.deinit(allocator);
         defer args_buffer.deinit();
 
         while (lines.next()) |line| {
             defer args_buffer.clearRetainingCapacity();
+            if (line.len == 0) continue;
 
             // split on the '=' of "%1 = arg(1)"
             var sides = std.mem.splitScalar(u8, line, '=');

@@ -97,8 +97,6 @@ pub const Extractor = struct {
         // or something similar.
         const ret_node_idx = e.findLeafNode();
 
-        std.debug.print("leaf: {}\n", .{ret_node_idx});
-
         // Walk from that return node and extract the best classes.
         _ = try e.extractNode(ret_node_idx);
     }
@@ -200,7 +198,7 @@ pub const Extractor = struct {
 /// - COPY instructions, which work with VRegs.
 pub fn run(mir: *Mir) !void {
     const stdout = std.io.getStdOut().writer();
-    try stdout.writeAll("\n-----------\nMIR before passes:\n");
+    try stdout.writeAll("\nMIR before passes:\n-----------\n");
     try mir.dump(stdout);
     try stdout.writeAll("-----------\n");
 
@@ -213,7 +211,7 @@ pub fn run(mir: *Mir) !void {
 
         try pass.run(mir);
 
-        try stdout.print("\n-----------\nMIR after {s}:\n", .{name});
+        try stdout.print("\nMIR after {s}:\n-----------\n", .{name});
         try mir.dump(stdout);
         try stdout.writeAll("-----------\n");
 
@@ -279,7 +277,6 @@ pub fn dump(mir: *Mir, s: anytype) !void {
     };
 
     const instructions = mir.instructions;
-    w.indent = 4;
     for (0..instructions.len) |i| {
         try w.printInst(@enumFromInt(i), s);
         if (instructions.get(i).tag != .tombstone) try s.writeByte('\n');
