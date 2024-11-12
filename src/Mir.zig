@@ -97,6 +97,10 @@ pub const Extractor = struct {
     mir: *Mir,
     cost_strategy: Oir.CostStrategy,
 
+    /// used for deduplicating extractions for cases when a node is used multiple
+    /// times in the graph. an extraction only needs to happen once per Oir node.
+    map: std.AutoHashMapUnmanaged(Node.Index, Value) = .{},
+
     /// Extracts the best pattern of Oir from the E-Graph given a cost model.
     pub fn extract(e: *Extractor) !void {
         // First we need to find what the root class is. This will usually be the class containing a `ret`,
@@ -149,7 +153,7 @@ pub const Extractor = struct {
                 const class_idx = node.out.items[0];
 
                 const arg_idx = e.extractClass(class_idx);
-                const arg_value = try e.extractNode(arg_idx);
+                const arg_value = try e.getNode(arg_idx);
 
                 try mir.copyValue(.{ .register = .a0 }, arg_value);
 
@@ -164,7 +168,7 @@ pub const Extractor = struct {
                 const class_idx = node.out.items[0];
 
                 const arg_idx = e.extractClass(class_idx);
-                const arg_value = try e.extractNode(arg_idx);
+                const arg_value = try e.getNode(arg_idx);
 
                 const dst_value: Value = .{ .virtual = try mir.allocVirtualReg(.int) };
 
@@ -187,8 +191,8 @@ pub const Extractor = struct {
                 const rhs_idx = e.extractClass(rhs_class_idx);
                 const lhs_idx = e.extractClass(lhs_class_idx);
 
-                const rhs_value = try e.extractNode(rhs_idx);
-                const lhs_value = try e.extractNode(lhs_idx);
+                const rhs_value = try e.getNode(rhs_idx);
+                const lhs_value = try e.getNode(lhs_idx);
 
                 const dst_value: Value = .{ .virtual = try mir.allocVirtualReg(.int) };
 
@@ -207,12 +211,25 @@ pub const Extractor = struct {
         }
     }
 
+    fn getNode(e: *Extractor, node_idx: Node.Index) error{OutOfMemory}!Value {
+        const gop = try e.map.getOrPut(e.mir.gpa, node_idx);
+        if (!gop.found_existing) {
+            gop.value_ptr.* = try e.extractNode(node_idx);
+        }
+        return gop.value_ptr.*;
+    }
+
     /// Given a class, extract the "best" node from it.
     fn extractClass(e: *Extractor, class_idx: Class.Index) Node.Index {
         // for now, just select the first node in the class bag
         const class = e.oir.getClass(class_idx);
         const index: usize = if (class.bag.items.len > 1) 1 else 0;
         return class.bag.items[index];
+    }
+
+    pub fn deinit(e: *Extractor) void {
+        const gpa = e.mir.gpa;
+        e.map.deinit(gpa);
     }
 };
 

@@ -89,6 +89,7 @@ pub fn main() !void {
         .mir = &mir,
     };
     try extractor.extract();
+    defer extractor.deinit();
 
     try mir.run();
 
