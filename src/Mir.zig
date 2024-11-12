@@ -156,8 +156,8 @@ pub const Extractor = struct {
             .add => {
                 assert(node.out.items.len == 2);
 
-                const rhs_class_idx = node.out.items[0];
-                const lhs_class_idx = node.out.items[1];
+                const rhs_class_idx = node.out.items[1];
+                const lhs_class_idx = node.out.items[0];
 
                 const rhs_idx = e.extractClass(rhs_class_idx);
                 const lhs_idx = e.extractClass(lhs_class_idx);
