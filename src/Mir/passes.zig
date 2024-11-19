@@ -3,9 +3,59 @@
 const Error = error{VerifyFailed} || std.mem.Allocator.Error;
 
 pub const map = std.StaticStringMap(type).initComptime(&.{
+    .{ "liveVars", LivenessPass },
     .{ "regAlloc", RegAllocPass },
 });
 
+/// A MIR pass that generates liveness data for Values.
+///
+/// Creates a map that relates a MIR instruction to a bundle of data
+/// that describes the status of their operands.
+///
+/// Intended to be ran before register allocation, so that registers
+/// can be allocated more efficiently.
+const LivenessPass = struct {
+    /// A map that relates virtual registers to their variable info struct.
+    virtinfo: std.AutoHashMapUnmanaged(VirtualRegister.Index, ValueInfo) = .{},
+
+    /// The ValueInfo struct describes a couple of different properties about a
+    /// Value. The most important one is that it describes what the instruction
+    /// inside of the current MIR is last to use this Value.
+    const ValueInfo = struct {};
+
+    pub fn init(mir: *Mir) !*LivenessPass {
+        const gpa = mir.gpa;
+        const pass = try gpa.create(LivenessPass);
+        pass.* = .{};
+        return pass;
+    }
+
+    pub fn deinit(pass: *LivenessPass, mir: *Mir) void {
+        const gpa = mir.gpa;
+        gpa.destroy(pass);
+    }
+
+    pub fn run(pass: *LivenessPass, mir: *Mir) Error!void {
+        _ = pass;
+
+        for (0..mir.instructions.len) |i| {
+            const tag: Mir.Instruction.Tag = mir.instructions.items(.tag)[i];
+            const data: Mir.Instruction.Data = mir.instructions.items(.data)[i];
+            _ = tag;
+            _ = data;
+        }
+    }
+    pub fn verify(pass: *LivenessPass, mir: *Mir) Error!void {
+        _ = pass;
+        _ = mir;
+    }
+};
+
+/// A MIR pass that focuses on allocating physical registers and replacing
+/// all virtual register usages.
+///
+/// When possible, removes stale COPY instructions, leaving only ones that
+/// have both operands as physical registers.
 const RegAllocPass = struct {
     /// A map that ties a virtual register to a physically allocated register.
     ///

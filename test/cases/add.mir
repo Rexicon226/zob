@@ -14,6 +14,15 @@ $a0 = copy %3:int
 pseudo_ret $a0
 -----------
 
+MIR after liveVars:
+-----------
+%1:int = copy $a1
+%2:int = copy $a0
+%3:int = add %2:int, %1:int
+$a0 = copy %3:int
+pseudo_ret $a0
+-----------
+
 MIR after regAlloc:
 -----------
 $a0 = add $a0, $a1

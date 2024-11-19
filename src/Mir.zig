@@ -68,6 +68,26 @@ pub const Instruction = struct {
                 else => true,
             };
         }
+
+        /// Returns the number of operands an instruction has.
+        ///
+        /// Mainly used in cases where we want to simply iterate
+        /// over all operands.
+        ///
+        /// NOTE: this does include the destination operand.
+        pub fn numOperands(tag: Tag) u32 {
+            return switch (tag) {
+                .tombstone,
+                => 0,
+                .pseudo_ret,
+                => 1,
+                .copy,
+                .ld,
+                => 2,
+                .add,
+                => 3,
+            };
+        }
     };
 };
 
@@ -221,7 +241,7 @@ pub const Extractor = struct {
 
     /// Given a class, extract the "best" node from it.
     fn extractClass(e: *Extractor, class_idx: Class.Index) Node.Index {
-        // for now, just select the first node in the class bag
+        // TODO: for now, just select the first node in the class bag
         const class = e.oir.getClass(class_idx);
         const index: usize = if (class.bag.items.len > 1) 1 else 0;
         return class.bag.items[index];
