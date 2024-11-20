@@ -15,7 +15,6 @@ pub const Inst = struct {
         div_trunc,
         div_exact,
         ret,
-        constant,
         load,
         store,
 
@@ -26,7 +25,6 @@ pub const Inst = struct {
         pub fn numNodeArgs(tag: Tag) u32 {
             return switch (tag) {
                 .arg,
-                .constant,
                 => 0,
                 .ret,
                 .load,
@@ -45,16 +43,33 @@ pub const Inst = struct {
 
     pub const Data = union(enum) {
         none: void,
-        un_op: Index,
+        un_op: Operand,
         bin_op: struct {
-            lhs: Index,
-            rhs: Index,
+            lhs: Operand,
+            rhs: Operand,
         },
-        value: i64,
     };
 
     pub const Index = enum(u32) {
         _,
+    };
+
+    pub const Operand = union(enum) {
+        index: Index,
+        value: i64,
+
+        pub fn format(
+            op: Operand,
+            comptime fmt: []const u8,
+            _: std.fmt.FormatOptions,
+            writer: anytype,
+        ) !void {
+            comptime assert(fmt.len == 0);
+            switch (op) {
+                .index => |index| try writer.print("%{d}", .{@intFromEnum(index)}),
+                .value => |value| try writer.print("${d}", .{value}),
+            }
+        }
     };
 };
 
@@ -113,7 +128,7 @@ pub const Builder = struct {
     ) !Inst.Index {
         return b.addInst(.{
             .tag = tag,
-            .data = .{ .value = val },
+            .data = .{ .un_op = .{ .value = val } },
         });
     }
 
@@ -154,8 +169,6 @@ const Writer = struct {
             => try w.writeBinOp(inst, s),
             .arg,
             => try w.writeArg(inst, s),
-            .constant,
-            => try w.writeConstant(inst, s),
             else => std.debug.panic("TODO: {s}", .{@tagName(tag)}),
         }
         try s.writeAll(")");
@@ -163,24 +176,19 @@ const Writer = struct {
 
     fn writeBinOp(w: *Writer, inst: Ir.Inst.Index, s: anytype) @TypeOf(s).Error!void {
         const bin_op = w.ir.instructions.items(.data)[@intFromEnum(inst)].bin_op;
-        try s.print("%{d}", .{@intFromEnum(bin_op.lhs)});
+        try s.print("{}", .{bin_op.lhs});
         try s.writeAll(", ");
-        try s.print("%{d}", .{@intFromEnum(bin_op.rhs)});
+        try s.print("{}", .{bin_op.rhs});
     }
 
     fn writeUnOp(w: *Writer, inst: Ir.Inst.Index, s: anytype) @TypeOf(s).Error!void {
         const un_op = w.ir.instructions.items(.data)[@intFromEnum(inst)].un_op;
-        try s.print("%{d}", .{@intFromEnum(un_op)});
-    }
-
-    fn writeConstant(w: *Writer, inst: Ir.Inst.Index, s: anytype) @TypeOf(s).Error!void {
-        const value = w.ir.instructions.items(.data)[@intFromEnum(inst)].value;
-        try s.print("${d}", .{value});
+        try s.print("{}", .{un_op});
     }
 
     fn writeArg(w: *Writer, inst: Ir.Inst.Index, s: anytype) @TypeOf(s).Error!void {
-        const value = w.ir.instructions.items(.data)[@intFromEnum(inst)].value;
-        try s.print("{d}", .{value});
+        const un_op = w.ir.instructions.items(.data)[@intFromEnum(inst)].un_op;
+        try s.print("{d}", .{un_op.value});
     }
 };
 
@@ -203,7 +211,7 @@ pub const Parser = struct {
         var lines = std.mem.splitScalar(u8, buffer, '\n');
 
         var list: std.MultiArrayList(Inst) = .{};
-        var args_buffer = std.ArrayList(usize).init(allocator);
+        var args_buffer = std.ArrayList(Inst.Operand).init(allocator);
         errdefer list.deinit(allocator);
         defer args_buffer.deinit();
 
@@ -238,11 +246,11 @@ pub const Parser = struct {
                 // it's refering to another node
                 if (std.mem.startsWith(u8, arg, "%")) {
                     const number = try parseNodeNumber(arg);
-                    try args_buffer.append(number);
+                    try args_buffer.append(.{ .index = @enumFromInt(number) });
                 } else {
                     // must be a constant value
-                    const number = try std.fmt.parseInt(usize, arg, 10);
-                    try args_buffer.append(number);
+                    const number = try std.fmt.parseInt(i64, arg, 10);
+                    try args_buffer.append(.{ .value = number });
                 }
             }
 
@@ -253,17 +261,17 @@ pub const Parser = struct {
             switch (tag.numNodeArgs()) {
                 0 => {
                     assert(args_buffer.items.len == 1);
-                    data = .{ .value = @intCast(args_buffer.items[0]) };
+                    data = .{ .un_op = args_buffer.items[0] };
                 },
                 1 => {
                     assert(args_buffer.items.len == 1);
-                    data = .{ .un_op = @enumFromInt(args_buffer.items[0]) };
+                    data = .{ .un_op = args_buffer.items[0] };
                 },
                 2 => {
                     assert(args_buffer.items.len == 2);
                     data = .{ .bin_op = .{
-                        .lhs = @enumFromInt(args_buffer.items[0]),
-                        .rhs = @enumFromInt(args_buffer.items[1]),
+                        .lhs = args_buffer.items[0],
+                        .rhs = args_buffer.items[1],
                     } };
                 },
                 else => std.debug.panic("TODO: {s}", .{@tagName(tag)}),
@@ -294,7 +302,7 @@ const expect = testing.expect;
 test "parser basic" {
     const input =
         \\%0 = arg(0)
-        \\%1 = constant(2)
+        \\%1 = arg(1)
         \\%2 = mul(%0, %1)
         \\%3 = ret(%2)
     ;
@@ -303,7 +311,7 @@ test "parser basic" {
     defer ir.deinit(testing.allocator);
 
     try expect(ir.instructions.get(0).tag == .arg);
-    try expect(ir.instructions.get(1).tag == .constant);
+    try expect(ir.instructions.get(1).tag == .arg);
     try expect(ir.instructions.get(2).tag == .mul);
     try expect(ir.instructions.get(3).tag == .ret);
 }

@@ -154,7 +154,6 @@ pub fn fromIr(ir: IR, allocator: std.mem.Allocator) !Oir {
             .sub => .sub,
             .div_exact => .div_exact,
             .div_trunc => .div_trunc,
-            .constant => .constant,
             .load => .load,
             .store => .store,
         };
@@ -165,20 +164,48 @@ pub fn fromIr(ir: IR, allocator: std.mem.Allocator) !Oir {
                 var node: Node = .{ .tag = convert_tag };
 
                 const op = payload.un_op;
-                const class_idx = ir_to_class.get(op).?;
-                try node.out.append(allocator, class_idx);
+                switch (op) {
+                    .index => |index| {
+                        const class_idx = ir_to_class.get(index).?;
+                        try node.out.append(allocator, class_idx);
 
-                const idx = try oir.add(node);
-                try ir_to_class.put(allocator, inst, idx);
+                        const idx = try oir.add(node);
+                        try ir_to_class.put(allocator, inst, idx);
+                    },
+                    .value => |value| {
+                        // materialize the implicit constant node
+                        const const_node: Node = .{
+                            .tag = .constant,
+                            .data = .{ .constant = value },
+                        };
+                        const const_idx = try oir.add(const_node);
+                        try node.out.append(allocator, const_idx);
+                        const idx = try oir.add(node);
+                        try ir_to_class.put(allocator, inst, idx);
+                    },
+                }
             },
             2,
             => {
                 var node: Node = .{ .tag = convert_tag };
 
                 const bin_op = payload.bin_op;
-                inline for (.{ bin_op.lhs, bin_op.rhs }) |idx| {
-                    const class_idx = ir_to_class.get(idx).?;
-                    try node.out.append(allocator, class_idx);
+                inline for (.{ bin_op.lhs, bin_op.rhs }) |operand| {
+                    switch (operand) {
+                        .index => |index| {
+                            const class_idx = ir_to_class.get(index).?;
+                            try node.out.append(allocator, class_idx);
+                        },
+                        .value => |value| {
+                            // materialize the implicit constant node
+                            const const_node: Node = .{
+                                .tag = .constant,
+                                .data = .{ .constant = value },
+                            };
+                            const const_idx = try oir.add(const_node);
+                            try node.out.append(allocator, const_idx);
+                        },
+                    }
                 }
 
                 const idx = try oir.add(node);
@@ -188,7 +215,7 @@ pub fn fromIr(ir: IR, allocator: std.mem.Allocator) !Oir {
             => {
                 const node: Node = .{
                     .tag = convert_tag,
-                    .data = .{ .constant = payload.value },
+                    .data = .{ .constant = payload.un_op.value },
                 };
                 const idx = try oir.add(node);
                 try ir_to_class.put(allocator, inst, idx);

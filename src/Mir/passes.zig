@@ -76,7 +76,7 @@ const LivenessPass = struct {
                 // an earlier instruction already used this virtual register. update the entry
                 // to this later one.
                 if (gop.found_existing)
-                    assert(@intFromEnum(gop.value_ptr.last_usage) < @intFromEnum(inst));
+                    assert(@intFromEnum(gop.value_ptr.last_usage) <= @intFromEnum(inst));
                 gop.value_ptr.last_usage = inst;
             },
             else => {},
@@ -189,14 +189,12 @@ const RegAllocPass = struct {
                                 assert(virtual == null);
                                 virtual = vreg;
                             },
+                            .immediate => {},
                             else => unreachable,
                         }
                     }
                     if (!should_remove) continue;
-
-                    if (physical == null or virtual == null) {
-                        @panic("TODO: should this be possible? just not sure yet");
-                    }
+                    if (physical == null or virtual == null) continue;
 
                     try pass.virt_to_physical.put(gpa, virtual.?, physical.?);
                     log.debug("setting {} for vreg {}", .{ physical.?, virtual.? });

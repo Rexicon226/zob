@@ -51,6 +51,8 @@ pub const Instruction = struct {
 
         /// Add
         add,
+        /// Add Immediate
+        addi,
         /// Load Double
         ld,
 
@@ -85,6 +87,7 @@ pub const Instruction = struct {
                 .ld,
                 => 2,
                 .add,
+                .addi,
                 => 3,
             };
         }
@@ -95,6 +98,7 @@ pub const Value = union(enum) {
     none: void,
     register: Register,
     virtual: bits.VirtualRegister,
+    immediate: i64,
 
     pub fn format(
         value: Value,
@@ -106,6 +110,7 @@ pub const Value = union(enum) {
 
         switch (value) {
             inline .register, .virtual => |reg| try writer.print("{}", .{reg}),
+            .immediate => |imm| try writer.print("{}", .{imm}),
             else => try writer.print("TODO: Value.format {s}", .{@tagName(value)}),
         }
     }
@@ -201,7 +206,8 @@ pub const Extractor = struct {
 
                 return dst_value;
             },
-            .add => {
+            .add,
+            => {
                 assert(node.out.items.len == 2);
 
                 const rhs_class_idx = node.out.items[1];
@@ -210,13 +216,23 @@ pub const Extractor = struct {
                 const rhs_idx = e.extractClass(rhs_class_idx);
                 const lhs_idx = e.extractClass(lhs_class_idx);
 
-                const rhs_value = try e.getNode(rhs_idx);
-                const lhs_value = try e.getNode(lhs_idx);
+                var rhs_value = try e.getNode(rhs_idx);
+                var lhs_value = try e.getNode(lhs_idx);
+
+                var tag: Mir.Instruction.Tag = .add;
+
+                if (rhs_value == .immediate) {
+                    tag = .addi;
+                } else if (lhs_value == .immediate) {
+                    // we want the immediate value to be rhs
+                    tag = .addi;
+                    std.mem.swap(Value, &rhs_value, &lhs_value);
+                }
 
                 const dst_value: Value = .{ .virtual = try mir.allocVirtualReg(.int) };
 
                 _ = try mir.addUnOp(.{
-                    .tag = .add,
+                    .tag = tag,
                     .data = .{ .bin_op = .{
                         .rhs = rhs_value,
                         .lhs = lhs_value,
@@ -225,6 +241,11 @@ pub const Extractor = struct {
                 });
 
                 return dst_value;
+            },
+            .constant => {
+                assert(node.out.items.len == 0);
+                const value: Value = .{ .immediate = node.data.constant };
+                return value;
             },
             else => std.debug.panic("TODO: mir extractNode {s}", .{@tagName(node.tag)}),
         }
@@ -410,6 +431,7 @@ const Writer = struct {
                 try s.print("{}", .{un_op.src});
                 try printLiveness(mir, un_op.src, inst, s);
             },
+            .addi,
             .add,
             => {
                 const bin_op = data.bin_op;
