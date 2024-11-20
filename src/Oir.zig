@@ -14,6 +14,10 @@ classes: std.ArrayListUnmanaged(Class) = .{},
 /// what "parent" class a node is in.
 node_to_class: std.AutoHashMapUnmanaged(Node.Index, Class.Index) = .{},
 
+/// When a constant is added to a class due to it being equivalent, we store that
+/// relationship here in order to allow for faster lookups for hashconsing.
+constant_map: std.AutoHashMapUnmanaged(i64, Class.Index) = .{},
+
 pub const Node = struct {
     tag: Tag,
     data: Data = .none,
@@ -41,6 +45,7 @@ pub const Node = struct {
         sub,
         mul,
         shl,
+        shr,
         div_trunc,
         div_exact,
         ret,
@@ -62,6 +67,7 @@ pub const Node = struct {
                 .sub,
                 .mul,
                 .shl,
+                .shr,
                 .div_trunc,
                 .div_exact,
                 .store,
@@ -289,11 +295,16 @@ const Passes = struct {
 
     /// Replaces trivially expensive operations with cheaper equivalents.
     fn strengthReduce(oir: *Oir) !bool {
-        for (oir.nodes.items, 0..) |node, node_idx| {
+        var changed: bool = false;
+        var before_nodes = try oir.nodes.clone(oir.allocator);
+        defer before_nodes.deinit(oir.allocator);
+        for (before_nodes.items, 0..) |node, node_idx| {
             if (node.tag.isVolatile()) continue;
 
             switch (node.tag) {
-                .mul => {
+                .mul,
+                .div_exact,
+                => {
                     // metadata for the pass
                     const Meta = struct {
                         value: u64,
@@ -313,16 +324,26 @@ const Passes = struct {
                         }
                     }
 
-                    const mul_class_idx = oir.findClass(@enumFromInt(node_idx));
+                    const rewritten_tag: Oir.Node.Tag = switch (node.tag) {
+                        .mul => .shl,
+                        .div_exact => .shr,
+                        else => unreachable,
+                    };
+
+                    const class_idx = oir.findClass(@enumFromInt(node_idx));
 
                     // TODO: to avoid infinite loops, just check if a "shl" node already exists in the class
                     // this isn't a very good solution since there could be multiple non-identical shl in the class.
                     // node tagging maybe?
-
-                    for (oir.getClass(mul_class_idx).bag.items) |mul_node_idx| {
-                        const mul_node = oir.getNode(mul_node_idx);
-                        if (mul_node.tag == .shl) return false;
+                    var skip: bool = false;
+                    for (oir.getClass(class_idx).bag.items) |idx| {
+                        const found_node = oir.getNode(idx);
+                        if (found_node.tag == rewritten_tag) {
+                            changed = false;
+                            skip = true;
+                        }
                     }
+                    if (skip) continue;
 
                     if (meta) |resolved_meta| {
                         const value = resolved_meta.value;
@@ -334,21 +355,21 @@ const Passes = struct {
                             .data = .{ .constant = @intCast(new_value) },
                         });
 
-                        var new_node: Node = .{ .tag = .shl };
+                        var new_node: Node = .{ .tag = rewritten_tag };
                         try new_node.out.append(oir.allocator, resolved_meta.other_class);
                         try new_node.out.append(oir.allocator, shift_value_idx);
 
-                        const class_ptr = oir.getClassPtr(mul_class_idx);
+                        const class_ptr = oir.getClassPtr(class_idx);
                         try class_ptr.addNode(oir, new_node);
 
-                        return true;
+                        changed = true;
                     }
                 },
                 else => {},
             }
         }
 
-        return false;
+        return changed;
     }
 };
 
@@ -378,6 +399,14 @@ pub fn optimize(oir: *Oir, mode: enum {
 /// Adds an ENode to the EGraph, giving the node its own class.
 /// Returns the EClass index the ENode was placed in.
 pub fn add(oir: *Oir, node: Node) !Class.Index {
+    log.debug("adding node {s}", .{@tagName(node.tag)});
+
+    const maybe_gop = if (node.tag == .constant)
+        try oir.constant_map.getOrPut(oir.allocator, node.data.constant)
+    else
+        null;
+    if (maybe_gop) |gop| if (gop.found_existing) return gop.value_ptr.*;
+
     const node_idx = try oir.addNode(node);
 
     var class: Class = .{};
@@ -388,6 +417,7 @@ pub fn add(oir: *Oir, node: Node) !Class.Index {
 
     // store this relationship in node_to_class
     try oir.node_to_class.put(oir.allocator, node_idx, class_idx);
+    if (maybe_gop) |gop| gop.value_ptr.* = class_idx;
 
     return class_idx;
 }
@@ -433,9 +463,41 @@ pub fn @"union"(oir: *Oir, a_idx: Class.Index, b_idx: Class.Index) !void {
     }
 }
 
+/// Performs a rebuild of the E-Graph to ensure that the invariances are met.
+///
+/// Currently this looks over hashes of the nodes and merges duplicate nodes.
+/// We can hash based on the class indices themselves, as they don't change during the
+/// rebuild.
+pub fn rebuild(oir: *Oir) void {
+    // the simplest version for now will just be iterating through the nodes
+    // inside of a class, and finding duplicate nodes inside of them and deleting those.
+    // TODO: later we need to perform unions on classes that are proven duplicate.
+
+    const Context = struct {};
+
+    var map = std.HashMap(
+        Node,
+        Class.Index,
+        Context,
+        std.hash_map.default_max_load_percentage,
+    ).init(oir.allocator);
+    defer map.deinit();
+
+    for (oir.classes.items) |class_idx| {
+        const class = oir.getClassPtr(class_idx);
+        _ = class;
+
+        // create a map of hashes to node indices.
+        // TODO: i just can't think of a better way to structure
+        // this deduplication right now
+
+    }
+}
+
 pub fn deinit(oir: *Oir) void {
     const allocator = oir.allocator;
     oir.node_to_class.deinit(allocator);
+    oir.constant_map.deinit(allocator);
 
     for (oir.nodes.items) |*node| {
         node.out.deinit(allocator);

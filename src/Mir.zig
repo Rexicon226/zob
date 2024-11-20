@@ -59,6 +59,12 @@ pub const Instruction = struct {
         sll,
         /// Shift-left Immediate
         slli,
+        /// Shift-right
+        srl,
+        /// Shift-right Immediate
+        srli,
+        /// Divide
+        div,
 
         /// An instruction that is considered a tombstone.
         /// Ignored by MIR printers, analysis passes, and other things.
@@ -101,6 +107,7 @@ pub const Instruction = struct {
         pub fn immediateVersion(tag: Tag) Tag {
             return switch (tag) {
                 .sll => .slli,
+                .srl => .srli,
                 .add => .addi,
                 else => unreachable,
             };
@@ -221,9 +228,37 @@ pub const Extractor = struct {
 
                 return dst_value;
             },
+            // non-commutative instructions
+            .div_exact,
+            => {
+                assert(node.out.items.len == 2);
+
+                const rhs_class_idx = node.out.items[1];
+                const lhs_class_idx = node.out.items[0];
+
+                const rhs_idx = e.extractClass(rhs_class_idx);
+                const lhs_idx = e.extractClass(lhs_class_idx);
+
+                const rhs_value = try e.getNode(rhs_idx);
+                const lhs_value = try e.getNode(lhs_idx);
+
+                const dst_value: Value = .{ .virtual = try mir.allocVirtualReg(.int) };
+
+                _ = try mir.addUnOp(.{
+                    .tag = .div,
+                    .data = .{ .bin_op = .{
+                        .rhs = rhs_value,
+                        .lhs = lhs_value,
+                        .dst = dst_value,
+                    } },
+                });
+
+                return dst_value;
+            },
             // commutative instructions with immediate versions
             .add,
             .shl,
+            .shr,
             => {
                 assert(node.out.items.len == 2);
 
@@ -239,6 +274,7 @@ pub const Extractor = struct {
                 var tag: Mir.Instruction.Tag = switch (node.tag) {
                     .add => .add,
                     .shl => .sll,
+                    .shr => .srl,
                     else => unreachable,
                 };
 
@@ -475,6 +511,9 @@ const Writer = struct {
             .add,
             .sll,
             .slli,
+            .srl,
+            .srli,
+            .div,
             => {
                 const bin_op = data.bin_op;
 
