@@ -67,7 +67,7 @@ pub const Inst = struct {
             comptime assert(fmt.len == 0);
             switch (op) {
                 .index => |index| try writer.print("%{d}", .{@intFromEnum(index)}),
-                .value => |value| try writer.print("${d}", .{value}),
+                .value => |value| try writer.print("{d}", .{value}),
             }
         }
     };

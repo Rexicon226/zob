@@ -22,7 +22,12 @@ pub fn addCases(
         const run = b.addRunArtifact(compiler);
         step.dependOn(&run.step);
 
-        var test_input = try TestInput.parse(b.allocator, dir, path);
+        var test_input = TestInput.parse(b.allocator, dir, path) catch |err| {
+            switch (err) {
+                error.SkipTest => continue,
+                else => |e| return e,
+            }
+        };
         defer test_input.deinit(b.allocator);
 
         const input_path = b.addWriteFile("tmp.ir", test_input.input);
@@ -37,6 +42,7 @@ const TestInput = struct {
 
     fn parse(gpa: std.mem.Allocator, dir: std.fs.Dir, sub_path: []const u8) !TestInput {
         const contents = try dir.readFileAlloc(gpa, sub_path, 100 * 1024);
+        if (contents.len == 0) return error.SkipTest;
 
         var input = std.ArrayList(u8).init(gpa);
         errdefer input.deinit();
