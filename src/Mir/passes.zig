@@ -75,6 +75,8 @@ const LivenessPass = struct {
                 const gop = try pass.virtinfo.getOrPut(mir.gpa, vreg.index);
                 // an earlier instruction already used this virtual register. update the entry
                 // to this later one.
+                if (gop.found_existing)
+                    assert(@intFromEnum(gop.value_ptr.last_usage) < @intFromEnum(inst));
                 gop.value_ptr.last_usage = inst;
             },
             else => {},
