@@ -40,6 +40,7 @@ pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{ .stack_trace_frames = 100 }){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
+    defer log_scopes.deinit(allocator);
 
     var output_graph: bool = false;
     var input_path: ?[]const u8 = null;

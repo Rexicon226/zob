@@ -15,8 +15,8 @@ pseudo_ret $a0
 MIR after liveVars:
 -----------
 %1:int = copy $a0
-%2:int = ld %1:int
-$a0 = copy %2:int
+%2:int = ld %1:int killed
+$a0 = copy %2:int killed
 pseudo_ret $a0
 -----------
 

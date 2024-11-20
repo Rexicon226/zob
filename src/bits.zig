@@ -1,9 +1,18 @@
 const std = @import("std");
+const RegisterManager = @import("Mir/RegisterManager.zig");
+const RegisterBitSet = RegisterManager.RegisterBitSet;
 
 pub const Registers = struct {
     pub const all_preserved = Integer.callee_preserved_regs ++ Float.callee_preserved_regs;
 
     pub const Integer = struct {
+        // zig fmt: off
+        pub const general_purpose = initRegBitSet(0,                                                 callee_preserved_regs.len);
+        pub const function_arg    = initRegBitSet(callee_preserved_regs.len,                         function_arg_regs.len);
+        pub const function_ret    = initRegBitSet(callee_preserved_regs.len,                         function_ret_regs.len);
+        pub const temporary       = initRegBitSet(callee_preserved_regs.len + function_arg_regs.len, temporary_regs.len);
+        // zig fmt: on
+
         pub const callee_preserved_regs = [_]Register{
             // .s0 is omitted to be used as the frame pointer register
             .s1, .s2, .s3, .s4, .s5, .s6, .s7, .s8, .s9, .s10, .s11,
@@ -21,10 +30,17 @@ pub const Registers = struct {
             .t0, .t1, .t2, .t3, .t4, .t5, .t6,
         };
 
-        pub const all_regs = callee_preserved_regs ++ function_arg_regs ++ temporary_regs;
+        pub const all_regs = function_arg_regs ++ callee_preserved_regs ++ temporary_regs;
     };
 
     pub const Float = struct {
+        // zig fmt: off
+        pub const general_purpose = initRegBitSet(Integer.all_regs.len,                                                     callee_preserved_regs.len);
+        pub const function_arg    = initRegBitSet(Integer.all_regs.len + callee_preserved_regs.len,                         function_arg_regs.len);
+        pub const function_ret    = initRegBitSet(Integer.all_regs.len + callee_preserved_regs.len,                         function_ret_regs.len);
+        pub const temporary       = initRegBitSet(Integer.all_regs.len + callee_preserved_regs.len + function_arg_regs.len, temporary_regs.len);
+        // zig fmt: on
+
         pub const callee_preserved_regs = [_]Register{
             .fs0, .fs1, .fs2, .fs3, .fs4, .fs5, .fs6, .fs7, .fs8, .fs9, .fs10, .fs11,
         };
@@ -45,6 +61,8 @@ pub const Registers = struct {
     };
 
     pub const Vector = struct {
+        pub const general_purpose = initRegBitSet(Integer.all_regs.len + Float.all_regs.len, all_regs.len);
+
         // zig fmt: off
         pub const all_regs = [_]Register{
             .v0,  .v1,  .v2,  .v3,  .v4,  .v5,  .v6,  .v7,
@@ -55,6 +73,15 @@ pub const Registers = struct {
         // zig fmt: on
     };
 };
+
+fn initRegBitSet(start: usize, length: usize) RegisterBitSet {
+    var set = RegisterBitSet.initEmpty();
+    set.setRangeValue(.{
+        .start = start,
+        .end = start + length,
+    }, true);
+    return set;
+}
 
 pub const Memory = struct {
     pub const Size = enum {
@@ -134,7 +161,7 @@ pub const Register = enum(u8) {
     /// The goal of this function is to return the same ID for `zero` and `x0` but two
     /// seperate IDs for `x0` and `f0`. We will assume that each register set has 32 registers
     /// and is repeated twice, once for the named version, once for the number version.
-    pub fn id(reg: Register) std.math.IntFittingRange(0, @typeInfo(Register).@"enum".fields.len) {
+    pub fn id(reg: Register) std.math.IntFittingRange(0, @typeInfo(Register).Enum.fields.len) {
         const base = switch (@intFromEnum(reg)) {
             // zig fmt: off
             @intFromEnum(Register.zero) ... @intFromEnum(Register.x31) => @intFromEnum(Register.zero),
@@ -161,6 +188,16 @@ pub const Register = enum(u8) {
             // zig fmt: on
         };
     }
+
+    pub fn format(
+        reg: Register,
+        comptime fmt: []const u8,
+        _: std.fmt.FormatOptions,
+        writer: anytype,
+    ) !void {
+        std.debug.assert(fmt.len == 0);
+        try writer.print("${s}", .{@tagName(reg)});
+    }
 };
 
 pub const VirtualRegister = struct {
@@ -173,6 +210,19 @@ pub const VirtualRegister = struct {
     pub const Index = enum(u32) {
         _,
     };
+
+    pub fn format(
+        vreg: VirtualRegister,
+        comptime fmt: []const u8,
+        _: std.fmt.FormatOptions,
+        writer: anytype,
+    ) !void {
+        std.debug.assert(fmt.len == 0);
+        try writer.print("%{d}:{s}", .{
+            @intFromEnum(vreg.index),
+            @tagName(vreg.class),
+        });
+    }
 };
 
 pub const FrameAlloc = struct {

@@ -3,7 +3,7 @@ gpa: std.mem.Allocator,
 instructions: std.MultiArrayList(Instruction) = .{},
 frame_allocs: std.MultiArrayList(bits.FrameAlloc) = .{},
 
-pass_data: std.StringHashMapUnmanaged(*anyopaque) = .{},
+pass_data: std.StringHashMapUnmanaged(PassMetadata) = .{},
 
 /// The number of virtual registers allocated.
 ///
@@ -29,7 +29,7 @@ pub const Instruction = struct {
         none: void,
     };
 
-    const Index = enum(u32) {
+    pub const Index = enum(u32) {
         _,
     };
 
@@ -102,11 +102,10 @@ pub const Value = union(enum) {
         _: std.fmt.FormatOptions,
         writer: anytype,
     ) !void {
-        assert(fmt.len == 0);
+        comptime assert(fmt.len == 0);
 
         switch (value) {
-            .register => |reg| try writer.print("${s}", .{@tagName(reg)}),
-            .virtual => |vreg| try writer.print("%{d}:{s}", .{ @intFromEnum(vreg.index), @tagName(vreg.class) }),
+            inline .register, .virtual => |reg| try writer.print("{}", .{reg}),
             else => try writer.print("TODO: Value.format {s}", .{@tagName(value)}),
         }
     }
@@ -253,6 +252,26 @@ pub const Extractor = struct {
     }
 };
 
+/// Describes information about passes that have already been ran.
+///
+/// Can be access via the `pass_data` map from other passes.
+const PassMetadata = struct {
+    /// Has the pass this metadata is related to completed?
+    /// TODO: not sure if we need this field yet,
+    /// should we create the metadata before or after the pass has been ran?
+    // complete: bool,
+
+    /// Has this data been outdated by another pass?
+    ///
+    /// We don't re-run passes when they're outdated eagerly,
+    /// since that information may never be needed again.
+    outdated: bool,
+    /// Holding a reference to this data in another metadata struct
+    /// is a bad idea, since that pass may become outdated and you'll have
+    /// no easy way of checking that. Cloning is the best policy here.
+    data: *anyopaque,
+};
+
 /// Runs passes on the MIR.
 ///
 /// After `run` is called, the MIR will have no pseudo instructions
@@ -268,7 +287,11 @@ pub fn run(mir: *Mir) !void {
         passes.map.keys(),
     ) |pass_type, name| {
         const pass = try pass_type.init(mir);
-        defer pass.deinit(mir);
+        const metadata: PassMetadata = .{
+            .outdated = false,
+            .data = pass,
+        };
+        try mir.pass_data.put(mir.gpa, name, metadata);
 
         try pass.run(mir);
 
@@ -278,6 +301,20 @@ pub fn run(mir: *Mir) !void {
 
         try pass.verify(mir);
     }
+
+    inline for (comptime passes.map.keys()) |name| {
+        const data = mir.getPassData(name).?;
+        data.deinit(mir);
+    }
+}
+
+fn PassData(comptime name: []const u8) type {
+    return passes.map.get(name).?;
+}
+
+pub fn getPassData(mir: *const Mir, comptime name: []const u8) ?*PassData(name) {
+    const ptr = mir.pass_data.get(name) orelse return null;
+    return @alignCast(@ptrCast(ptr.data));
 }
 
 fn addUnOp(mir: *Mir, op: Instruction) !Instruction.Index {
@@ -301,12 +338,6 @@ fn allocVirtualReg(mir: *Mir, class: Register.Class) !VirtualRegister {
     };
 }
 
-pub fn allocPhysicalRegister(mir: *Mir, class: Register.Class) !Register {
-    _ = mir;
-    _ = class;
-    return .a5;
-}
-
 fn copyValue(mir: *Mir, dst: Value, src: Value) !void {
     switch (dst) {
         .virtual,
@@ -328,6 +359,7 @@ fn copyValue(mir: *Mir, dst: Value, src: Value) !void {
 pub fn deinit(mir: *Mir) void {
     const gpa = mir.gpa;
     mir.instructions.deinit(gpa);
+    mir.pass_data.deinit(gpa);
 }
 
 pub fn dump(mir: *Mir, s: anytype) !void {
@@ -352,7 +384,8 @@ const Writer = struct {
         inst: Instruction.Index,
         s: anytype,
     ) @TypeOf(s).Error!void {
-        const instructions = w.mir.instructions;
+        const mir = w.mir;
+        const instructions = mir.instructions;
         const tag = instructions.items(.tag)[@intFromEnum(inst)];
         const data = instructions.items(.data)[@intFromEnum(inst)];
 
@@ -370,24 +403,46 @@ const Writer = struct {
             .ld,
             => {
                 const un_op = data.un_op;
-                try s.print("{} = {s} {}", .{
-                    un_op.dst,
-                    @tagName(tag),
-                    un_op.src,
-                });
+
+                try s.print("{}", .{un_op.dst});
+                try printLiveness(mir, un_op.dst, inst, s);
+                try s.print(" = {s} ", .{@tagName(tag)});
+                try s.print("{}", .{un_op.src});
+                try printLiveness(mir, un_op.src, inst, s);
             },
             .add,
             => {
-                const add = data.bin_op;
-                try s.print("{} = {s} {}, {}", .{
-                    add.dst,
-                    @tagName(tag),
-                    add.lhs,
-                    add.rhs,
-                });
+                const bin_op = data.bin_op;
+
+                try s.print("{}", .{bin_op.dst});
+                try printLiveness(mir, bin_op.dst, inst, s);
+                try s.print(" = {s} ", .{@tagName(tag)});
+                try s.print("{}", .{bin_op.lhs});
+                try printLiveness(mir, bin_op.lhs, inst, s);
+                try s.print(", {}", .{bin_op.rhs});
+                try printLiveness(mir, bin_op.rhs, inst, s);
             },
             .tombstone => unreachable,
             // else => try s.print("TODO: Writer.printInst {s}", .{@tagName(tag)}),
+        }
+    }
+
+    fn printLiveness(
+        mir: *const Mir,
+        value: Value,
+        inst: Mir.Instruction.Index,
+        writer: anytype,
+    ) !void {
+        if (mir.getPassData("liveVars")) |meta| {
+            switch (value) {
+                .virtual => |vreg| {
+                    const info = meta.virtinfo.get(vreg.index).?; // is liveness info broken?
+                    if (info.last_usage == inst) {
+                        try writer.print(" killed", .{});
+                    }
+                },
+                else => {},
+            }
         }
     }
 };

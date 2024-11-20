@@ -1,0 +1,34 @@
+input IR:
+%0 = arg(0)
+%1 = arg(1)
+%2 = add(%0, %1)
+%3 = add(%2, %0)
+%4 = ret(%3)
+end IR
+
+MIR before passes:
+-----------
+%1:int = copy $a0
+%2:int = copy $a1
+%3:int = add %1:int, %2:int
+%4:int = add %3:int, %1:int
+$a0 = copy %4:int
+pseudo_ret $a0
+-----------
+
+MIR after liveVars:
+-----------
+%1:int = copy $a0
+%2:int = copy $a1
+%3:int = add %1:int, %2:int killed
+%4:int = add %3:int killed, %1:int killed
+$a0 = copy %4:int killed
+pseudo_ret $a0
+-----------
+
+MIR after regAlloc:
+-----------
+$a1 = add $a0, $a1
+$a0 = add $a1, $a0
+pseudo_ret $a0
+-----------
