@@ -20,7 +20,7 @@ pub const Instruction = struct {
         /// A RISC-V Register.
         ///
         /// Preferable to use in cases where an instruction *only* takes a RISC-V Register
-        /// and not any Value.
+        /// and not any Value. An example is `pseudo_ret`.
         register: Register,
         /// Two inputs + One output,
         bin_op: BinOp,
@@ -55,6 +55,10 @@ pub const Instruction = struct {
         addi,
         /// Load Double
         ld,
+        /// Shift-left
+        sll,
+        /// Shift-left Immediate
+        slli,
 
         /// An instruction that is considered a tombstone.
         /// Ignored by MIR printers, analysis passes, and other things.
@@ -88,7 +92,17 @@ pub const Instruction = struct {
                 => 2,
                 .add,
                 .addi,
+                .sll,
+                .slli,
                 => 3,
+            };
+        }
+
+        pub fn immediateVersion(tag: Tag) Tag {
+            return switch (tag) {
+                .sll => .slli,
+                .add => .addi,
+                else => unreachable,
             };
         }
     };
@@ -187,6 +201,7 @@ pub const Extractor = struct {
                 });
                 return .none;
             },
+            // memory operations
             .load => {
                 assert(node.out.items.len == 1);
                 const class_idx = node.out.items[0];
@@ -197,7 +212,7 @@ pub const Extractor = struct {
                 const dst_value: Value = .{ .virtual = try mir.allocVirtualReg(.int) };
 
                 _ = try mir.addUnOp(.{
-                    .tag = .ld,
+                    .tag = .ld, // just assuming 8-bytes for now
                     .data = .{ .un_op = .{
                         .dst = dst_value,
                         .src = arg_value,
@@ -206,7 +221,9 @@ pub const Extractor = struct {
 
                 return dst_value;
             },
+            // commutative instructions with immediate versions
             .add,
+            .shl,
             => {
                 assert(node.out.items.len == 2);
 
@@ -219,13 +236,17 @@ pub const Extractor = struct {
                 var rhs_value = try e.getNode(rhs_idx);
                 var lhs_value = try e.getNode(lhs_idx);
 
-                var tag: Mir.Instruction.Tag = .add;
+                var tag: Mir.Instruction.Tag = switch (node.tag) {
+                    .add => .add,
+                    .shl => .sll,
+                    else => unreachable,
+                };
 
                 if (rhs_value == .immediate) {
-                    tag = .addi;
+                    tag = tag.immediateVersion();
                 } else if (lhs_value == .immediate) {
                     // we want the immediate value to be rhs
-                    tag = .addi;
+                    tag = tag.immediateVersion();
                     std.mem.swap(Value, &rhs_value, &lhs_value);
                 }
 
@@ -261,10 +282,29 @@ pub const Extractor = struct {
 
     /// Given a class, extract the "best" node from it.
     fn extractClass(e: *Extractor, class_idx: Class.Index) Node.Index {
-        // TODO: for now, just select the first node in the class bag
-        const class = e.oir.getClass(class_idx);
-        const index: usize = if (class.bag.items.len > 1) 1 else 0;
-        return class.bag.items[index];
+        const oir = e.oir;
+        const class = oir.getClass(class_idx);
+        assert(class.bag.items.len > 0);
+
+        var best_cost: u32 = std.math.maxInt(u32);
+        var best_index: Node.Index = class.bag.items[0];
+
+        for (class.bag.items) |idx| {
+            const node = oir.getNode(idx);
+            if (!cost.hasLatency(node.tag)) continue;
+            const node_cost = cost.getLatency(node.tag);
+            if (node_cost < best_cost) {
+                best_cost = node_cost;
+                best_index = idx;
+            }
+        }
+
+        log.debug("best node for class {} is {s}", .{
+            class_idx,
+            @tagName(oir.getNode(best_index).tag),
+        });
+
+        return best_index;
     }
 
     pub fn deinit(e: *Extractor) void {
@@ -433,6 +473,8 @@ const Writer = struct {
             },
             .addi,
             .add,
+            .sll,
+            .slli,
             => {
                 const bin_op = data.bin_op;
 
@@ -474,6 +516,7 @@ const std = @import("std");
 const Oir = @import("Oir.zig");
 const bits = @import("bits.zig");
 const passes = @import("Mir/passes.zig");
+const cost = @import("cost.zig");
 
 const Class = Oir.Class;
 const Node = Oir.Node;
