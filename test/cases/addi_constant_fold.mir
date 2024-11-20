@@ -1,0 +1,22 @@
+input IR:
+%0 = add(20, 10)
+%1 = ret(%0)
+end IR
+
+MIR before passes:
+-----------
+$a0 = copy 30
+pseudo_ret $a0
+-----------
+
+MIR after liveVars:
+-----------
+$a0 = copy 30
+pseudo_ret $a0
+-----------
+
+MIR after regAlloc:
+-----------
+$a0 = copy 30
+pseudo_ret $a0
+-----------

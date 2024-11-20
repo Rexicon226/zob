@@ -235,10 +235,7 @@ const RegAllocPass = struct {
                         .{ bin_op.lhs, bin_op.rhs, bin_op.dst },
                         .{ &new_bin_op.lhs, &new_bin_op.rhs, &new_bin_op.dst },
                     ) |operand, value| {
-                        switch (operand) {
-                            .virtual => |vreg| try pass.updateValue(mir, @enumFromInt(i), vreg, value),
-                            else => {},
-                        }
+                        try pass.updateValue(mir, @enumFromInt(i), operand, value);
                     }
 
                     mir.instructions.set(i, .{
@@ -256,10 +253,7 @@ const RegAllocPass = struct {
                         .{ un_op.src, un_op.dst },
                         .{ &new_un_op.src, &new_un_op.dst },
                     ) |operand, value| {
-                        switch (operand) {
-                            .virtual => |vreg| try pass.updateValue(mir, @enumFromInt(i), vreg, value),
-                            else => {},
-                        }
+                        try pass.updateValue(mir, @enumFromInt(i), operand, value);
                     }
 
                     mir.instructions.set(i, .{
@@ -275,10 +269,11 @@ const RegAllocPass = struct {
         pass: *RegAllocPass,
         mir: *Mir,
         inst: Mir.Instruction.Index,
-        vreg: VirtualRegister,
+        operand: Value,
         value: *Mir.Value,
     ) !void {
         const gpa = mir.gpa;
+        const vreg = if (operand == .virtual) operand.virtual else return;
         const liveness: *const LivenessPass = mir.getPassData("liveVars").?; // liveness should run before regalloc
 
         const gop = try pass.virt_to_physical.getOrPut(gpa, vreg);
