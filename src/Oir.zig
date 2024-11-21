@@ -198,7 +198,7 @@ pub const Class = struct {
 pub const CostStrategy = enum {
     /// A super basic cost strategy that simply looks at the number of child nodes
     /// a particular node has to determine its cost.
-    num_nodes,
+    simple_latency,
 };
 
 /// Takes in an `IR`, meant to represent a basic version of Zig's AIR

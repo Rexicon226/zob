@@ -92,7 +92,7 @@ pub fn main() !void {
 
     // extract the best OIR solution into our MIR
     var extractor: Mir.Extractor = .{
-        .cost_strategy = .num_nodes,
+        .cost_strategy = .simple_latency,
         .oir = &oir,
         .mir = &mir,
     };

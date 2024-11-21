@@ -326,24 +326,28 @@ pub const Extractor = struct {
         const class = oir.classes.get(class_idx).?;
         assert(class.bag.items.len > 0);
 
-        var best_cost: u32 = std.math.maxInt(u32);
-        var best_node: Node = class.bag.items[0];
+        switch (e.cost_strategy) {
+            .simple_latency => {
+                var best_cost: u32 = std.math.maxInt(u32);
+                var best_node: Node = class.bag.items[0];
 
-        for (class.bag.items) |node| {
-            if (!cost.hasLatency(node.tag)) continue;
-            const node_cost = cost.getLatency(node.tag);
-            if (node_cost < best_cost) {
-                best_cost = node_cost;
-                best_node = node;
-            }
+                for (class.bag.items) |node| {
+                    if (!cost.hasLatency(node.tag)) continue;
+                    const node_cost = cost.getLatency(node.tag);
+                    if (node_cost < best_cost) {
+                        best_cost = node_cost;
+                        best_node = node;
+                    }
+                }
+
+                log.debug("best node for class {} is {s}", .{
+                    class_idx,
+                    @tagName(best_node.tag),
+                });
+
+                return best_node;
+            },
         }
-
-        log.debug("best node for class {} is {s}", .{
-            class_idx,
-            @tagName(best_node.tag),
-        });
-
-        return best_node;
     }
 
     pub fn deinit(e: *Extractor) void {
