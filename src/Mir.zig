@@ -142,10 +142,6 @@ pub const Extractor = struct {
     mir: *Mir,
     cost_strategy: Oir.CostStrategy,
 
-    /// used for deduplicating extractions for cases when a node is used multiple
-    /// times in the graph. an extraction only needs to happen once per Oir node.
-    map: std.AutoHashMapUnmanaged(Node.Index, Value) = .{},
-
     /// Extracts the best pattern of Oir from the E-Graph given a cost model.
     pub fn extract(e: *Extractor) !void {
         // First we need to find what the root class is. This will usually be the class containing a `ret`,
@@ -158,28 +154,30 @@ pub const Extractor = struct {
 
     /// TODO: don't just search for a `ret` node,
     /// instead compute the mathematical leaves of the graph
-    fn findLeafNode(e: *Extractor) Node.Index {
+    fn findLeafNode(e: *Extractor) Node {
         const oir = e.oir;
-        const ret_node_idx: Node.Index = idx: for (oir.classes.items) |class| {
-            for (class.bag.items) |node_idx| {
-                const node = oir.getNode(node_idx);
-                if (node.tag == .ret) break :idx node_idx;
+        const ret_node_idx: Node = idx: {
+            var class_iter = oir.classes.valueIterator();
+            while (class_iter.next()) |class| {
+                for (class.bag.items) |node| {
+                    if (node.tag == .ret) break :idx node;
+                }
             }
-        } else @panic("no `ret` in extract() input IR");
+            @panic("no ret node found!");
+        };
+
         return ret_node_idx;
     }
 
-    /// Given a `Node.Index`, walk the edges of that node to find the optimal
+    /// Given a `Node`, walk the edges of that node to find the optimal
     /// linear nodes to make up the graph. Converts the normal "node-class" relationship
     /// into a "node-node" one, where the child node is extracted from its class using
     /// the given cost model.
     fn extractNode(
         e: *Extractor,
-        node_idx: Node.Index,
+        node: Node,
     ) !Value {
-        const oir = e.oir;
         const mir = e.mir;
-        const node = oir.getNode(node_idx);
 
         switch (node.tag) {
             .arg => {
@@ -308,44 +306,38 @@ pub const Extractor = struct {
         }
     }
 
-    fn getNode(e: *Extractor, node_idx: Node.Index) error{OutOfMemory}!Value {
-        const gop = try e.map.getOrPut(e.mir.gpa, node_idx);
-        if (!gop.found_existing) {
-            gop.value_ptr.* = try e.extractNode(node_idx);
-        }
-        return gop.value_ptr.*;
+    fn getNode(e: *Extractor, node: Node) error{OutOfMemory}!Value {
+        return try e.extractNode(node);
     }
 
     /// Given a class, extract the "best" node from it.
-    fn extractClass(e: *Extractor, class_idx: Class.Index) Node.Index {
+    fn extractClass(e: *Extractor, class_idx: Class.Index) Node {
         const oir = e.oir;
-        const class = oir.getClass(class_idx);
+        const class = oir.classes.get(class_idx).?;
         assert(class.bag.items.len > 0);
 
         var best_cost: u32 = std.math.maxInt(u32);
-        var best_index: Node.Index = class.bag.items[0];
+        var best_node: Node = class.bag.items[0];
 
-        for (class.bag.items) |idx| {
-            const node = oir.getNode(idx);
+        for (class.bag.items) |node| {
             if (!cost.hasLatency(node.tag)) continue;
             const node_cost = cost.getLatency(node.tag);
             if (node_cost < best_cost) {
                 best_cost = node_cost;
-                best_index = idx;
+                best_node = node;
             }
         }
 
         log.debug("best node for class {} is {s}", .{
             class_idx,
-            @tagName(oir.getNode(best_index).tag),
+            @tagName(best_node.tag),
         });
 
-        return best_index;
+        return best_node;
     }
 
     pub fn deinit(e: *Extractor) void {
-        const gpa = e.mir.gpa;
-        e.map.deinit(gpa);
+        _ = e;
     }
 };
 

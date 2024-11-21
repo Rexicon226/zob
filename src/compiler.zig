@@ -80,6 +80,13 @@ pub fn main() !void {
     // run optimization passes on the OIR
     try oir.optimize(.saturate);
 
+    // dump to a graphviz file
+    if (output_graph) {
+        const graphviz_file = try std.fs.cwd().createFile("out.dot", .{});
+        defer graphviz_file.close();
+        try print_oir.dumpGraphViz(&oir, graphviz_file.writer());
+    }
+
     var mir: Mir = .{ .gpa = allocator };
     defer mir.deinit();
 
@@ -93,11 +100,4 @@ pub fn main() !void {
     defer extractor.deinit();
 
     try mir.run();
-
-    // dump to a graphviz file
-    if (output_graph) {
-        const graphviz_file = try std.fs.cwd().createFile("out.dot", .{});
-        defer graphviz_file.close();
-        try print_oir.dumpGraphViz(&oir, graphviz_file.writer());
-    }
 }
