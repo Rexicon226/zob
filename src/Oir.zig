@@ -195,6 +195,9 @@ pub const Class = struct {
     };
 
     /// Creates a new node and adds it to the class.
+    ///
+    /// NOTE: shouldn't be called inside of optimization passes.
+    /// unions are required.
     fn addNode(class: *Class, oir: *Oir, node: Node) !void {
         try class.bag.append(oir.allocator, node);
     }
@@ -358,10 +361,12 @@ const Passes = struct {
                                 else => unreachable,
                             };
 
-                            try class.addNode(oir, .{
+                            const new_class = try oir.add(.{
                                 .tag = .constant,
                                 .data = .{ .constant = result },
                             });
+                            _ = try oir.@"union"(new_class, class_idx);
+                            oir.rebuild();
                         },
                         else => std.debug.panic("TODO: constant fold {s}", .{@tagName(node.tag)}),
                     }
@@ -464,12 +469,13 @@ pub fn optimize(oir: *Oir, mode: enum {
 }) !void {
     switch (mode) {
         .saturate => {
+            oir.rebuild();
             while (true) {
                 var new_change: bool = false;
                 inline for (passes) |pass| {
                     if (try pass(oir)) new_change = true;
 
-                    // TODO: in theor we don't actually need to rebuild after every pass
+                    // TODO: in theory we don't actually need to rebuild after every pass
                     // maybe we should look into rebuilding on demand?
                     if (!oir.clean) oir.rebuild();
                 }
@@ -553,7 +559,10 @@ pub fn @"union"(oir: *Oir, a_idx: Class.Index, b_idx: Class.Index) !bool {
 
     assert(a != b);
     var b_class = oir.classes.fetchRemove(b).?.value;
-    defer b_class.bag.deinit(oir.allocator);
+    defer {
+        b_class.bag.deinit(oir.allocator);
+        b_class.parents.deinit(oir.allocator);
+    }
 
     const a_class = oir.classes.getPtr(a).?;
     assert(a == a_class.index);
@@ -575,10 +584,23 @@ pub fn rebuild(oir: *Oir) void {
     // inside of a class, and finding duplicate nodes inside of them and deleting those.
     // TODO: later we need to perform unions on classes that are proven duplicate.
 
+    log.debug("rebuilding", .{});
+
     while (oir.pending.popOrNull()) |pair| {
         const node, const class_idx = pair;
         std.debug.print("node: {}, class_idx: {}\n", .{ node, class_idx });
     }
+
+    var iter = oir.classes.valueIterator();
+    while (iter.next()) |class| {
+        for (class.bag.items) |node| {
+            for (node.out.items) |*child| {
+                child.* = oir.find.find(child.*);
+            }
+        }
+    }
+
+    oir.clean = true;
 }
 
 pub fn deinit(oir: *Oir) void {
@@ -616,6 +638,7 @@ pub fn deinit(oir: *Oir) void {
 /// Can only return absorbing element types such as `constant`.
 pub fn classContains(oir: *Oir, idx: Class.Index, comptime tag: Node.Tag) ?Node {
     comptime assert(tag.isAbsorbing());
+    assert(oir.clean);
 
     const class = oir.classes.get(idx).?;
     for (class.bag.items) |node| {
