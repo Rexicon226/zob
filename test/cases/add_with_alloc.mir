@@ -9,18 +9,16 @@ end IR
 MIR before passes:
 -----------
 %1:int = copy $a0
-%2:int = copy $a0
-%3:int = add %2:int, %1:int
-$a0 = copy %3:int
+%2:int = add %1:int, %1:int
+$a0 = copy %2:int
 pseudo_ret $a0
 -----------
 
 MIR after liveVars:
 -----------
 %1:int = copy $a0
-%2:int = copy $a0
-%3:int = add %2:int killed, %1:int killed
-$a0 = copy %3:int killed
+%2:int = add %1:int killed, %1:int killed
+$a0 = copy %2:int killed
 pseudo_ret $a0
 -----------
 

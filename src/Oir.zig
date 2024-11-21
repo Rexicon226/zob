@@ -23,6 +23,12 @@ node_to_class: std.HashMapUnmanaged(
 
 find: Find = .{},
 
+/// A list of pending `Pair`s which have made the E-Graph unclean. This is a part of incremental
+/// rebuilding and lets the graph process faster. `add` and `union` dirty the graph, marking `clean`
+/// as false, and then `rebuild` will iterate through the pending items to analyze and mark `clean`
+/// as true.
+pending: std.ArrayListUnmanaged(Pair) = .{},
+
 /// Indicates whether or not reading type operations are allowed on the E-Graph.
 ///
 /// Mutating operations set this to `false`, and `rebuild` will set it back to `true`.
@@ -59,7 +65,7 @@ const Find = struct {
     }
 };
 
-const NodeContext = struct {
+pub const NodeContext = struct {
     pub fn hash(_: NodeContext, node: Node) u64 {
         var hasher = std.hash.Wyhash.init(0);
 
@@ -166,11 +172,13 @@ pub const Node = struct {
     };
 };
 
+const Pair = struct { Node, Class.Index };
+
 /// A Class contains an N amount of Nodes as children.
 pub const Class = struct {
     index: Index,
     bag: std.ArrayListUnmanaged(Node) = .{},
-    parents: std.ArrayListUnmanaged(struct { Node, Class.Index }) = .{},
+    parents: std.ArrayListUnmanaged(Pair) = .{},
 
     pub const Index = enum(u32) {
         _,
@@ -460,6 +468,10 @@ pub fn optimize(oir: *Oir, mode: enum {
                 var new_change: bool = false;
                 inline for (passes) |pass| {
                     if (try pass(oir)) new_change = true;
+
+                    // TODO: in theor we don't actually need to rebuild after every pass
+                    // maybe we should look into rebuilding on demand?
+                    if (!oir.clean) oir.rebuild();
                 }
                 if (!new_change) break;
             }
@@ -535,6 +547,8 @@ pub fn @"union"(oir: *Oir, a_idx: Class.Index, b_idx: Class.Index) !bool {
         std.mem.swap(Class.Index, &a, &b);
     }
 
+    log.debug("union on {} -> {}", .{ b, a });
+
     _ = oir.find.@"union"(a, b);
 
     assert(a != b);
@@ -544,6 +558,7 @@ pub fn @"union"(oir: *Oir, a_idx: Class.Index, b_idx: Class.Index) !bool {
     const a_class = oir.classes.getPtr(a).?;
     assert(a == a_class.index);
 
+    try oir.pending.appendSlice(oir.allocator, b_class.parents.items);
     try a_class.bag.appendSlice(oir.allocator, b_class.bag.items);
     try a_class.parents.appendSlice(oir.allocator, b_class.parents.items);
 
@@ -560,7 +575,10 @@ pub fn rebuild(oir: *Oir) void {
     // inside of a class, and finding duplicate nodes inside of them and deleting those.
     // TODO: later we need to perform unions on classes that are proven duplicate.
 
-    _ = oir;
+    while (oir.pending.popOrNull()) |pair| {
+        const node, const class_idx = pair;
+        std.debug.print("node: {}, class_idx: {}\n", .{ node, class_idx });
+    }
 }
 
 pub fn deinit(oir: *Oir) void {
@@ -589,6 +607,7 @@ pub fn deinit(oir: *Oir) void {
         node.out.deinit(allocator);
     }
     oir.discarded_nodes.deinit(allocator);
+    oir.pending.deinit(allocator);
 }
 
 /// Checks if a class contains a constant equivalence node, and returns it.

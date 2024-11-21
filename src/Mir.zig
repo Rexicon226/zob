@@ -141,6 +141,12 @@ pub const Extractor = struct {
     oir: *Oir,
     mir: *Mir,
     cost_strategy: Oir.CostStrategy,
+    map: std.HashMapUnmanaged(
+        Node,
+        Value,
+        Oir.NodeContext,
+        std.hash_map.default_max_load_percentage,
+    ) = .{},
 
     /// Extracts the best pattern of Oir from the E-Graph given a cost model.
     pub fn extract(e: *Extractor) !void {
@@ -307,7 +313,11 @@ pub const Extractor = struct {
     }
 
     fn getNode(e: *Extractor, node: Node) error{OutOfMemory}!Value {
-        return try e.extractNode(node);
+        const gop = try e.map.getOrPut(e.oir.allocator, node);
+        if (!gop.found_existing) {
+            gop.value_ptr.* = try e.extractNode(node);
+        }
+        return gop.value_ptr.*;
     }
 
     /// Given a class, extract the "best" node from it.
@@ -337,7 +347,7 @@ pub const Extractor = struct {
     }
 
     pub fn deinit(e: *Extractor) void {
-        _ = e;
+        e.map.deinit(e.oir.allocator);
     }
 };
 
