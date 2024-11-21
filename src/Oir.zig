@@ -193,14 +193,6 @@ pub const Class = struct {
             try writer.print("%{d}", .{@intFromEnum(idx)});
         }
     };
-
-    /// Creates a new node and adds it to the class.
-    ///
-    /// NOTE: shouldn't be called inside of optimization passes.
-    /// unions are required.
-    fn addNode(class: *Class, oir: *Oir, node: Node) !void {
-        try class.bag.append(oir.allocator, node);
-    }
 };
 
 pub const CostStrategy = enum {
@@ -589,6 +581,7 @@ pub fn rebuild(oir: *Oir) void {
     while (oir.pending.popOrNull()) |pair| {
         const node, const class_idx = pair;
         std.debug.print("node: {}, class_idx: {}\n", .{ node, class_idx });
+        @panic("TODO");
     }
 
     var iter = oir.classes.valueIterator();
