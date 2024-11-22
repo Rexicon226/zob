@@ -322,59 +322,56 @@ const Passes = struct {
     /// it's evaluated and the new "comptime-known" result is added
     /// to that node's class.
     fn constantFold(oir: *Oir) !bool {
-        var buffer: std.ArrayListUnmanaged(Node) = .{};
+        var buffer: std.ArrayListUnmanaged(Node.Index) = .{};
         defer buffer.deinit(oir.allocator);
 
         var changed: bool = false;
 
-        var iterator = oir.classes.iterator();
-        while (iterator.next()) |entry| {
-            const class_idx = entry.key_ptr.*;
-            const class = entry.value_ptr;
+        for (oir.nodes.items, 0..) |node, i| {
+            const node_idx: Node.Index = @enumFromInt(i);
+            const memo_class_idx = oir.node_to_class.getContext(node_idx, .{ .oir = oir }).?;
+            const class_idx = oir.find.find(memo_class_idx);
 
             // the class has already been solved for a constant, no need to do anything else!
             if (oir.classContains(class_idx, .constant) != null) continue;
 
-            for (class.bag.items) |node_idx| {
-                const node = oir.getNode(node_idx);
-                assert(node.tag != .constant);
-                defer buffer.clearRetainingCapacity();
+            assert(node.tag != .constant);
+            defer buffer.clearRetainingCapacity();
 
-                for (node.out.items) |child_idx| {
-                    if (oir.classContains(child_idx, .constant)) |constant| {
-                        try buffer.append(oir.allocator, constant);
-                    }
+            for (node.out.items) |child_idx| {
+                if (oir.classContains(child_idx, .constant)) |constant| {
+                    try buffer.append(oir.allocator, constant);
                 }
+            }
 
-                // all nodes are constants
-                assert(buffer.items.len <= node.tag.numNodeArgs());
-                if (buffer.items.len == node.tag.numNodeArgs() and
-                    !node.tag.isVolatile())
-                {
-                    changed = true;
-                    switch (node.tag) {
-                        .add,
-                        .mul,
-                        => {
-                            const lhs, const rhs = buffer.items[0..2].*;
-                            const lhs_value = lhs.data.constant;
-                            const rhs_value = rhs.data.constant;
+            // all nodes are constants
+            assert(buffer.items.len <= node.tag.numNodeArgs());
+            if (buffer.items.len == node.tag.numNodeArgs() and
+                !node.tag.isVolatile())
+            {
+                changed = true;
+                switch (node.tag) {
+                    .add,
+                    .mul,
+                    => {
+                        const lhs, const rhs = buffer.items[0..2].*;
+                        const lhs_value = oir.getNode(lhs).data.constant;
+                        const rhs_value = oir.getNode(rhs).data.constant;
 
-                            const result = switch (node.tag) {
-                                .add => lhs_value + rhs_value,
-                                .mul => lhs_value * rhs_value,
-                                else => unreachable,
-                            };
+                        const result = switch (node.tag) {
+                            .add => lhs_value + rhs_value,
+                            .mul => lhs_value * rhs_value,
+                            else => unreachable,
+                        };
 
-                            const new_class = try oir.add(.{
-                                .tag = .constant,
-                                .data = .{ .constant = result },
-                            });
-                            _ = try oir.@"union"(new_class, class_idx);
-                            oir.rebuild();
-                        },
-                        else => std.debug.panic("TODO: constant fold {s}", .{@tagName(node.tag)}),
-                    }
+                        const new_class = try oir.add(.{
+                            .tag = .constant,
+                            .data = .{ .constant = result },
+                        });
+                        _ = try oir.@"union"(new_class, class_idx);
+                        oir.rebuild();
+                    },
+                    else => std.debug.panic("TODO: constant fold {s}", .{@tagName(node.tag)}),
                 }
             }
         }
@@ -386,77 +383,76 @@ const Passes = struct {
     fn strengthReduce(oir: *Oir) !bool {
         var changed: bool = false;
 
-        var iterator = oir.classes.iterator();
-        while (iterator.next()) |entry| {
-            const class_idx = entry.key_ptr.*;
-            const class = entry.value_ptr;
-            for (class.bag.items) |node_idx| {
-                const node = oir.getNode(node_idx);
-                if (node.tag.isVolatile()) continue;
+        for (oir.nodes.items, 0..) |node, i| {
+            const node_idx: Node.Index = @enumFromInt(i);
+            if (node.tag.isVolatile()) continue;
 
-                switch (node.tag) {
-                    .mul,
-                    .div_exact,
-                    => {
-                        // metadata for the pass
-                        const Meta = struct {
-                            value: u64,
-                            other_class: Class.Index,
-                        };
-                        var meta: ?Meta = null;
+            const memo_class_idx = oir.node_to_class.getContext(node_idx, .{ .oir = oir }).?;
+            const class_idx = oir.find.find(memo_class_idx);
+            const class = oir.getClassPtr(class_idx);
 
-                        for (node.out.items, 0..) |sub_idx, i| {
-                            if (oir.classContains(sub_idx, .constant)) |sub_node| {
-                                const value: u64 = @intCast(sub_node.data.constant);
-                                if (std.math.isPowerOfTwo(value)) {
-                                    meta = .{
-                                        .value = value,
-                                        .other_class = node.out.items[i ^ 1], // trick to get the other one
-                                    };
-                                }
+            switch (node.tag) {
+                .mul,
+                .div_exact,
+                => {
+                    // metadata for the pass
+                    const Meta = struct {
+                        value: u64,
+                        other_class: Class.Index,
+                    };
+                    var meta: ?Meta = null;
+
+                    for (node.out.items, 0..) |sub_idx, sub_i| {
+                        if (oir.classContains(sub_idx, .constant)) |sub_node| {
+                            const value: u64 = @intCast(oir.getNode(sub_node).data.constant);
+                            if (std.math.isPowerOfTwo(value)) {
+                                meta = .{
+                                    .value = value,
+                                    .other_class = node.out.items[sub_i ^ 1], // trick to get the other one
+                                };
                             }
                         }
+                    }
 
-                        const rewritten_tag: Oir.Node.Tag = switch (node.tag) {
-                            .mul => .shl,
-                            .div_exact => .shr,
-                            else => unreachable,
-                        };
+                    const rewritten_tag: Oir.Node.Tag = switch (node.tag) {
+                        .mul => .shl,
+                        .div_exact => .shr,
+                        else => unreachable,
+                    };
 
-                        // TODO: to avoid infinite loops, just check if a "shl" node already exists in the class
-                        // this isn't a very good solution since there could be multiple non-identical shl in the class.
-                        // node tagging maybe?
-                        var skip: bool = false;
-                        for (class.bag.items) |sub_node_idx| {
-                            const sub_node = oir.getNode(sub_node_idx);
-                            if (sub_node.tag == rewritten_tag) {
-                                changed = false;
-                                skip = true;
-                            }
+                    // TODO: to avoid infinite loops, just check if a "shl" node already exists in the class
+                    // this isn't a very good solution since there could be multiple non-identical shl in the class.
+                    // node tagging maybe?
+                    var skip: bool = false;
+                    for (class.bag.items) |sub_node_idx| {
+                        const sub_node = oir.getNode(sub_node_idx);
+                        if (sub_node.tag == rewritten_tag) {
+                            changed = false;
+                            skip = true;
                         }
-                        if (skip) continue;
+                    }
+                    if (skip) continue;
 
-                        if (meta) |resolved_meta| {
-                            changed = true;
-                            const value = resolved_meta.value;
-                            const new_value = std.math.log2_int(u64, value);
+                    if (meta) |resolved_meta| {
+                        changed = true;
+                        const value = resolved_meta.value;
+                        const new_value = std.math.log2_int(u64, value);
 
-                            // create the (shl ?x @log2($)) node instead of the mul class
-                            const shift_value_idx = try oir.add(.{
-                                .tag = .constant,
-                                .data = .{ .constant = @intCast(new_value) },
-                            });
+                        // create the (shl ?x @log2($)) node instead of the mul class
+                        const shift_value_idx = try oir.add(.{
+                            .tag = .constant,
+                            .data = .{ .constant = @intCast(new_value) },
+                        });
 
-                            var new_node: Node = .{ .tag = rewritten_tag };
-                            try new_node.out.append(oir.allocator, resolved_meta.other_class);
-                            try new_node.out.append(oir.allocator, shift_value_idx);
+                        var new_node: Node = .{ .tag = rewritten_tag };
+                        try new_node.out.append(oir.allocator, resolved_meta.other_class);
+                        try new_node.out.append(oir.allocator, shift_value_idx);
 
-                            const new_class = try oir.add(new_node);
-                            _ = try oir.@"union"(new_class, class_idx);
-                        }
-                    },
-                    else => {},
-                }
+                        const new_class = try oir.add(new_node);
+                        _ = try oir.@"union"(new_class, class_idx);
+                    }
+                },
+                else => {},
             }
         }
 
@@ -580,6 +576,7 @@ pub fn @"union"(oir: *Oir, a_idx: Class.Index, b_idx: Class.Index) !bool {
     _ = oir.find.@"union"(a, b);
 
     assert(a != b);
+
     var b_class = oir.classes.fetchRemove(b).?.value;
     defer {
         b_class.bag.deinit(oir.allocator);
@@ -654,7 +651,7 @@ pub fn deinit(oir: *Oir) void {
 /// Otherwise returns `null`.
 ///
 /// Can only return absorbing element types such as `constant`.
-pub fn classContains(oir: *Oir, idx: Class.Index, comptime tag: Node.Tag) ?Node {
+pub fn classContains(oir: *Oir, idx: Class.Index, comptime tag: Node.Tag) ?Node.Index {
     comptime assert(tag.isAbsorbing());
     assert(oir.clean);
 
@@ -663,7 +660,7 @@ pub fn classContains(oir: *Oir, idx: Class.Index, comptime tag: Node.Tag) ?Node 
         const node = oir.getNode(node_idx);
         // Since the node is aborbing, we can return early as no other
         // instances of it are allowed in the same class.
-        if (node.tag == tag) return node;
+        if (node.tag == tag) return node_idx;
     }
 
     return null;
