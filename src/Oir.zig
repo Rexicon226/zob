@@ -327,7 +327,9 @@ const Passes = struct {
 
         var changed: bool = false;
 
-        for (oir.nodes.items, 0..) |node, i| {
+        var copied_nodes = try oir.nodes.clone(oir.allocator);
+        defer copied_nodes.deinit(oir.allocator);
+        for (copied_nodes.items, 0..) |node, i| {
             const node_idx: Node.Index = @enumFromInt(i);
             const memo_class_idx = oir.node_to_class.getContext(node_idx, .{ .oir = oir }).?;
             const class_idx = oir.find.find(memo_class_idx);
@@ -383,7 +385,9 @@ const Passes = struct {
     fn strengthReduce(oir: *Oir) !bool {
         var changed: bool = false;
 
-        for (oir.nodes.items, 0..) |node, i| {
+        var copied_nodes = try oir.nodes.clone(oir.allocator);
+        defer copied_nodes.deinit(oir.allocator);
+        for (copied_nodes.items, 0..) |node, i| {
             const node_idx: Node.Index = @enumFromInt(i);
             if (node.tag.isVolatile()) continue;
 
