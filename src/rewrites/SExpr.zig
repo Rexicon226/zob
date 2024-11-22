@@ -20,12 +20,22 @@
 //! - Other S-Expressions. S-expressions are intended to be nested, and matching will consider
 //!   the absolute structure of the expression when pairing.
 
-tag: Tag,
+tag: NodeTag,
 data: Data,
 
 const Data = union(enum) {
     atom: []const u8,
+    builtin: BuiltinFn,
     list: []const SExpr,
+};
+
+const BuiltinFn = struct {
+    tag: Tag,
+    expr: []const u8,
+
+    const Tag = enum {
+        known_pow2,
+    };
 };
 
 /// TODO: better error reporting!
@@ -33,7 +43,12 @@ pub const Parser = struct {
     buffer: []const u8,
     index: u32 = 0,
 
-    pub fn parse(parser: *Parser, allocator: std.mem.Allocator) !SExpr {
+    pub fn parse(buffer: []const u8, allocator: std.mem.Allocator) !SExpr {
+        var parser: Parser = .{ .buffer = buffer };
+        return parser.parseInternal(allocator);
+    }
+
+    pub fn parseInternal(parser: *Parser, allocator: std.mem.Allocator) !SExpr {
         while (parser.index < parser.buffer.len) {
             const c = parser.eat();
             switch (c) {
@@ -45,13 +60,14 @@ pub const Parser = struct {
                     try parser.eatUntilDelimiter(' ');
                     const tag_end = parser.index;
                     const tag_string = parser.buffer[tag_start..tag_end];
-                    const tag = std.meta.stringToEnum(Tag, tag_string) orelse
+                    const tag = std.meta.stringToEnum(NodeTag, tag_string) orelse
                         return error.UnknownTag;
 
                     // now there will be a list of parameters to this expression
                     // i.e (mul ?x ?y), where ?x and ?y are the parameters.
                     // these are delimited by the right paren.
                     var list: std.ArrayListUnmanaged(SExpr) = .{};
+                    errdefer list.deinit(allocator);
                     while (parser.peak() != ')') {
                         if (parser.index == parser.buffer.len) {
                             return error.NoClosingParen;
@@ -66,7 +82,7 @@ pub const Parser = struct {
                         }
                         // eat the space before parsing the next expression
                         assert(parser.eat() == ' ');
-                        const expr = try parser.parse(allocator);
+                        const expr = try parser.parseInternal(allocator);
                         try list.append(allocator, expr);
                     }
                     // closing off the expression with a parenthesis
@@ -100,9 +116,13 @@ pub const Parser = struct {
                     return .{ .tag = .constant, .data = .{ .atom = ident } };
                 },
                 '0'...'9' => {
-                    // this  -1 is to include the first number
+                    // this -1 is to include the first number
                     const constant_start = parser.index - 1;
-                    while (std.mem.indexOfScalar(u8, ident_delim, parser.peak()) == null) {
+                    while (std.mem.indexOfScalar(
+                        u8,
+                        ident_delim,
+                        parser.peak(),
+                    ) == null) {
                         parser.index += 1;
                     }
                     const constant_end = parser.index;
@@ -120,6 +140,31 @@ pub const Parser = struct {
                         },
                     }
                     return .{ .tag = .constant, .data = .{ .atom = constant } };
+                },
+                // the start of a builtin function
+                '@' => {
+                    const builtin_start = parser.index;
+                    try parser.eatUntilDelimiter('(');
+                    const builtin_end = parser.index;
+                    _ = parser.eat();
+
+                    const builtin_name = parser.buffer[builtin_start..builtin_end];
+                    const builtin_tag = std.meta.stringToEnum(BuiltinFn.Tag, builtin_name) orelse
+                        return error.UnknownBuiltinFunction;
+
+                    const param_start = parser.index;
+                    try parser.eatUntilDelimiter(')');
+                    const param_end = parser.index;
+
+                    const param = parser.buffer[param_start..param_end];
+
+                    return .{
+                        .tag = .constant,
+                        .data = .{ .builtin = .{
+                            .tag = builtin_tag,
+                            .expr = param,
+                        } },
+                    };
                 },
                 else => return error.UnknownCharacter,
             }
@@ -154,6 +199,7 @@ pub fn isIdent(expr: *const SExpr) bool {
 pub fn deinit(expr: *const SExpr, allocator: std.mem.Allocator) void {
     switch (expr.data) {
         .atom => {},
+        .builtin => {},
         .list => |list| {
             for (list) |sub_expr| {
                 sub_expr.deinit(allocator);
@@ -165,8 +211,7 @@ pub fn deinit(expr: *const SExpr, allocator: std.mem.Allocator) void {
 
 test "single-layer, multi-variable" {
     const allocator = std.testing.allocator;
-    var parser: Parser = .{ .buffer = "(mul ?x ?y)" };
-    const expr = try parser.parse(allocator);
+    const expr = try Parser.parse("(mul ?x ?y)", allocator);
     defer expr.deinit(allocator);
 
     try expect(expr.tag == .mul and expr.data == .list);
@@ -183,8 +228,7 @@ test "single-layer, multi-variable" {
 
 test "single-layer, single variable single constant" {
     const allocator = std.testing.allocator;
-    var parser: Parser = .{ .buffer = "(mul 10 ?y)" };
-    const expr = try parser.parse(allocator);
+    const expr = try Parser.parse("(mul 10 ?y)", allocator);
     defer expr.deinit(allocator);
 
     try expect(expr.tag == .mul and expr.data == .list);
@@ -201,8 +245,7 @@ test "single-layer, single variable single constant" {
 
 test "multi-layer, multi-variable" {
     const allocator = std.testing.allocator;
-    var parser: Parser = .{ .buffer = "(div_exact ?z (mul ?x ?y))" };
-    const expr = try parser.parse(allocator);
+    const expr = try Parser.parse("(div_exact ?z (mul ?x ?y))", allocator);
     defer expr.deinit(allocator);
 
     try expect(expr.tag == .div_exact and expr.data == .list);
@@ -224,8 +267,26 @@ test "multi-layer, multi-variable" {
     try expect(std.mem.eql(u8, "?y", mul_rhs.data.atom));
 }
 
+test "builtin function" {
+    const allocator = std.testing.allocator;
+    const expr = try Parser.parse("(mul ?x @known_pow2(y))", allocator);
+    defer expr.deinit(allocator);
+
+    try expect(expr.tag == .mul and expr.data == .list);
+
+    const lhs = expr.data.list[0];
+    const rhs = expr.data.list[1];
+
+    try expect(lhs.tag == .constant and lhs.data == .atom);
+    try expect(rhs.tag == .constant and rhs.data == .builtin);
+
+    try expect(std.mem.eql(u8, "?x", lhs.data.atom));
+    try expect(rhs.data.builtin.tag == .known_pow2);
+    try expect(std.mem.eql(u8, "y", rhs.data.builtin.expr));
+}
+
 const SExpr = @This();
-const Tag = @import("../Oir.zig").Node.Tag;
+const NodeTag = @import("../Oir.zig").Node.Tag;
 const std = @import("std");
 const expect = std.testing.expect;
 const assert = std.debug.assert;

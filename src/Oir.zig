@@ -9,11 +9,6 @@ nodes: std.ArrayListUnmanaged(Node) = .{},
 /// Each E-Class contains a bundle of nodes which are equivalent to each other.
 classes: std.AutoHashMapUnmanaged(Class.Index, Class) = .{},
 
-/// TODO: silly hack for now, when node_to_class matches, we run into an issue where
-/// we can't deinit the node in a clean way. just throwing it in here for now to not leak,
-/// but we really should use the more DOD design of having an arraylist of nodes.
-discarded_nodes: std.ArrayListUnmanaged(Node) = .{},
-
 /// A map relating nodes to the classes they are in. Used as a fast way to determine
 /// what "parent" class a node is in.
 node_to_class: std.HashMapUnmanaged(
@@ -45,11 +40,11 @@ const Find = struct {
         return id;
     }
 
-    fn parent(f: *Find, idx: Class.Index) Class.Index {
+    fn parent(f: *const Find, idx: Class.Index) Class.Index {
         return f.parents.items[@intFromEnum(idx)];
     }
 
-    fn find(f: *Find, idx: Class.Index) Class.Index {
+    fn find(f: *const Find, idx: Class.Index) Class.Index {
         var current = idx;
         while (current != f.parent(idx)) {
             current = f.parent(idx);
@@ -85,8 +80,9 @@ pub const NodeContext = struct {
     }
 
     pub fn eql(ctx: NodeContext, a_idx: Node.Index, b_idx: Node.Index) bool {
-        const a = ctx.oir.getNode(a_idx);
-        const b = ctx.oir.getNode(b_idx);
+        const oir = ctx.oir;
+        const a = oir.getNode(a_idx);
+        const b = oir.getNode(b_idx);
 
         if (a.tag != b.tag) return false;
         if (std.meta.activeTag(a.data) != std.meta.activeTag(b.data)) return false;
@@ -97,11 +93,10 @@ pub const NodeContext = struct {
         }
         if (a.out.items.len != b.out.items.len) return false;
 
-        std.sort.heap(Class.Index, a.out.items, {}, lessThanClass);
-        std.sort.heap(Class.Index, b.out.items, {}, lessThanClass);
-
         for (a.out.items, b.out.items) |a_class, b_class| {
-            if (a_class != b_class) return false;
+            if (a_class != b_class) {
+                return false;
+            }
         }
 
         return true;
@@ -184,7 +179,7 @@ pub const Node = struct {
     };
 };
 
-const Pair = struct { Node, Class.Index };
+const Pair = struct { Node.Index, Class.Index };
 
 /// A Class contains an N amount of Nodes as children.
 pub const Class = struct {
@@ -376,7 +371,7 @@ const Passes = struct {
                             .data = .{ .constant = result },
                         });
                         _ = try oir.@"union"(new_class, class_idx);
-                        oir.rebuild();
+                        try oir.rebuild();
                     },
                     else => std.debug.panic("TODO: constant fold {s}", .{@tagName(node.tag)}),
                 }
@@ -470,16 +465,35 @@ const Passes = struct {
         return changed;
     }
 
-    fn commonNodeElim(oir: *Oir) !bool {
-        _ = oir;
+    fn commonRewrites(oir: *Oir) !bool {
+        const gpa = oir.allocator;
+
+        // (mul ?x 2) -> (shl ?x 1)
+        var from_pattern = try SExpr.Parser.parse("(mul ?x 2)", gpa);
+        defer from_pattern.deinit(gpa);
+
+        var to_pattern = try SExpr.Parser.parse("(shl ?x 1)", gpa);
+        defer to_pattern.deinit(gpa);
+
+        const matches = try oir.search(from_pattern);
+        defer {
+            for (matches) |*sub_match| sub_match.deinit(gpa);
+            gpa.free(matches);
+        }
+
+        for (matches) |*result| {
+            std.debug.print("node: {}\n", .{result.root});
+            try oir.applyRewrite(result.root, to_pattern, &result.bindings);
+        }
+
         return false;
     }
 };
 
 const passes = &.{
-    Passes.constantFold,
-    Passes.strengthReduce,
-    Passes.commonNodeElim,
+    // Passes.constantFold,
+    // Passes.strengthReduce,
+    Passes.commonRewrites,
 };
 
 pub fn optimize(oir: *Oir, mode: enum {
@@ -489,7 +503,7 @@ pub fn optimize(oir: *Oir, mode: enum {
 }) !void {
     switch (mode) {
         .saturate => {
-            oir.rebuild();
+            try oir.rebuild();
             assert(oir.clean);
             while (true) {
                 var new_change: bool = false;
@@ -498,7 +512,7 @@ pub fn optimize(oir: *Oir, mode: enum {
 
                     // TODO: in theory we don't actually need to rebuild after every pass
                     // maybe we should look into rebuilding on-demand?
-                    if (!oir.clean) oir.rebuild();
+                    if (!oir.clean) try oir.rebuild();
                 }
                 if (!new_change) break;
             }
@@ -506,10 +520,197 @@ pub fn optimize(oir: *Oir, mode: enum {
     }
 }
 
+const RewriteError = error{ OutOfMemory, InvalidCharacter, Overflow };
+
+const RewriteResult = struct {
+    root: Node.Index,
+    bindings: std.StringHashMapUnmanaged(Node.Index),
+
+    fn deinit(
+        result: *RewriteResult,
+        gpa: std.mem.Allocator,
+    ) void {
+        result.bindings.deinit(gpa);
+    }
+};
+
+fn search(
+    oir: *Oir,
+    from: SExpr,
+) RewriteError![]RewriteResult {
+    const gpa = oir.allocator;
+    var matches = std.ArrayList(RewriteResult).init(gpa);
+    for (0..oir.nodes.items.len) |node_idx| {
+        const node_index: Node.Index = @enumFromInt(node_idx);
+
+        var bindings: std.StringHashMapUnmanaged(Node.Index) = .{};
+        const matched = try oir.match(node_index, from, &bindings);
+        if (matched) try matches.append(.{
+            .root = node_index,
+            .bindings = bindings,
+        });
+    }
+    return matches.toOwnedSlice();
+}
+
+fn match(
+    oir: *Oir,
+    node_idx: Node.Index,
+    from: SExpr,
+    bindings: *std.StringHashMapUnmanaged(Node.Index),
+) RewriteError!bool {
+    const allocator = oir.allocator;
+    const root_node = oir.getNode(node_idx);
+
+    switch (from.data) {
+        .list => |list| {
+            assert(list.len != 0); // there shouldn't be any empty lists
+            // we cant immediately tell that it isn't equal if the tags don't match.
+            // i.e, root_node is a (mul 10 20), and the pattern wants (div_exact ?x ?y)
+            // as you can see, they could never match.
+            if (root_node.tag != from.tag) return false;
+            // if the amount of children isn't equal, they couldn't match.
+            // i.e root_node is a (mul 10 20), and the pattern wants (abs ?x)
+            // this is more of a sanity check, since the tag check above would probably
+            // remove all cases of this.
+            if (list.len != root_node.out.items.len) return false;
+
+            // now we're left with a list of expressions and a graph.
+            // since the "out" field of the nodes is ordered from left to right, we're going to
+            // iterate through it inline with the expression list, and just recursively match with match()
+            for (root_node.out.items, list) |sub_node_idx, expr| {
+                if (!try oir.matchClass(sub_node_idx, expr, bindings)) {
+                    return false;
+                }
+            }
+            return true;
+        },
+        .atom => |constant| {
+            // is this an identifier?
+            if (constant[0] == '?') {
+                const identifier = constant[1..];
+                const gop = try bindings.getOrPut(allocator, identifier);
+                if (gop.found_existing) {
+                    // we've already found this! is it the same as we found before?
+                    // NOTE: you may think the order in which we match identifiers
+                    // matters. fortunately, it doesn't! if "x" was found first,
+                    // and was equal to 10, it doesn't matter if another "x" was
+                    // found equal to 20. they would never match.
+
+                    // if both nodes are in the same class, they *must* be equal.
+                    // this is one of the reasons why we need to rebuild before
+                    // doing rewrites, to allow checks like this.
+                    return gop.value_ptr.* == node_idx;
+                } else {
+                    // make sure to remember for further matches
+                    gop.value_ptr.* = node_idx;
+                    // we haven't seen this class yet. it's a match, since unique identifiers
+                    // could mean anything.
+                    return true;
+                }
+            } else {
+                // must be a number
+                if (root_node.tag != .constant) return false;
+
+                const value = root_node.data.constant;
+                const parsed_value = try std.fmt.parseInt(i64, constant, 10);
+
+                return value == parsed_value;
+            }
+        },
+        else => @panic("TODO"),
+    }
+}
+
+/// Given an class index, returns whether any nodes in it match the given pattern.
+fn matchClass(
+    oir: *Oir,
+    class_idx: Class.Index,
+    sub_pattern: SExpr,
+    bindings: *std.StringHashMapUnmanaged(Node.Index),
+) RewriteError!bool {
+    const class = oir.getClassPtr(class_idx);
+    for (class.bag.items) |sub_node_idx| {
+        const is_match = try oir.match(
+            sub_node_idx,
+            sub_pattern,
+            bindings,
+        );
+        if (is_match) return true;
+    }
+    return false;
+}
+
+fn applyRewrite(
+    oir: *Oir,
+    root_node_idx: Node.Index,
+    to: SExpr,
+    bindings: *const std.StringHashMapUnmanaged(Node.Index),
+) !void {
+    const allocator = oir.allocator;
+    const root_class = oir.findClass(root_node_idx);
+
+    switch (to.data) {
+        .list => |list| {
+            var new_node: Node = .{
+                .tag = to.tag,
+                .out = .{},
+            };
+
+            for (list) |sub_expr| {
+                const new_sub_node = try oir.expressionToNode(sub_expr, bindings);
+                const sub_class_idx = try oir.add(new_sub_node);
+                try new_node.out.append(allocator, sub_class_idx);
+            }
+
+            const new_class_idx = try oir.add(new_node);
+            _ = try oir.@"union"(root_class, new_class_idx);
+        },
+        else => @panic("TODO"),
+    }
+}
+
+fn expressionToNode(
+    oir: *Oir,
+    expr: SExpr,
+    bindings: *const std.StringHashMapUnmanaged(Node.Index),
+) !Node {
+    switch (expr.data) {
+        .atom => |atom| {
+            var node: Node = .{
+                .tag = .constant,
+                .out = .{},
+            };
+
+            if (atom[0] == '?') {
+                const ident = atom[1..];
+                const from_bind = bindings.get(ident).?;
+                const from_node = oir.getNode(from_bind);
+                node.tag = from_node.tag;
+                node.data = from_node.data;
+            } else {
+                const number = try std.fmt.parseInt(i64, atom, 10);
+                node.data = .{ .constant = number };
+            }
+
+            return node;
+        },
+        else => @panic("TODO"),
+    }
+}
+
 /// Reference becomes invalid when new classes are adedd to the graph.
 fn getClassPtr(oir: *Oir, idx: Class.Index) *Class {
     const found = oir.find.find(idx);
     return oir.classes.getPtr(found).?;
+}
+
+fn findClass(oir: *Oir, node_idx: Node.Index) Class.Index {
+    const memo_idx = oir.node_to_class.getContext(
+        node_idx,
+        .{ .oir = oir },
+    ).?;
+    return oir.find.find(memo_idx);
 }
 
 pub fn getNode(oir: *const Oir, idx: Node.Index) Node {
@@ -532,7 +733,10 @@ pub fn add(oir: *Oir, node: Node) !Class.Index {
 ///
 /// It should be used carefully as it invalidates the equality invariance of the graph.
 fn addInternal(oir: *Oir, node: Node.Index) !Class.Index {
-    if (oir.node_to_class.getContext(node, .{ .oir = oir })) |class_idx| {
+    if (oir.node_to_class.getContext(
+        node,
+        .{ .oir = oir },
+    )) |class_idx| {
         return class_idx;
     } else {
         const id = try oir.makeClass(node);
@@ -555,9 +759,10 @@ fn makeClass(oir: *Oir, node_idx: Node.Index) !Class.Index {
     const node = oir.getNode(node_idx);
     for (node.out.items) |child| {
         const class_ptr = oir.getClassPtr(child);
-        try class_ptr.parents.append(oir.allocator, .{ node, id });
+        try class_ptr.parents.append(oir.allocator, .{ node_idx, id });
     }
 
+    try oir.pending.append(oir.allocator, .{ node_idx, id });
     try oir.classes.put(oir.allocator, id, class);
     try oir.node_to_class.putNoClobberContext(oir.allocator, node_idx, id, .{ .oir = oir });
 
@@ -605,17 +810,24 @@ pub fn @"union"(oir: *Oir, a_idx: Class.Index, b_idx: Class.Index) !bool {
 /// Currently this looks over hashes of the nodes and merges duplicate nodes.
 /// We can hash based on the class indices themselves, as they don't change during the
 /// rebuild.
-pub fn rebuild(oir: *Oir) void {
-    // the simplest version for now will just be iterating through the nodes
-    // inside of a class, and finding duplicate nodes inside of them and deleting those.
-    // TODO: later we need to perform unions on classes that are proven duplicate.
-
+pub fn rebuild(oir: *Oir) !void {
     log.debug("rebuilding", .{});
 
     while (oir.pending.popOrNull()) |pair| {
-        const node, const class_idx = pair;
-        std.debug.print("node: {}, class_idx: {}\n", .{ node, class_idx });
-        @panic("TODO");
+        const node_idx, const class_idx = pair;
+        for (oir.getNode(node_idx).out.items) |*id| {
+            id.* = oir.find.find(id.*);
+        }
+        const gop = try oir.node_to_class.getOrPutContext(
+            oir.allocator,
+            node_idx,
+            .{ .oir = oir },
+        );
+        if (gop.found_existing) {
+            const mem_class = gop.value_ptr.*;
+            _ = try oir.@"union"(mem_class, class_idx);
+        }
+        gop.value_ptr.* = class_idx;
     }
 
     var iter = oir.classes.valueIterator();
@@ -628,6 +840,7 @@ pub fn rebuild(oir: *Oir) void {
         }
     }
 
+    assert(oir.pending.items.len == 0);
     oir.clean = true;
 }
 
@@ -671,8 +884,9 @@ pub fn classContains(oir: *Oir, idx: Class.Index, comptime tag: Node.Tag) ?Node.
 }
 
 const Oir = @This();
-const IR = @import("Ir.zig");
 const std = @import("std");
+const IR = @import("Ir.zig");
+const SExpr = @import("rewrites/SExpr.zig");
 
 const log = std.log.scoped(.oir);
 const assert = std.debug.assert;
