@@ -205,6 +205,11 @@ pub const Class = struct {
             try writer.print("%{d}", .{@intFromEnum(idx)});
         }
     };
+
+    pub fn deinit(class: *Class, allocator: std.mem.Allocator) void {
+        class.bag.deinit(allocator);
+        class.parents.deinit(allocator);
+    }
 };
 
 pub const CostStrategy = enum {
@@ -582,13 +587,8 @@ pub fn @"union"(oir: *Oir, a_idx: Class.Index, b_idx: Class.Index) !bool {
 
     _ = oir.find.@"union"(a, b);
 
-    assert(a != b);
-
     var b_class = oir.classes.fetchRemove(b).?.value;
-    defer {
-        b_class.bag.deinit(oir.allocator);
-        b_class.parents.deinit(oir.allocator);
-    }
+    defer b_class.deinit(oir.allocator);
 
     const a_class = oir.classes.getPtr(a).?;
     assert(a == a_class.index);
@@ -636,10 +636,7 @@ pub fn deinit(oir: *Oir) void {
 
     {
         var iter = oir.classes.valueIterator();
-        while (iter.next()) |class| {
-            class.parents.deinit(allocator);
-            class.bag.deinit(allocator);
-        }
+        while (iter.next()) |class| class.deinit(allocator);
         oir.classes.deinit(allocator);
     }
 
