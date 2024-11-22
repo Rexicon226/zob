@@ -65,6 +65,8 @@ pub const Instruction = struct {
         srli,
         /// Divide
         div,
+        /// Multiply
+        mul,
 
         /// An instruction that is considered a tombstone.
         /// Ignored by MIR printers, analysis passes, and other things.
@@ -231,6 +233,7 @@ pub const Extractor = struct {
             },
             // non-commutative instructions
             .div_exact,
+            .mul, // putting mul here for now even though it's commutative
             => {
                 assert(node.out.items.len == 2);
 
@@ -245,8 +248,14 @@ pub const Extractor = struct {
 
                 const dst_value: Value = .{ .virtual = try mir.allocVirtualReg(.int) };
 
+                const tag: Mir.Instruction.Tag = switch (node.tag) {
+                    .div_exact => .div,
+                    .mul => .mul,
+                    else => unreachable,
+                };
+
                 _ = try mir.addUnOp(.{
-                    .tag = .div,
+                    .tag = tag,
                     .data = .{ .bin_op = .{
                         .rhs = rhs_value,
                         .lhs = lhs_value,
@@ -256,6 +265,7 @@ pub const Extractor = struct {
 
                 return dst_value;
             },
+
             // commutative instructions with immediate versions
             .add,
             .shl,
@@ -522,6 +532,7 @@ const Writer = struct {
             .slli,
             .srl,
             .srli,
+            .mul,
             .div,
             => {
                 const bin_op = data.bin_op;

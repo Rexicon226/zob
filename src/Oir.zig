@@ -408,7 +408,9 @@ const Passes = struct {
 
                     for (node.out.items, 0..) |sub_idx, sub_i| {
                         if (oir.classContains(sub_idx, .constant)) |sub_node| {
-                            const value: u64 = @intCast(oir.getNode(sub_node).data.constant);
+                            const constant = oir.getNode(sub_node).data.constant;
+                            if (constant < 0) continue;
+                            const value: u64 = @intCast(constant);
                             if (std.math.isPowerOfTwo(value)) {
                                 meta = .{
                                     .value = value,
@@ -463,15 +465,16 @@ const Passes = struct {
         return changed;
     }
 
-    // fn commonNodeElim(oir: *Oir) !bool {
-    //     _ = oir;
-    // }
+    fn commonNodeElim(oir: *Oir) !bool {
+        _ = oir;
+        return false;
+    }
 };
 
 const passes = &.{
     Passes.constantFold,
     Passes.strengthReduce,
-    // Passes.commonNodeElim,
+    Passes.commonNodeElim,
 };
 
 pub fn optimize(oir: *Oir, mode: enum {
