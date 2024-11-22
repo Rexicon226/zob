@@ -27,7 +27,8 @@ pub fn dumpGraphViz(
                 \\
             , .{class_idx});
 
-            for (class.bag.items, 0..) |node, i| {
+            for (class.bag.items, 0..) |node_idx, i| {
+                const node = oir.getNode(node_idx);
                 try file_writer.print("    {}.{} [label=\"", .{ class_idx, i });
                 switch (node.tag) {
                     .constant => {
@@ -52,8 +53,9 @@ pub fn dumpGraphViz(
     while (class_iter.next()) |entry| {
         const class_idx: u32 = @intFromEnum(entry.key_ptr.*);
         const class = entry.value_ptr.*;
-        for (class.bag.items, 0..) |node, i| {
+        for (class.bag.items, 0..) |node_idx, i| {
             var arg_i: usize = 0;
+            const node = oir.getNode(node_idx);
             for (node.out.items) |child_idx| {
                 try file_writer.print(
                     "  {}.{} -> {}.0 [lhead = cluster_{}]\n",

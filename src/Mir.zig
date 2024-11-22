@@ -141,12 +141,6 @@ pub const Extractor = struct {
     oir: *Oir,
     mir: *Mir,
     cost_strategy: Oir.CostStrategy,
-    map: std.HashMapUnmanaged(
-        Node,
-        Value,
-        Oir.NodeContext,
-        std.hash_map.default_max_load_percentage,
-    ) = .{},
 
     /// Extracts the best pattern of Oir from the E-Graph given a cost model.
     pub fn extract(e: *Extractor) !void {
@@ -160,13 +154,14 @@ pub const Extractor = struct {
 
     /// TODO: don't just search for a `ret` node,
     /// instead compute the mathematical leaves of the graph
-    fn findLeafNode(e: *Extractor) Node {
+    fn findLeafNode(e: *Extractor) Node.Index {
         const oir = e.oir;
-        const ret_node_idx: Node = idx: {
+        const ret_node_idx: Node.Index = idx: {
             var class_iter = oir.classes.valueIterator();
             while (class_iter.next()) |class| {
-                for (class.bag.items) |node| {
-                    if (node.tag == .ret) break :idx node;
+                for (class.bag.items) |node_idx| {
+                    const node = oir.getNode(node_idx);
+                    if (node.tag == .ret) break :idx node_idx;
                 }
             }
             @panic("no ret node found!");
@@ -181,9 +176,11 @@ pub const Extractor = struct {
     /// the given cost model.
     fn extractNode(
         e: *Extractor,
-        node: Node,
+        node_idx: Node.Index,
     ) !Value {
+        const oir = e.oir;
         const mir = e.mir;
+        const node = oir.getNode(node_idx);
 
         switch (node.tag) {
             .arg => {
@@ -312,16 +309,21 @@ pub const Extractor = struct {
         }
     }
 
-    fn getNode(e: *Extractor, node: Node) error{OutOfMemory}!Value {
-        const gop = try e.map.getOrPut(e.oir.allocator, node);
-        if (!gop.found_existing) {
-            gop.value_ptr.* = try e.extractNode(node);
-        }
-        return gop.value_ptr.*;
+    fn getNode(e: *Extractor, node: Node.Index) error{OutOfMemory}!Value {
+        // TODO: this map performs a weird version of CNE which doesn't
+        // consider node assignment side-effects. i'd rather just have extra
+        // MIR instructions for now
+
+        // const gop = try e.map.getOrPut(e.oir.allocator, node);
+        // if (!gop.found_existing) {
+        //     gop.value_ptr.* = try e.extractNode(node);
+        // }
+        // return gop.value_ptr.*;
+        return e.extractNode(node);
     }
 
     /// Given a class, extract the "best" node from it.
-    fn extractClass(e: *Extractor, class_idx: Class.Index) Node {
+    fn extractClass(e: *Extractor, class_idx: Class.Index) Node.Index {
         const oir = e.oir;
         const class = oir.classes.get(class_idx).?;
         assert(class.bag.items.len > 0);
@@ -329,20 +331,21 @@ pub const Extractor = struct {
         switch (e.cost_strategy) {
             .simple_latency => {
                 var best_cost: u32 = std.math.maxInt(u32);
-                var best_node: Node = class.bag.items[0];
+                var best_node: Node.Index = class.bag.items[0];
 
-                for (class.bag.items) |node| {
+                for (class.bag.items) |node_idx| {
+                    const node = oir.getNode(node_idx);
                     if (!cost.hasLatency(node.tag)) continue;
                     const node_cost = cost.getLatency(node.tag);
                     if (node_cost < best_cost) {
                         best_cost = node_cost;
-                        best_node = node;
+                        best_node = node_idx;
                     }
                 }
 
                 log.debug("best node for class {} is {s}", .{
                     class_idx,
-                    @tagName(best_node.tag),
+                    @tagName(oir.getNode(best_node).tag),
                 });
 
                 return best_node;
@@ -351,7 +354,7 @@ pub const Extractor = struct {
     }
 
     pub fn deinit(e: *Extractor) void {
-        e.map.deinit(e.oir.allocator);
+        _ = e;
     }
 };
 

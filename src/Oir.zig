@@ -2,6 +2,8 @@
 
 allocator: std.mem.Allocator,
 
+nodes: std.ArrayListUnmanaged(Node) = .{},
+
 /// Represents the list of all E-Classes in the graph.
 ///
 /// Each E-Class contains a bundle of nodes which are equivalent to each other.
@@ -15,7 +17,7 @@ discarded_nodes: std.ArrayListUnmanaged(Node) = .{},
 /// A map relating nodes to the classes they are in. Used as a fast way to determine
 /// what "parent" class a node is in.
 node_to_class: std.HashMapUnmanaged(
-    Node,
+    Node.Index,
     Class.Index,
     NodeContext,
     std.hash_map.default_max_load_percentage,
@@ -66,7 +68,10 @@ const Find = struct {
 };
 
 pub const NodeContext = struct {
-    pub fn hash(_: NodeContext, node: Node) u64 {
+    oir: *const Oir,
+
+    pub fn hash(ctx: NodeContext, node_idx: Node.Index) u64 {
+        const node = ctx.oir.getNode(node_idx);
         var hasher = std.hash.Wyhash.init(0);
 
         hasher.update(std.mem.asBytes(&node.tag));
@@ -79,7 +84,10 @@ pub const NodeContext = struct {
         return hasher.final();
     }
 
-    pub fn eql(_: NodeContext, a: Node, b: Node) bool {
+    pub fn eql(ctx: NodeContext, a_idx: Node.Index, b_idx: Node.Index) bool {
+        const a = ctx.oir.getNode(a_idx);
+        const b = ctx.oir.getNode(b_idx);
+
         if (a.tag != b.tag) return false;
         if (std.meta.activeTag(a.data) != std.meta.activeTag(b.data)) return false;
         // b.data would also be `constant` because of the above check
@@ -110,6 +118,10 @@ pub const Node = struct {
 
     /// Nodes only have edges to Classes.
     out: std.ArrayListUnmanaged(Class.Index) = .{},
+
+    pub const Index = enum(u32) {
+        _,
+    };
 
     pub const Tag = enum(u8) {
         arg,
@@ -177,7 +189,7 @@ const Pair = struct { Node, Class.Index };
 /// A Class contains an N amount of Nodes as children.
 pub const Class = struct {
     index: Index,
-    bag: std.ArrayListUnmanaged(Node) = .{},
+    bag: std.ArrayListUnmanaged(Node.Index) = .{},
     parents: std.ArrayListUnmanaged(Pair) = .{},
 
     pub const Index = enum(u32) {
@@ -323,7 +335,8 @@ const Passes = struct {
             // the class has already been solved for a constant, no need to do anything else!
             if (oir.classContains(class_idx, .constant) != null) continue;
 
-            for (class.bag.items) |node| {
+            for (class.bag.items) |node_idx| {
+                const node = oir.getNode(node_idx);
                 assert(node.tag != .constant);
                 defer buffer.clearRetainingCapacity();
 
@@ -377,7 +390,8 @@ const Passes = struct {
         while (iterator.next()) |entry| {
             const class_idx = entry.key_ptr.*;
             const class = entry.value_ptr;
-            for (class.bag.items) |node| {
+            for (class.bag.items) |node_idx| {
+                const node = oir.getNode(node_idx);
                 if (node.tag.isVolatile()) continue;
 
                 switch (node.tag) {
@@ -413,7 +427,8 @@ const Passes = struct {
                         // this isn't a very good solution since there could be multiple non-identical shl in the class.
                         // node tagging maybe?
                         var skip: bool = false;
-                        for (class.bag.items) |sub_node| {
+                        for (class.bag.items) |sub_node_idx| {
+                            const sub_node = oir.getNode(sub_node_idx);
                             if (sub_node.tag == rewritten_tag) {
                                 changed = false;
                                 skip = true;
@@ -447,11 +462,16 @@ const Passes = struct {
 
         return changed;
     }
+
+    // fn commonNodeElim(oir: *Oir) !bool {
+    //     _ = oir;
+    // }
 };
 
 const passes = &.{
     Passes.constantFold,
     Passes.strengthReduce,
+    // Passes.commonNodeElim,
 };
 
 pub fn optimize(oir: *Oir, mode: enum {
@@ -462,13 +482,14 @@ pub fn optimize(oir: *Oir, mode: enum {
     switch (mode) {
         .saturate => {
             oir.rebuild();
+            assert(oir.clean);
             while (true) {
                 var new_change: bool = false;
                 inline for (passes) |pass| {
                     if (try pass(oir)) new_change = true;
 
                     // TODO: in theory we don't actually need to rebuild after every pass
-                    // maybe we should look into rebuilding on demand?
+                    // maybe we should look into rebuilding on-demand?
                     if (!oir.clean) oir.rebuild();
                 }
                 if (!new_change) break;
@@ -483,20 +504,27 @@ fn getClassPtr(oir: *Oir, idx: Class.Index) *Class {
     return oir.classes.getPtr(found).?;
 }
 
+pub fn getNode(oir: *const Oir, idx: Node.Index) Node {
+    return oir.nodes.items[@intFromEnum(idx)];
+}
+
 /// Adds an ENode to the EGraph, giving the node its own class.
 /// Returns the EClass index the ENode was placed in.
 pub fn add(oir: *Oir, node: Node) !Class.Index {
     log.debug("adding node {s}", .{@tagName(node.tag)});
-    const class_idx = try oir.addInternal(node);
+
+    const node_idx: Node.Index = @enumFromInt(oir.nodes.items.len);
+    try oir.nodes.append(oir.allocator, node);
+
+    const class_idx = try oir.addInternal(node_idx);
     return oir.find.find(class_idx);
 }
 
 /// An internal function to simplify adding nodes to the Oir.
 ///
 /// It should be used carefully as it invalidates the equality invariance of the graph.
-fn addInternal(oir: *Oir, node: Node) !Class.Index {
-    if (oir.node_to_class.get(node)) |class_idx| {
-        try oir.discarded_nodes.append(oir.allocator, node);
+fn addInternal(oir: *Oir, node: Node.Index) !Class.Index {
+    if (oir.node_to_class.getContext(node, .{ .oir = oir })) |class_idx| {
         return class_idx;
     } else {
         const id = try oir.makeClass(node);
@@ -505,7 +533,7 @@ fn addInternal(oir: *Oir, node: Node) !Class.Index {
     }
 }
 
-fn makeClass(oir: *Oir, node: Node) !Class.Index {
+fn makeClass(oir: *Oir, node_idx: Node.Index) !Class.Index {
     const id = try oir.find.makeSet(oir.allocator);
     log.debug("adding to {}", .{id});
 
@@ -513,15 +541,17 @@ fn makeClass(oir: *Oir, node: Node) !Class.Index {
         .index = id,
         .bag = .{},
     };
-    try class.bag.append(oir.allocator, node);
 
+    try class.bag.append(oir.allocator, node_idx);
+
+    const node = oir.getNode(node_idx);
     for (node.out.items) |child| {
         const class_ptr = oir.getClassPtr(child);
         try class_ptr.parents.append(oir.allocator, .{ node, id });
     }
 
     try oir.classes.put(oir.allocator, id, class);
-    try oir.node_to_class.putNoClobber(oir.allocator, node, id);
+    try oir.node_to_class.putNoClobberContext(oir.allocator, node_idx, id, .{ .oir = oir });
 
     return id;
 }
@@ -586,7 +616,8 @@ pub fn rebuild(oir: *Oir) void {
 
     var iter = oir.classes.valueIterator();
     while (iter.next()) |class| {
-        for (class.bag.items) |node| {
+        for (class.bag.items) |node_idx| {
+            const node = oir.getNode(node_idx);
             for (node.out.items) |*child| {
                 child.* = oir.find.find(child.*);
             }
@@ -608,20 +639,14 @@ pub fn deinit(oir: *Oir) void {
         oir.classes.deinit(allocator);
     }
 
-    {
-        var iter = oir.node_to_class.keyIterator();
-        while (iter.next()) |node| {
-            node.out.deinit(allocator);
-        }
+    oir.node_to_class.deinit(allocator);
 
-        oir.node_to_class.deinit(allocator);
-    }
-
-    oir.find.deinit(allocator);
-    for (oir.discarded_nodes.items) |*node| {
+    for (oir.nodes.items) |*node| {
         node.out.deinit(allocator);
     }
-    oir.discarded_nodes.deinit(allocator);
+    oir.nodes.deinit(allocator);
+
+    oir.find.deinit(allocator);
     oir.pending.deinit(allocator);
 }
 
@@ -634,7 +659,8 @@ pub fn classContains(oir: *Oir, idx: Class.Index, comptime tag: Node.Tag) ?Node 
     assert(oir.clean);
 
     const class = oir.classes.get(idx).?;
-    for (class.bag.items) |node| {
+    for (class.bag.items) |node_idx| {
+        const node = oir.getNode(node_idx);
         // Since the node is aborbing, we can return early as no other
         // instances of it are allowed in the same class.
         if (node.tag == tag) return node;
