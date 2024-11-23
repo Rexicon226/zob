@@ -35,6 +35,33 @@ const BuiltinFn = struct {
 
     const Tag = enum {
         known_pow2,
+        log2,
+
+        pub fn location(tag: Tag) Location {
+            return switch (tag) {
+                .known_pow2 => .src,
+                .log2 => .dst,
+            };
+        }
+    };
+
+    /// Describes where this builtin can be used.
+    const Location = enum {
+        /// This builtin can be used in the source expression, during matching.
+        ///
+        /// Its parameter is the name of the identifier that will be set in the bindings
+        /// when it finds that node/constant.
+        ///
+        /// `(mul ?x @known_pow2(y))` will create bindings where `"y"` is the constant node
+        /// that was proven to be a known power of two.
+        src,
+        /// This builtin can be used in the destination expression, during applying.
+        ///
+        /// Its parameter is a link to the name of the identifier that was found during matching.
+        ///
+        /// `(shl ?x @log2(y))` will search up for `"y"` in the bindings and take the log2 of
+        /// the constant node that was found.
+        dst,
     };
 };
 
@@ -43,12 +70,14 @@ pub const Parser = struct {
     buffer: []const u8,
     index: u32 = 0,
 
-    pub fn parse(buffer: []const u8, allocator: std.mem.Allocator) !SExpr {
-        var parser: Parser = .{ .buffer = buffer };
-        return parser.parseInternal(allocator);
+    pub fn parse(comptime buffer: []const u8) SExpr {
+        comptime {
+            var parser: Parser = .{ .buffer = buffer };
+            return parser.parseInternal();
+        }
     }
 
-    pub fn parseInternal(parser: *Parser, allocator: std.mem.Allocator) !SExpr {
+    pub fn parseInternal(comptime parser: *Parser) SExpr {
         while (parser.index < parser.buffer.len) {
             const c = parser.eat();
             switch (c) {
@@ -61,16 +90,14 @@ pub const Parser = struct {
                     const tag_end = parser.index;
                     const tag_string = parser.buffer[tag_start..tag_end];
                     const tag = std.meta.stringToEnum(NodeTag, tag_string) orelse
-                        return error.UnknownTag;
-
+                        @compileError("unknown tag");
                     // now there will be a list of parameters to this expression
                     // i.e (mul ?x ?y), where ?x and ?y are the parameters.
                     // these are delimited by the right paren.
-                    var list: std.ArrayListUnmanaged(SExpr) = .{};
-                    errdefer list.deinit(allocator);
+                    var list: []const SExpr = &.{};
                     while (parser.peak() != ')') {
                         if (parser.index == parser.buffer.len) {
-                            return error.NoClosingParen;
+                            @compileError("no closing paren");
                         }
                         // this should only happen when an expression was parsed
                         // but a space wasn't provided after it. so, (mul ?x?y).
@@ -78,27 +105,26 @@ pub const Parser = struct {
                         // have single letter names, so `?y?` would be in a second
                         // loop.
                         if (parser.peak() != ' ') {
-                            return error.NoSpaceAfterArg;
+                            @compileLog("no space after arg");
                         }
                         // eat the space before parsing the next expression
                         assert(parser.eat() == ' ');
-                        const expr = try parser.parseInternal(allocator);
-                        try list.append(allocator, expr);
+                        const expr = parser.parseInternal();
+                        list = list ++ .{expr};
                     }
                     // closing off the expression with a parenthesis
                     assert(parser.eat() == ')');
-                    const expression_list = try list.toOwnedSlice(allocator);
-                    if (expression_list.len == 0) {
-                        return error.NoExpressionArguments;
+                    if (list.len == 0) {
+                        @compileLog("no expression arguments");
                     }
-                    return .{ .tag = tag, .data = .{ .list = expression_list } };
+                    return .{ .tag = tag, .data = .{ .list = list } };
                 },
                 // the start of an identifier
                 '?' => {
                     if (!std.ascii.isAlphabetic(parser.peak())) {
                         // the next character must be a letter, since only
                         // identifiers start with question marks
-                        return error.QuestionMarkWithoutLetter;
+                        @compileLog("question mark without letter");
                     }
 
                     // this - 1 is to include the `?`, which we will use later in the pipeline
@@ -111,7 +137,7 @@ pub const Parser = struct {
                     const ident = parser.buffer[ident_start..ident_end];
                     if (ident.len != 2) {
                         // identifiers should be a single character, including the ? that's 2 length
-                        return error.IdentifierTooLong;
+                        @compileLog("ident too long");
                     }
                     return .{ .tag = .constant, .data = .{ .atom = ident } };
                 },
@@ -132,12 +158,9 @@ pub const Parser = struct {
                     switch (std.zig.parseNumberLiteral(constant)) {
                         .int => {}, // all good!
                         // we don't support this yet, floats are a complicated rabbit hole
-                        .float => return error.FloatConstant,
-                        .big_int => return error.IntegerConstantTooLarge, // TODO: we should support this, just not yet!
-                        .failure => |err| {
-                            _ = err;
-                            return error.InvalidConstant;
-                        },
+                        .float => @compileError("TODO: float Constants"),
+                        .big_int => @compileError("integer constant too large"), // TODO: we should support this, just not yet!
+                        .failure => |err| @compileError("invalid constant " ++ @errorName(err)),
                     }
                     return .{ .tag = .constant, .data = .{ .atom = constant } };
                 },
@@ -150,7 +173,7 @@ pub const Parser = struct {
 
                     const builtin_name = parser.buffer[builtin_start..builtin_end];
                     const builtin_tag = std.meta.stringToEnum(BuiltinFn.Tag, builtin_name) orelse
-                        return error.UnknownBuiltinFunction;
+                        @compileError("unknown builtin function");
 
                     const param_start = parser.index;
                     try parser.eatUntilDelimiter(')');
@@ -166,10 +189,10 @@ pub const Parser = struct {
                         } },
                     };
                 },
-                else => return error.UnknownCharacter,
+                else => @compileError("unknown character: '" ++ .{c} ++ "'"),
             }
         }
-        return error.UnexpectedEnd;
+        @compileError("unexpected end of expression");
     }
 
     fn eat(parser: *Parser) u8 {

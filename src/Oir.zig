@@ -465,25 +465,33 @@ const Passes = struct {
         return changed;
     }
 
+    const Rewrite = struct {
+        name: []const u8,
+        from: SExpr,
+        to: SExpr,
+    };
+    const rewrites: []const Rewrite = &.{
+        .{
+            .name = "mul-to-shl",
+            .from = SExpr.Parser.parse("(mul ?x @known_pow2(y))"),
+            .to = SExpr.Parser.parse("(shl ?x @log2(y))"),
+        },
+    };
+
     fn commonRewrites(oir: *Oir) !bool {
         const gpa = oir.allocator;
 
-        // (mul ?x 2) -> (shl ?x 1)
-        var from_pattern = try SExpr.Parser.parse("(mul ?x 2)", gpa);
-        defer from_pattern.deinit(gpa);
+        for (rewrites) |rewrite| {
+            const matches = try oir.search(rewrite.from);
+            defer {
+                for (matches) |*sub_match| sub_match.deinit(gpa);
+                gpa.free(matches);
+            }
 
-        var to_pattern = try SExpr.Parser.parse("(shl ?x 1)", gpa);
-        defer to_pattern.deinit(gpa);
-
-        const matches = try oir.search(from_pattern);
-        defer {
-            for (matches) |*sub_match| sub_match.deinit(gpa);
-            gpa.free(matches);
-        }
-
-        for (matches) |*result| {
-            std.debug.print("node: {}\n", .{result.root});
-            try oir.applyRewrite(result.root, to_pattern, &result.bindings);
+            for (matches) |*result| {
+                std.debug.print("applying {s} to {}\n", .{ rewrite.name, result.root });
+                try oir.applyRewrite(result.root, rewrite.to, &result.bindings);
+            }
         }
 
         return false;
@@ -618,7 +626,23 @@ fn match(
                 return value == parsed_value;
             }
         },
-        else => @panic("TODO"),
+        .builtin => |builtin| {
+            const tag = builtin.tag;
+            const param = builtin.expr;
+            if (tag.location() != .src) @panic("called dst builtin in matching");
+
+            switch (tag) {
+                .known_pow2 => {
+                    const class_idx = oir.findClass(node_idx);
+                    if (oir.classContains(class_idx, .constant)) |constant_idx| {
+                        try bindings.put(allocator, param, constant_idx);
+                        return true;
+                    }
+                    return false;
+                },
+                else => unreachable,
+            }
+        },
     }
 }
 
@@ -696,6 +720,30 @@ fn expressionToNode(
             }
 
             return node;
+        },
+        .builtin => |builtin| {
+            const tag = builtin.tag;
+            const param = builtin.expr;
+            if (tag.location() != .dst) @panic("called src builtin in applying");
+
+            switch (tag) {
+                .log2 => {
+                    const constant_idx = bindings.get(param).?;
+                    const constant_node = oir.getNode(constant_idx);
+                    assert(constant_node.tag == .constant);
+
+                    const value = constant_node.data.constant;
+                    if (value < 1) @panic("how do we handle @log2 of a negative?");
+
+                    const log_value = std.math.log2_int(u64, @intCast(value));
+                    const new_node: Node = .{
+                        .tag = .constant,
+                        .data = .{ .constant = log_value },
+                    };
+                    return new_node;
+                },
+                else => unreachable,
+            }
         },
         else => @panic("TODO"),
     }
