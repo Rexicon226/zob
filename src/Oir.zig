@@ -370,7 +370,7 @@ const Passes = struct {
                             .tag = .constant,
                             .data = .{ .constant = result },
                         });
-                        _ = try oir.@"union"(new_class, class_idx);
+                        try oir.@"union"(new_class, class_idx);
                         try oir.rebuild();
                     },
                     else => std.debug.panic("TODO: constant fold {s}", .{@tagName(node.tag)}),
@@ -455,7 +455,7 @@ const Passes = struct {
                         try new_node.out.append(oir.allocator, shift_value_idx);
 
                         const new_class = try oir.add(new_node);
-                        _ = try oir.@"union"(new_class, class_idx);
+                        try oir.@"union"(new_class, class_idx);
                     }
                 },
                 else => {},
@@ -664,7 +664,7 @@ fn applyRewrite(
             }
 
             const new_class_idx = try oir.add(new_node);
-            _ = try oir.@"union"(root_class, new_class_idx);
+            try oir.@"union"(root_class, new_class_idx);
         },
         else => @panic("TODO"),
     }
@@ -684,13 +684,15 @@ fn expressionToNode(
 
             if (atom[0] == '?') {
                 const ident = atom[1..];
-                const from_bind = bindings.get(ident).?;
-                const from_node = oir.getNode(from_bind);
-                node.tag = from_node.tag;
-                node.data = from_node.data;
+                const from_idx = bindings.get(ident).?;
+                const from_node = oir.getNode(from_idx);
+                node = from_node;
             } else {
                 const number = try std.fmt.parseInt(i64, atom, 10);
-                node.data = .{ .constant = number };
+                node = .{
+                    .tag = .constant,
+                    .data = .{ .constant = number },
+                };
             }
 
             return node;
@@ -775,11 +777,11 @@ fn makeClass(oir: *Oir, node_idx: Node.Index) !Class.Index {
 ///
 /// This can be thought of as "merging" two classes. When they were
 /// proven to be equivalent.
-pub fn @"union"(oir: *Oir, a_idx: Class.Index, b_idx: Class.Index) !bool {
+pub fn @"union"(oir: *Oir, a_idx: Class.Index, b_idx: Class.Index) !void {
     oir.clean = false;
     var a = oir.find.find(a_idx);
     var b = oir.find.find(b_idx);
-    if (a == b) return false;
+    if (a == b) return;
 
     const a_parents = oir.classes.get(a).?.parents.items.len;
     const b_parents = oir.classes.get(b).?.parents.items.len;
@@ -801,8 +803,6 @@ pub fn @"union"(oir: *Oir, a_idx: Class.Index, b_idx: Class.Index) !bool {
     try oir.pending.appendSlice(oir.allocator, b_class.parents.items);
     try a_class.bag.appendSlice(oir.allocator, b_class.bag.items);
     try a_class.parents.appendSlice(oir.allocator, b_class.parents.items);
-
-    return true;
 }
 
 /// Performs a rebuild of the E-Graph to ensure that the invariances are met.
@@ -825,7 +825,7 @@ pub fn rebuild(oir: *Oir) !void {
         );
         if (gop.found_existing) {
             const mem_class = gop.value_ptr.*;
-            _ = try oir.@"union"(mem_class, class_idx);
+            try oir.@"union"(mem_class, class_idx);
         }
         gop.value_ptr.* = class_idx;
     }
