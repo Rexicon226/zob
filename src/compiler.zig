@@ -87,17 +87,17 @@ pub fn main() !void {
         try print_oir.dumpGraphViz(&oir, graphviz_file.writer());
     }
 
-    // var mir: Mir = .{ .gpa = allocator };
-    // defer mir.deinit();
+    var mir: Mir = .{ .gpa = allocator };
+    defer mir.deinit();
 
-    // // extract the best OIR solution into our MIR
-    // var extractor: Mir.Extractor = .{
-    //     .cost_strategy = .simple_latency,
-    //     .oir = &oir,
-    //     .mir = &mir,
-    // };
-    // try extractor.extract();
-    // defer extractor.deinit();
+    // extract the best OIR solution into our MIR
+    var extractor: Mir.Extractor = .{
+        .cost_strategy = .simple_latency,
+        .oir = &oir,
+        .mir = &mir,
+    };
+    try extractor.extract();
+    defer extractor.deinit();
 
-    // try mir.run();
+    try mir.run();
 }

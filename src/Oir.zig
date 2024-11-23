@@ -381,95 +381,12 @@ const Passes = struct {
         return changed;
     }
 
-    /// Replaces trivially expensive operations with cheaper equivalents.
-    fn strengthReduce(oir: *Oir) !bool {
-        var changed: bool = false;
-
-        var copied_nodes = try oir.nodes.clone(oir.allocator);
-        defer copied_nodes.deinit(oir.allocator);
-        for (copied_nodes.items, 0..) |node, i| {
-            const node_idx: Node.Index = @enumFromInt(i);
-            if (node.tag.isVolatile()) continue;
-
-            const memo_class_idx = oir.node_to_class.getContext(node_idx, .{ .oir = oir }).?;
-            const class_idx = oir.find.find(memo_class_idx);
-            const class = oir.getClassPtr(class_idx);
-
-            switch (node.tag) {
-                .mul,
-                .div_exact,
-                => {
-                    // metadata for the pass
-                    const Meta = struct {
-                        value: u64,
-                        other_class: Class.Index,
-                    };
-                    var meta: ?Meta = null;
-
-                    for (node.out.items, 0..) |sub_idx, sub_i| {
-                        if (oir.classContains(sub_idx, .constant)) |sub_node| {
-                            const constant = oir.getNode(sub_node).data.constant;
-                            if (constant < 0) continue;
-                            const value: u64 = @intCast(constant);
-                            if (std.math.isPowerOfTwo(value)) {
-                                meta = .{
-                                    .value = value,
-                                    .other_class = node.out.items[sub_i ^ 1], // trick to get the other one
-                                };
-                            }
-                        }
-                    }
-
-                    const rewritten_tag: Oir.Node.Tag = switch (node.tag) {
-                        .mul => .shl,
-                        .div_exact => .shr,
-                        else => unreachable,
-                    };
-
-                    // TODO: to avoid infinite loops, just check if a "shl" node already exists in the class
-                    // this isn't a very good solution since there could be multiple non-identical shl in the class.
-                    // node tagging maybe?
-                    var skip: bool = false;
-                    for (class.bag.items) |sub_node_idx| {
-                        const sub_node = oir.getNode(sub_node_idx);
-                        if (sub_node.tag == rewritten_tag) {
-                            changed = false;
-                            skip = true;
-                        }
-                    }
-                    if (skip) continue;
-
-                    if (meta) |resolved_meta| {
-                        changed = true;
-                        const value = resolved_meta.value;
-                        const new_value = std.math.log2_int(u64, value);
-
-                        // create the (shl ?x @log2($)) node instead of the mul class
-                        const shift_value_idx = try oir.add(.{
-                            .tag = .constant,
-                            .data = .{ .constant = @intCast(new_value) },
-                        });
-
-                        var new_node: Node = .{ .tag = rewritten_tag };
-                        try new_node.out.append(oir.allocator, resolved_meta.other_class);
-                        try new_node.out.append(oir.allocator, shift_value_idx);
-
-                        const new_class = try oir.add(new_node);
-                        try oir.@"union"(new_class, class_idx);
-                    }
-                },
-                else => {},
-            }
-        }
-
-        return changed;
-    }
-
     const Rewrite = struct {
         name: []const u8,
         from: SExpr,
         to: SExpr,
     };
+
     const rewrites: []const Rewrite = &.{
         .{
             .name = "mul-to-shl",
@@ -489,7 +406,7 @@ const Passes = struct {
             }
 
             for (matches) |*result| {
-                std.debug.print("applying {s} to {}\n", .{ rewrite.name, result.root });
+                log.debug("applying {s} to {}\n", .{ rewrite.name, result.root });
                 try oir.applyRewrite(result.root, rewrite.to, &result.bindings);
             }
         }
@@ -499,8 +416,7 @@ const Passes = struct {
 };
 
 const passes = &.{
-    // Passes.constantFold,
-    // Passes.strengthReduce,
+    Passes.constantFold,
     Passes.commonRewrites,
 };
 
@@ -534,10 +450,7 @@ const RewriteResult = struct {
     root: Node.Index,
     bindings: std.StringHashMapUnmanaged(Node.Index),
 
-    fn deinit(
-        result: *RewriteResult,
-        gpa: std.mem.Allocator,
-    ) void {
+    fn deinit(result: *RewriteResult, gpa: std.mem.Allocator) void {
         result.bindings.deinit(gpa);
     }
 };
@@ -556,7 +469,7 @@ fn search(
         if (matched) try matches.append(.{
             .root = node_index,
             .bindings = bindings,
-        });
+        }) else bindings.deinit(gpa);
     }
     return matches.toOwnedSlice();
 }
@@ -635,8 +548,12 @@ fn match(
                 .known_pow2 => {
                     const class_idx = oir.findClass(node_idx);
                     if (oir.classContains(class_idx, .constant)) |constant_idx| {
-                        try bindings.put(allocator, param, constant_idx);
-                        return true;
+                        const constant_node = oir.getNode(constant_idx);
+                        const value = constant_node.data.constant;
+                        if (value > 0 and std.math.isPowerOfTwo(value)) {
+                            try bindings.put(allocator, param, constant_idx);
+                            return true;
+                        }
                     }
                     return false;
                 },
