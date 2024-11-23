@@ -345,8 +345,7 @@ pub const Extractor = struct {
 
                 for (class.bag.items) |node_idx| {
                     const node = oir.getNode(node_idx);
-                    if (!cost.hasLatency(node.tag)) continue;
-                    const node_cost = cost.getLatency(node.tag);
+                    const node_cost = cost.getCost(node.tag);
                     if (node_cost < best_cost) {
                         best_cost = node_cost;
                         best_node = node_idx;

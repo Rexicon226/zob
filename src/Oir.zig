@@ -177,6 +177,14 @@ pub const Node = struct {
         none: void,
         constant: i64,
     };
+
+    pub fn clone(node: *const Node, allocator: std.mem.Allocator) !Node {
+        return .{
+            .tag = node.tag,
+            .data = node.data,
+            .out = try node.out.clone(allocator),
+        };
+    }
 };
 
 const Pair = struct { Node.Index, Class.Index };
@@ -387,28 +395,45 @@ const Passes = struct {
         to: SExpr,
     };
 
+    const Parser = SExpr.Parser;
     const rewrites: []const Rewrite = &.{
         .{
+            .name = "comm-mul",
+            .from = Parser.parse("(mul ?x ?y)"),
+            .to = Parser.parse("(mul ?y ?x)"),
+        },
+        .{
             .name = "mul-to-shl",
-            .from = SExpr.Parser.parse("(mul ?x @known_pow2(y))"),
-            .to = SExpr.Parser.parse("(shl ?x @log2(y))"),
+            .from = Parser.parse("(mul ?x @known_pow2(y))"),
+            .to = Parser.parse("(shl ?x @log2(y))"),
+        },
+        .{
+            .name = "zero-add",
+            .from = Parser.parse("(add ?x 0)"),
+            .to = Parser.parse("?x"),
         },
     };
 
     fn commonRewrites(oir: *Oir) !bool {
         const gpa = oir.allocator;
 
-        for (rewrites) |rewrite| {
-            const matches = try oir.search(rewrite.from);
-            defer {
-                for (matches) |*sub_match| sub_match.deinit(gpa);
-                gpa.free(matches);
+        var matches = std.ArrayList(RewriteResult).init(gpa);
+        defer {
+            for (matches.items) |*item| {
+                item.deinit(gpa);
             }
+            matches.deinit();
+        }
 
-            for (matches) |*result| {
-                log.debug("applying {s} to {}\n", .{ rewrite.name, result.root });
-                try oir.applyRewrite(result.root, rewrite.to, &result.bindings);
-            }
+        for (rewrites) |rewrite| {
+            const from_matches = try oir.search(rewrite);
+            defer gpa.free(from_matches);
+            try matches.appendSlice(from_matches);
+        }
+
+        for (matches.items) |*item| {
+            log.debug("applying {} to {}", .{ item.rw.to, item.root });
+            try oir.applyRewrite(item.root, item.rw.to, &item.bindings);
         }
 
         return false;
@@ -448,6 +473,7 @@ const RewriteError = error{ OutOfMemory, InvalidCharacter, Overflow };
 
 const RewriteResult = struct {
     root: Node.Index,
+    rw: Passes.Rewrite,
     bindings: std.StringHashMapUnmanaged(Node.Index),
 
     fn deinit(result: *RewriteResult, gpa: std.mem.Allocator) void {
@@ -457,7 +483,7 @@ const RewriteResult = struct {
 
 fn search(
     oir: *Oir,
-    from: SExpr,
+    rewrite: Passes.Rewrite,
 ) RewriteError![]RewriteResult {
     const gpa = oir.allocator;
     var matches = std.ArrayList(RewriteResult).init(gpa);
@@ -465,9 +491,10 @@ fn search(
         const node_index: Node.Index = @enumFromInt(node_idx);
 
         var bindings: std.StringHashMapUnmanaged(Node.Index) = .{};
-        const matched = try oir.match(node_index, from, &bindings);
+        const matched = try oir.match(node_index, rewrite.from, &bindings);
         if (matched) try matches.append(.{
             .root = node_index,
+            .rw = rewrite,
             .bindings = bindings,
         }) else bindings.deinit(gpa);
     }
@@ -607,7 +634,12 @@ fn applyRewrite(
             const new_class_idx = try oir.add(new_node);
             try oir.@"union"(root_class, new_class_idx);
         },
-        else => @panic("TODO"),
+        .atom => {
+            const new_node = try oir.expressionToNode(to, bindings);
+            const new_class_idx = try oir.add(new_node);
+            try oir.@"union"(root_class, new_class_idx);
+        },
+        else => std.debug.panic("TODO: {s}", .{@tagName(to.data)}),
     }
 }
 
@@ -627,7 +659,7 @@ fn expressionToNode(
                 const ident = atom[1..];
                 const from_idx = bindings.get(ident).?;
                 const from_node = oir.getNode(from_idx);
-                node = from_node;
+                node = try from_node.clone(oir.allocator);
             } else {
                 const number = try std.fmt.parseInt(i64, atom, 10);
                 node = .{
@@ -662,7 +694,7 @@ fn expressionToNode(
                 else => unreachable,
             }
         },
-        else => @panic("TODO"),
+        else => std.debug.panic("TODO: {s}", .{@tagName(expr.data)}),
     }
 }
 

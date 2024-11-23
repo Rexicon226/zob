@@ -3,9 +3,10 @@ const std = @import("std");
 pub fn addCases(
     b: *std.Build,
     step: *std.Build.Step,
+    comptime sub_path: []const u8,
     compiler: *std.Build.Step.Compile,
 ) !void {
-    var dir = try b.build_root.handle.openDir("test/cases", .{ .iterate = true });
+    var dir = try b.build_root.handle.openDir("test/" ++ sub_path, .{ .iterate = true });
     defer dir.close();
 
     var it = try dir.walk(b.allocator);

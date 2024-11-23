@@ -78,6 +78,7 @@ pub const Parser = struct {
     }
 
     pub fn parseInternal(comptime parser: *Parser) SExpr {
+        @setEvalBranchQuota(100_000);
         while (parser.index < parser.buffer.len) {
             const c = parser.eat();
             switch (c) {
@@ -129,7 +130,9 @@ pub const Parser = struct {
 
                     // this - 1 is to include the `?`, which we will use later in the pipeline
                     const ident_start = parser.index - 1;
-                    while (std.mem.indexOfScalar(u8, ident_delim, parser.peak()) == null) {
+                    while (parser.index < parser.buffer.len and
+                        std.mem.indexOfScalar(u8, ident_delim, parser.peak()) == null)
+                    {
                         parser.index += 1;
                     }
                     const ident_end = parser.index;
@@ -214,6 +217,27 @@ pub const Parser = struct {
     /// The characters that can deliminate an identifier.
     const ident_delim: []const u8 = &.{ ' ', ')' };
 };
+
+pub fn format(
+    expr: SExpr,
+    comptime fmt: []const u8,
+    _: std.fmt.FormatOptions,
+    writer: anytype,
+) !void {
+    comptime assert(fmt.len == 0);
+
+    switch (expr.data) {
+        .atom => |atom| try writer.writeAll(atom),
+        .list => |list| {
+            try writer.print("({s}", .{@tagName(expr.tag)});
+            for (list) |sub_expr| {
+                try writer.print(" {}", .{sub_expr});
+            }
+            try writer.writeAll(")");
+        },
+        else => try writer.print("TODO: expr {s}", .{@tagName(expr.data)}),
+    }
+}
 
 pub fn isIdent(expr: *const SExpr) bool {
     return expr.data == .atom and expr.data.atom[0] == '?';

@@ -1,15 +1,6 @@
 //! Defines simple cost information about MIR instructions
 
-pub fn hasLatency(tag: Oir.Node.Tag) bool {
-    return switch (tag) {
-        .arg,
-        .ret,
-        => false,
-        else => true,
-    };
-}
-
-pub fn getLatency(tag: Oir.Node.Tag) u32 {
+pub fn getCost(tag: Oir.Node.Tag) u32 {
     return switch (tag) {
         // ALU operations
         .add,
@@ -34,12 +25,10 @@ pub fn getLatency(tag: Oir.Node.Tag) u32 {
 
         // constants have zero latency so that we bias towards
         // selecting the "free" absorbing element.
-        .constant,
-        => 0,
-
         .arg,
         .ret,
-        => unreachable, // doesn't have a latency
+        .constant,
+        => 0,
     };
 }
 
