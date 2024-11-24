@@ -70,13 +70,6 @@ pub const Parser = struct {
     buffer: []const u8,
     index: u32 = 0,
 
-    pub fn parse(comptime buffer: []const u8) SExpr {
-        comptime {
-            var parser: Parser = .{ .buffer = buffer };
-            return parser.parseInternal();
-        }
-    }
-
     pub fn parseInternal(comptime parser: *Parser) SExpr {
         @setEvalBranchQuota(100_000);
         while (parser.index < parser.buffer.len) {
@@ -147,11 +140,9 @@ pub const Parser = struct {
                 '0'...'9' => {
                     // this -1 is to include the first number
                     const constant_start = parser.index - 1;
-                    while (std.mem.indexOfScalar(
-                        u8,
-                        ident_delim,
-                        parser.peak(),
-                    ) == null) {
+                    while (parser.index < parser.buffer.len and
+                        std.mem.indexOfScalar(u8, ident_delim, parser.peak()) == null)
+                    {
                         parser.index += 1;
                     }
                     const constant_end = parser.index;
@@ -218,6 +209,13 @@ pub const Parser = struct {
     const ident_delim: []const u8 = &.{ ' ', ')' };
 };
 
+pub fn parse(comptime buffer: []const u8) SExpr {
+    comptime {
+        var parser: Parser = .{ .buffer = buffer };
+        return parser.parseInternal();
+    }
+}
+
 pub fn format(
     expr: SExpr,
     comptime fmt: []const u8,
@@ -235,7 +233,11 @@ pub fn format(
             }
             try writer.writeAll(")");
         },
-        else => try writer.print("TODO: expr {s}", .{@tagName(expr.data)}),
+        .builtin => |builtin| {
+            const tag = builtin.tag;
+            const param = builtin.expr;
+            try writer.print("@{s}({s})", .{ @tagName(tag), param });
+        },
     }
 }
 
@@ -245,7 +247,7 @@ pub fn isIdent(expr: *const SExpr) bool {
 
 test "single-layer, multi-variable" {
     comptime {
-        const expr = Parser.parse("(mul ?x ?y)");
+        const expr = SExpr.parse("(mul ?x ?y)");
 
         try expect(expr.tag == .mul and expr.data == .list);
 
@@ -262,7 +264,7 @@ test "single-layer, multi-variable" {
 
 test "single-layer, single variable single constant" {
     comptime {
-        const expr = Parser.parse("(mul 10 ?y)");
+        const expr = SExpr.parse("(mul 10 ?y)");
 
         try expect(expr.tag == .mul and expr.data == .list);
 
@@ -279,7 +281,7 @@ test "single-layer, single variable single constant" {
 
 test "multi-layer, multi-variable" {
     comptime {
-        const expr = Parser.parse("(div_exact ?z (mul ?x ?y))");
+        const expr = SExpr.parse("(div_exact ?z (mul ?x ?y))");
 
         try expect(expr.tag == .div_exact and expr.data == .list);
 
@@ -303,7 +305,7 @@ test "multi-layer, multi-variable" {
 
 test "builtin function" {
     comptime {
-        const expr = Parser.parse("(mul ?x @known_pow2(y))");
+        const expr = SExpr.parse("(mul ?x @known_pow2(y))");
 
         try expect(expr.tag == .mul and expr.data == .list);
 

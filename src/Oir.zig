@@ -2,12 +2,12 @@
 
 allocator: std.mem.Allocator,
 
-nodes: std.ArrayListUnmanaged(Node) = .{},
+nodes: std.ArrayListUnmanaged(Node),
 
 /// Represents the list of all E-Classes in the graph.
 ///
 /// Each E-Class contains a bundle of nodes which are equivalent to each other.
-classes: std.AutoHashMapUnmanaged(Class.Index, Class) = .{},
+classes: std.AutoHashMapUnmanaged(Class.Index, Class),
 
 /// A map relating nodes to the classes they are in. Used as a fast way to determine
 /// what "parent" class a node is in.
@@ -16,20 +16,20 @@ node_to_class: std.HashMapUnmanaged(
     Class.Index,
     NodeContext,
     std.hash_map.default_max_load_percentage,
-) = .{},
+),
 
-find: Find = .{},
+find: Find,
 
 /// A list of pending `Pair`s which have made the E-Graph unclean. This is a part of incremental
 /// rebuilding and lets the graph process faster. `add` and `union` dirty the graph, marking `clean`
 /// as false, and then `rebuild` will iterate through the pending items to analyze and mark `clean`
 /// as true.
-pending: std.ArrayListUnmanaged(Pair) = .{},
+pending: std.ArrayListUnmanaged(Pair),
 
 /// Indicates whether or not reading type operations are allowed on the E-Graph.
 ///
 /// Mutating operations set this to `false`, and `rebuild` will set it back to `true`.
-clean: bool = false,
+clean: bool,
 
 const Find = struct {
     parents: std.ArrayListUnmanaged(Class.Index) = .{},
@@ -57,6 +57,10 @@ const Find = struct {
         return a;
     }
 
+    fn clone(f: *Find, allocator: std.mem.Allocator) !Find {
+        return .{ .parents = try f.parents.clone(allocator) };
+    }
+
     fn deinit(f: *Find, gpa: std.mem.Allocator) void {
         f.parents.deinit(gpa);
     }
@@ -72,11 +76,16 @@ pub const NodeContext = struct {
         hasher.update(std.mem.asBytes(&node.tag));
         std.hash.autoHash(&hasher, node.data);
         std.hash.autoHash(&hasher, node.out.items.len);
+
         for (node.out.items) |idx| {
             std.hash.autoHash(&hasher, idx);
         }
 
-        return hasher.final();
+        const result = hasher.final();
+
+        std.debug.print("hash {} {}\n", .{ node.tag, result });
+
+        return result;
     }
 
     pub fn eql(ctx: NodeContext, a_idx: Node.Index, b_idx: Node.Index) bool {
@@ -91,9 +100,13 @@ pub const NodeContext = struct {
             assert(a.out.items.len == 0 and b.out.items.len == 0);
             return a.data.constant == b.data.constant;
         }
+
         if (a.out.items.len != b.out.items.len) return false;
 
+        log.debug("a: {}, b: {}", .{ a.tag, b.tag });
+
         for (a.out.items, b.out.items) |a_class, b_class| {
+            std.debug.print("a class: {}, b class: {}\n", .{ a_class, b_class });
             if (a_class != b_class) {
                 return false;
             }
@@ -209,6 +222,14 @@ pub const Class = struct {
         }
     };
 
+    fn clone(class: *Class, allocator: std.mem.Allocator) !Class {
+        return .{
+            .index = class.index,
+            .bag = try class.bag.clone(allocator),
+            .parents = try class.parents.clone(allocator),
+        };
+    }
+
     pub fn deinit(class: *Class, allocator: std.mem.Allocator) void {
         class.bag.deinit(allocator);
         class.parents.deinit(allocator);
@@ -228,7 +249,15 @@ pub const CostStrategy = enum {
 /// TODO: run a rebuild of the graph at the end of constructing the Oir
 /// to remove things such as duplicate constants which wouldn't be caught.
 pub fn fromIr(ir: IR, allocator: std.mem.Allocator) !Oir {
-    var oir: Oir = .{ .allocator = allocator };
+    var oir: Oir = .{
+        .allocator = allocator,
+        .nodes = .{},
+        .classes = .{},
+        .node_to_class = .{},
+        .find = .{},
+        .pending = .{},
+        .clean = true,
+    };
 
     const tags = ir.instructions.items(.tag);
     const data = ir.instructions.items(.data);
@@ -363,6 +392,7 @@ const Passes = struct {
                 switch (node.tag) {
                     .add,
                     .mul,
+                    // .div_exact,
                     => {
                         const lhs, const rhs = buffer.items[0..2].*;
                         const lhs_value = oir.getNode(lhs).data.constant;
@@ -371,6 +401,7 @@ const Passes = struct {
                         const result = switch (node.tag) {
                             .add => lhs_value + rhs_value,
                             .mul => lhs_value * rhs_value,
+                            .div_exact => @divExact(lhs_value, rhs_value),
                             else => unreachable,
                         };
 
@@ -378,8 +409,7 @@ const Passes = struct {
                             .tag = .constant,
                             .data = .{ .constant = result },
                         });
-                        try oir.@"union"(new_class, class_idx);
-                        try oir.rebuild();
+                        _ = try oir.@"union"(new_class, class_idx);
                     },
                     else => std.debug.panic("TODO: constant fold {s}", .{@tagName(node.tag)}),
                 }
@@ -395,28 +425,58 @@ const Passes = struct {
         to: SExpr,
     };
 
-    const Parser = SExpr.Parser;
     const rewrites: []const Rewrite = &.{
         .{
             .name = "comm-mul",
-            .from = Parser.parse("(mul ?x ?y)"),
-            .to = Parser.parse("(mul ?y ?x)"),
+            .from = SExpr.parse("(mul ?x ?y)"),
+            .to = SExpr.parse("(mul ?y ?x)"),
+        },
+        .{
+            .name = "comm-add",
+            .from = SExpr.parse("(add ?x ?y)"),
+            .to = SExpr.parse("(add ?y ?x)"),
         },
         .{
             .name = "mul-to-shl",
-            .from = Parser.parse("(mul ?x @known_pow2(y))"),
-            .to = Parser.parse("(shl ?x @log2(y))"),
+            .from = SExpr.parse("(mul ?x @known_pow2(y))"),
+            .to = SExpr.parse("(shl ?x @log2(y))"),
         },
         .{
             .name = "zero-add",
-            .from = Parser.parse("(add ?x 0)"),
-            .to = Parser.parse("?x"),
+            .from = SExpr.parse("(add ?x 0)"),
+            .to = SExpr.parse("?x"),
+        },
+        .{
+            .name = "zero-mul",
+            .from = SExpr.parse("(mul ?x 0)"),
+            .to = SExpr.parse("0"),
+        },
+        .{
+            .name = "one-mul",
+            .from = SExpr.parse("(mul ?x 1)"),
+            .to = SExpr.parse("?x"),
+        },
+        .{
+            .name = "one-div",
+            .from = SExpr.parse("(div_exact ?x 1)"),
+            .to = SExpr.parse("?x"),
+        },
+        .{
+            .name = "associate-div-mul",
+            .from = SExpr.parse("(div_exact (mul ?x ?y) ?z)"),
+            .to = SExpr.parse("(mul ?x (div_exact ?y ?z))"),
+        },
+        .{
+            .name = "factor",
+            .from = SExpr.parse("(add (mul ?a ?b) (mul ?a ?c))"),
+            .to = SExpr.parse("(mul ?a (add ?b ?c))"),
         },
     };
 
     fn commonRewrites(oir: *Oir) !bool {
         const gpa = oir.allocator;
 
+        var changed: bool = false;
         var matches = std.ArrayList(RewriteResult).init(gpa);
         defer {
             for (matches.items) |*item| {
@@ -432,11 +492,21 @@ const Passes = struct {
         }
 
         for (matches.items) |*item| {
-            log.debug("applying {} to {}", .{ item.rw.to, item.root });
-            try oir.applyRewrite(item.root, item.rw.to, &item.bindings);
+            log.debug(
+                "applying {} -> {} to {}",
+                .{ item.rw.from, item.rw.to, item.root },
+            );
+            if (try oir.applyRewrite(
+                item.root,
+                item.rw.to,
+                &item.bindings,
+            )) {
+                log.debug("change happened!", .{});
+                changed = true;
+            }
         }
 
-        return false;
+        return changed;
     }
 };
 
@@ -458,7 +528,6 @@ pub fn optimize(oir: *Oir, mode: enum {
                 var new_change: bool = false;
                 inline for (passes) |pass| {
                     if (try pass(oir)) new_change = true;
-
                     // TODO: in theory we don't actually need to rebuild after every pass
                     // maybe we should look into rebuilding on-demand?
                     if (!oir.clean) try oir.rebuild();
@@ -609,37 +678,54 @@ fn matchClass(
     return false;
 }
 
+/// Given the root node index and an expression to which it should be set,
+/// we generate a class that represents the expression and then union it to
+/// the class which the root node index is in.
+///
+/// Returns whether a union happened, indicated if a change happened.
 fn applyRewrite(
     oir: *Oir,
     root_node_idx: Node.Index,
     to: SExpr,
     bindings: *const std.StringHashMapUnmanaged(Node.Index),
-) !void {
+) !bool {
     const allocator = oir.allocator;
     const root_class = oir.findClass(root_node_idx);
 
-    switch (to.data) {
-        .list => |list| {
-            var new_node: Node = .{
-                .tag = to.tag,
-                .out = .{},
-            };
+    var cloned = try oir.clone();
+    const changed: bool = changed: {
+        switch (to.data) {
+            .list => |list| {
+                var new_node: Node = .{
+                    .tag = to.tag,
+                    .out = .{},
+                };
 
-            for (list) |sub_expr| {
-                const new_sub_node = try oir.expressionToNode(sub_expr, bindings);
-                const sub_class_idx = try oir.add(new_sub_node);
-                try new_node.out.append(allocator, sub_class_idx);
-            }
+                for (list) |sub_expr| {
+                    const new_sub_node = try oir.expressionToNode(sub_expr, bindings);
+                    const sub_class_idx = try oir.add(new_sub_node);
+                    try new_node.out.append(allocator, sub_class_idx);
+                }
 
-            const new_class_idx = try oir.add(new_node);
-            try oir.@"union"(root_class, new_class_idx);
-        },
-        .atom => {
-            const new_node = try oir.expressionToNode(to, bindings);
-            const new_class_idx = try oir.add(new_node);
-            try oir.@"union"(root_class, new_class_idx);
-        },
-        else => std.debug.panic("TODO: {s}", .{@tagName(to.data)}),
+                const new_class_idx = try oir.add(new_node);
+                break :changed try oir.@"union"(root_class, new_class_idx);
+            },
+            .atom => {
+                const new_node = try oir.expressionToNode(to, bindings);
+                const new_class_idx = try oir.add(new_node);
+                break :changed try oir.@"union"(root_class, new_class_idx);
+            },
+            else => std.debug.panic("TODO: {s}", .{@tagName(to.data)}),
+        }
+    };
+
+    if (changed) {
+        cloned.deinit();
+        return true;
+    } else {
+        // revert the oir back to its state before
+        oir.* = cloned;
+        return false;
     }
 }
 
@@ -649,6 +735,20 @@ fn expressionToNode(
     bindings: *const std.StringHashMapUnmanaged(Node.Index),
 ) !Node {
     switch (expr.data) {
+        .list => |list| {
+            var node: Node = .{
+                .tag = expr.tag,
+                .out = .{},
+            };
+
+            for (list) |item| {
+                const sub_node = try oir.expressionToNode(item, bindings);
+                const sub_class_idx = try oir.add(sub_node);
+                try node.out.append(oir.allocator, sub_class_idx);
+            }
+
+            return node;
+        },
         .atom => |atom| {
             var node: Node = .{
                 .tag = .constant,
@@ -694,8 +794,33 @@ fn expressionToNode(
                 else => unreachable,
             }
         },
-        else => std.debug.panic("TODO: {s}", .{@tagName(expr.data)}),
     }
+}
+
+fn clone(oir: *Oir) !Oir {
+    const gpa = oir.allocator;
+    return .{
+        .allocator = gpa,
+        .nodes = nodes: {
+            const cloned = try oir.nodes.clone(gpa);
+            for (cloned.items) |*node| {
+                node.* = try node.clone(gpa);
+            }
+            break :nodes cloned;
+        },
+        .classes = classes: {
+            const cloned = try oir.classes.clone(gpa);
+            var iter = cloned.valueIterator();
+            while (iter.next()) |value| {
+                value.* = try value.clone(gpa);
+            }
+            break :classes cloned;
+        },
+        .node_to_class = try oir.node_to_class.cloneContext(gpa, @as(NodeContext, .{ .oir = oir })),
+        .clean = oir.clean,
+        .pending = try oir.pending.clone(gpa),
+        .find = try oir.find.clone(gpa),
+    };
 }
 
 /// Reference becomes invalid when new classes are adedd to the graph.
@@ -704,7 +829,7 @@ fn getClassPtr(oir: *Oir, idx: Class.Index) *Class {
     return oir.classes.getPtr(found).?;
 }
 
-fn findClass(oir: *Oir, node_idx: Node.Index) Class.Index {
+fn findClass(oir: *const Oir, node_idx: Node.Index) Class.Index {
     const memo_idx = oir.node_to_class.getContext(
         node_idx,
         .{ .oir = oir },
@@ -719,10 +844,10 @@ pub fn getNode(oir: *const Oir, idx: Node.Index) Node {
 /// Adds an ENode to the EGraph, giving the node its own class.
 /// Returns the EClass index the ENode was placed in.
 pub fn add(oir: *Oir, node: Node) !Class.Index {
-    log.debug("adding node {s}", .{@tagName(node.tag)});
-
     const node_idx: Node.Index = @enumFromInt(oir.nodes.items.len);
     try oir.nodes.append(oir.allocator, node);
+
+    log.debug("adding node {s} {}", .{ @tagName(node.tag), node_idx });
 
     const class_idx = try oir.addInternal(node_idx);
     return oir.find.find(class_idx);
@@ -746,7 +871,7 @@ fn addInternal(oir: *Oir, node: Node.Index) !Class.Index {
 
 fn makeClass(oir: *Oir, node_idx: Node.Index) !Class.Index {
     const id = try oir.find.makeSet(oir.allocator);
-    log.debug("adding to {}", .{id});
+    log.debug("adding {} to {}", .{ node_idx, id });
 
     var class: Class = .{
         .index = id,
@@ -761,6 +886,8 @@ fn makeClass(oir: *Oir, node_idx: Node.Index) !Class.Index {
         try class_ptr.parents.append(oir.allocator, .{ node_idx, id });
     }
 
+    std.debug.print("makeClass node: {}\n", .{node.tag});
+
     try oir.pending.append(oir.allocator, .{ node_idx, id });
     try oir.classes.put(oir.allocator, id, class);
     try oir.node_to_class.putNoClobberContext(oir.allocator, node_idx, id, .{ .oir = oir });
@@ -774,11 +901,11 @@ fn makeClass(oir: *Oir, node_idx: Node.Index) !Class.Index {
 ///
 /// This can be thought of as "merging" two classes. When they were
 /// proven to be equivalent.
-pub fn @"union"(oir: *Oir, a_idx: Class.Index, b_idx: Class.Index) !void {
+pub fn @"union"(oir: *Oir, a_idx: Class.Index, b_idx: Class.Index) !bool {
     oir.clean = false;
     var a = oir.find.find(a_idx);
     var b = oir.find.find(b_idx);
-    if (a == b) return;
+    if (a == b) return false;
 
     const a_parents = oir.classes.get(a).?.parents.items.len;
     const b_parents = oir.classes.get(b).?.parents.items.len;
@@ -797,9 +924,17 @@ pub fn @"union"(oir: *Oir, a_idx: Class.Index, b_idx: Class.Index) !void {
     const a_class = oir.classes.getPtr(a).?;
     assert(a == a_class.index);
 
+    std.debug.print("union appends: ", .{});
+    for (b_class.parents.items) |pair| {
+        std.debug.print("\"({} {})\" ", .{ pair[0], pair[1] });
+    }
+    std.debug.print("\n", .{});
+
     try oir.pending.appendSlice(oir.allocator, b_class.parents.items);
     try a_class.bag.appendSlice(oir.allocator, b_class.bag.items);
     try a_class.parents.appendSlice(oir.allocator, b_class.parents.items);
+
+    return true;
 }
 
 /// Performs a rebuild of the E-Graph to ensure that the invariances are met.
@@ -812,8 +947,13 @@ pub fn rebuild(oir: *Oir) !void {
 
     while (oir.pending.popOrNull()) |pair| {
         const node_idx, const class_idx = pair;
+
+        const node = oir.getNode(node_idx);
+        std.debug.print("node: {} {}\n", .{ node.tag, node_idx });
+
         for (oir.getNode(node_idx).out.items) |*id| {
-            id.* = oir.find.find(id.*);
+            const found_idx = oir.find.find(id.*);
+            id.* = found_idx;
         }
         const gop = try oir.node_to_class.getOrPutContext(
             oir.allocator,
@@ -822,7 +962,7 @@ pub fn rebuild(oir: *Oir) !void {
         );
         if (gop.found_existing) {
             const mem_class = gop.value_ptr.*;
-            try oir.@"union"(mem_class, class_idx);
+            _ = try oir.@"union"(mem_class, class_idx);
         }
         gop.value_ptr.* = class_idx;
     }
@@ -837,8 +977,52 @@ pub fn rebuild(oir: *Oir) !void {
         }
     }
 
+    try oir.verifyNodes();
     assert(oir.pending.items.len == 0);
     oir.clean = true;
+}
+
+fn verifyNodes(oir: *Oir) !void {
+    var temporary: std.HashMapUnmanaged(
+        Node.Index,
+        Class.Index,
+        NodeContext,
+        std.hash_map.default_max_load_percentage,
+    ) = .{};
+    defer temporary.deinit(oir.allocator);
+
+    var iter = oir.classes.iterator();
+    while (iter.next()) |entry| {
+        const id = entry.key_ptr.*;
+        const class = entry.value_ptr.*;
+        for (class.bag.items) |node| {
+            const gop = try temporary.getOrPutContext(
+                oir.allocator,
+                node,
+                .{ .oir = oir },
+            );
+            if (gop.found_existing) {
+                const found_id = oir.find.find(id);
+                const found_old = oir.find.find(gop.value_ptr.*);
+                if (found_id != found_id) {
+                    std.debug.panic(
+                        "found unexpected equivalence for {}\n{any}\nvs\n{any}",
+                        .{
+                            node,
+                            oir.getClassPtr(found_id).bag.items,
+                            oir.getClassPtr(found_old).bag.items,
+                        },
+                    );
+                }
+            } else gop.value_ptr.* = id;
+        }
+    }
+
+    var temp_iter = temporary.iterator();
+    while (temp_iter.next()) |entry| {
+        const e = entry.value_ptr.*;
+        assert(e == oir.find.find(e));
+    }
 }
 
 pub fn deinit(oir: *Oir) void {
@@ -869,7 +1053,7 @@ pub fn classContains(oir: *Oir, idx: Class.Index, comptime tag: Node.Tag) ?Node.
     comptime assert(tag.isAbsorbing());
     assert(oir.clean);
 
-    const class = oir.classes.get(idx).?;
+    const class = oir.classes.get(idx) orelse return null;
     for (class.bag.items) |node_idx| {
         const node = oir.getNode(node_idx);
         // Since the node is aborbing, we can return early as no other

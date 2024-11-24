@@ -143,6 +143,7 @@ pub const Extractor = struct {
     oir: *Oir,
     mir: *Mir,
     cost_strategy: Oir.CostStrategy,
+    virt_map: std.AutoHashMapUnmanaged(Register, VirtualRegister) = .{},
 
     /// Extracts the best pattern of Oir from the E-Graph given a cost model.
     pub fn extract(e: *Extractor) !void {
@@ -190,7 +191,17 @@ pub const Extractor = struct {
 
                 const arg_reg: Register = bits.Registers.Integer.function_arg_regs[@intCast(node.data.constant)];
                 const arg_value: Value = .{ .register = arg_reg };
-                const dst_value: Value = .{ .virtual = try mir.allocVirtualReg(.int) };
+                const gop = try e.virt_map.getOrPut(oir.allocator, arg_reg);
+                const virt_reg: VirtualRegister = blk: {
+                    if (gop.found_existing) {
+                        break :blk gop.value_ptr.*;
+                    } else {
+                        const virt_reg: VirtualRegister = try mir.allocVirtualReg(.int);
+                        gop.value_ptr.* = virt_reg;
+                        break :blk virt_reg;
+                    }
+                };
+                const dst_value: Value = .{ .virtual = virt_reg };
 
                 try mir.copyValue(dst_value, arg_value);
 
@@ -363,7 +374,7 @@ pub const Extractor = struct {
     }
 
     pub fn deinit(e: *Extractor) void {
-        _ = e;
+        e.virt_map.deinit(e.oir.allocator);
     }
 };
 

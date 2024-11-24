@@ -1,0 +1,25 @@
+input IR:
+%0 = arg(1)
+%1 = mul(%0, 1)
+%2 = ret(%1)
+end IR
+
+MIR before passes:
+-----------
+%1:int = copy $a1
+$a0 = copy %1:int
+pseudo_ret $a0
+-----------
+
+MIR after liveVars:
+-----------
+%1:int = copy $a1
+$a0 = copy %1:int killed
+pseudo_ret $a0
+-----------
+
+MIR after regAlloc:
+-----------
+$a0 = copy $a1
+pseudo_ret $a0
+-----------
