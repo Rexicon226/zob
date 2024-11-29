@@ -338,7 +338,7 @@ pub const Extractor = struct {
     }
 
     fn getClass(e: *Extractor, class_idx: Class.Index) Node.Index {
-        _, const best_node = try e.extractClass(class_idx);
+        _, const best_node = e.extractClass(class_idx);
 
         log.debug("best node for class {} is {s}", .{
             class_idx,
@@ -349,7 +349,7 @@ pub const Extractor = struct {
     }
 
     /// Given a class, extract the "best" node from it.
-    fn extractClass(e: *Extractor, class_idx: Class.Index) !struct { u32, Node.Index } {
+    fn extractClass(e: *Extractor, class_idx: Class.Index) struct { u32, Node.Index } {
         const oir = e.oir;
         const class = oir.classes.get(class_idx).?;
         assert(class.bag.items.len > 0);
@@ -367,7 +367,7 @@ pub const Extractor = struct {
                     for (node.operands()) |sub_class_idx| {
                         if (sub_class_idx == class_idx) break;
 
-                        const extracted_cost, _ = try e.extractClass(sub_class_idx);
+                        const extracted_cost, _ = e.extractClass(sub_class_idx);
                         child_cost += extracted_cost;
                     }
 
