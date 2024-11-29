@@ -4,7 +4,7 @@ const std = @import("std");
 const Oir = @import("Oir.zig");
 
 pub fn dumpGraphViz(
-    oir: *Oir,
+    oir: *const Oir,
     file_writer: anytype,
 ) !void {
     try file_writer.writeAll(

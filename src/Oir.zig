@@ -44,10 +44,24 @@ const Find = struct {
         return f.parents.items[@intFromEnum(idx)];
     }
 
+    fn parentPtr(f: *Find, idx: Class.Index) *Class.Index {
+        return &f.parents.items[@intFromEnum(idx)];
+    }
+
     fn find(f: *const Find, idx: Class.Index) Class.Index {
         var current = idx;
-        while (current != f.parent(idx)) {
-            current = f.parent(idx);
+        while (current != f.parent(current)) {
+            current = f.parent(current);
+        }
+        return current;
+    }
+
+    fn findMutable(f: *Find, idx: Class.Index) Class.Index {
+        var current = idx;
+        while (current != f.parent(current)) {
+            const grandparent = f.parent(f.parent(current));
+            f.parentPtr(current).* = grandparent;
+            current = grandparent;
         }
         return current;
     }
@@ -77,9 +91,6 @@ pub const NodeContext = struct {
         std.hash.autoHash(&hasher, node.data);
 
         const result = hasher.final();
-
-        std.debug.print("hash {} {}\n", .{ node.tag, result });
-
         return result;
     }
 
@@ -95,10 +106,7 @@ pub const NodeContext = struct {
             return a.data.constant == b.data.constant;
         }
 
-        log.debug("a: {}, b: {}", .{ a.tag, b.tag });
-
         for (a.operands(), b.operands()) |a_class, b_class| {
-            std.debug.print("a class: {}, b class: {}\n", .{ a_class, b_class });
             if (a_class != b_class) {
                 return false;
             }
@@ -240,6 +248,23 @@ pub const Node = struct {
             .bin_op => |*bin_op| bin_op,
             .un_op => |*un_op| un_op[0..1],
         };
+    }
+
+    pub fn format(
+        node: Node,
+        comptime fmt: []const u8,
+        _: std.fmt.FormatOptions,
+        writer: anytype,
+    ) !void {
+        comptime assert(fmt.len == 0);
+        try writer.print("{s}(", .{@tagName(node.tag)});
+
+        const inputs = node.operands();
+        for (inputs, 0..) |op, i| {
+            try writer.print("{}", .{op});
+            if (i != inputs.len - 1) try writer.writeAll(", ");
+        }
+        try writer.writeAll(")");
     }
 };
 
@@ -396,6 +421,8 @@ pub fn fromIr(ir: IR, allocator: std.mem.Allocator) !Oir {
 }
 
 const Passes = struct {
+    const Error = error{ OutOfMemory, Overflow, InvalidCharacter };
+
     /// Iterates through all nodes in the E-Graph,
     /// checking if it's possible to evaluate them now.
     ///
@@ -457,6 +484,9 @@ const Passes = struct {
                     },
                     else => std.debug.panic("TODO: constant fold {s}", .{@tagName(node.tag)}),
                 }
+
+                // rebuild afterwards, the add + union could have made it unclean
+                if (!oir.clean) try oir.rebuild();
             }
         }
 
@@ -554,32 +584,62 @@ const Passes = struct {
     }
 };
 
-const passes = &.{
-    Passes.constantFold,
-    Passes.commonRewrites,
+const Pass = struct {
+    name: []const u8,
+    func: *const fn (oir: *Oir) Passes.Error!bool,
+};
+const passes: []const Pass = &.{
+    .{ .name = "constant-fold", .func = Passes.constantFold },
+    .{ .name = "common-rewrites", .func = Passes.commonRewrites },
 };
 
-pub fn optimize(oir: *Oir, mode: enum {
-    /// Optimize until running all passes creates no new changes.
-    /// NOTE: likely will be very slow for any large input
-    saturate,
-}) !void {
+pub fn optimize(
+    oir: *Oir,
+    mode: enum {
+        /// Optimize until running all passes creates no new changes.
+        /// NOTE: likely will be very slow for any large input
+        saturate,
+    },
+    /// Prints dumps a graphviz of the current OIR state after each pass iteration.
+    output_graph: bool,
+) !void {
     switch (mode) {
         .saturate => {
             try oir.rebuild();
             assert(oir.clean);
+
+            var i: u32 = 0;
             while (true) {
                 var new_change: bool = false;
                 inline for (passes) |pass| {
-                    if (try pass(oir)) new_change = true;
+                    // dump to a graphviz file
+                    if (output_graph) {
+                        const name = try std.fmt.allocPrint(
+                            oir.allocator,
+                            "graphs/pre_{s}_{}.dot",
+                            .{ pass.name, i },
+                        );
+                        defer oir.allocator.free(name);
+                        try oir.dump(name);
+                    }
+
+                    if (try pass.func(oir)) new_change = true;
                     // TODO: in theory we don't actually need to rebuild after every pass
                     // maybe we should look into rebuilding on-demand?
                     if (!oir.clean) try oir.rebuild();
                 }
+
+                i += 1;
                 if (!new_change) break;
             }
         },
     }
+}
+
+fn dump(oir: *Oir, name: []const u8) !void {
+    const graphviz_file = try std.fs.cwd().createFile(name, .{});
+    defer graphviz_file.close();
+    try print_oir.dumpGraphViz(oir, graphviz_file.writer());
 }
 
 const RewriteError = error{ OutOfMemory, InvalidCharacter, Overflow };
@@ -736,6 +796,7 @@ fn applyRewrite(
     const root_class = oir.findClass(root_node_idx);
 
     var cloned = try oir.clone();
+
     const changed: bool = changed: {
         switch (to.data) {
             .list => |list| {
@@ -764,6 +825,7 @@ fn applyRewrite(
         return true;
     } else {
         // revert the oir back to its state before
+        oir.deinit();
         oir.* = cloned;
         return false;
     }
@@ -850,7 +912,7 @@ fn clone(oir: *Oir) !Oir {
 
 /// Reference becomes invalid when new classes are added to the graph.
 fn getClassPtr(oir: *Oir, idx: Class.Index) *Class {
-    const found = oir.find.find(idx);
+    const found = oir.find.findMutable(idx);
     return oir.classes.getPtr(found).?;
 }
 
@@ -916,8 +978,6 @@ fn makeClass(oir: *Oir, node_idx: Node.Index) !Class.Index {
         try class_ptr.parents.append(oir.allocator, .{ node_idx, id });
     }
 
-    std.debug.print("makeClass node: {}\n", .{node.tag});
-
     try oir.pending.append(oir.allocator, .{ node_idx, id });
     try oir.classes.put(oir.allocator, id, class);
     try oir.node_to_class.putNoClobberContext(oir.allocator, node_idx, id, .{ .oir = oir });
@@ -933,8 +993,8 @@ fn makeClass(oir: *Oir, node_idx: Node.Index) !Class.Index {
 /// proven to be equivalent.
 pub fn @"union"(oir: *Oir, a_idx: Class.Index, b_idx: Class.Index) !bool {
     oir.clean = false;
-    var a = oir.find.find(a_idx);
-    var b = oir.find.find(b_idx);
+    var a = oir.find.findMutable(a_idx);
+    var b = oir.find.findMutable(b_idx);
     if (a == b) return false;
 
     const a_parents = oir.classes.get(a).?.parents.items.len;
@@ -946,6 +1006,7 @@ pub fn @"union"(oir: *Oir, a_idx: Class.Index, b_idx: Class.Index) !bool {
 
     log.debug("union on {} -> {}", .{ b, a });
 
+    // make `a` the leader class
     _ = oir.find.@"union"(a, b);
 
     var b_class = oir.classes.fetchRemove(b).?.value;
@@ -953,12 +1014,6 @@ pub fn @"union"(oir: *Oir, a_idx: Class.Index, b_idx: Class.Index) !bool {
 
     const a_class = oir.classes.getPtr(a).?;
     assert(a == a_class.index);
-
-    std.debug.print("union appends: ", .{});
-    for (b_class.parents.items) |pair| {
-        std.debug.print("\"({} {})\" ", .{ pair[0], pair[1] });
-    }
-    std.debug.print("\n", .{});
 
     try oir.pending.appendSlice(oir.allocator, b_class.parents.items);
     try a_class.bag.appendSlice(oir.allocator, b_class.bag.items);
@@ -978,18 +1033,22 @@ pub fn rebuild(oir: *Oir) !void {
     while (oir.pending.popOrNull()) |pair| {
         const node_idx, const class_idx = pair;
 
-        const node = oir.getNodePtr(node_idx);
-        std.debug.print("node: {} {}\n", .{ node.tag, node_idx });
+        // before modifying the node in-place, we must remove it from the hashmap
+        // in order to not get a stale hash.
+        assert(oir.node_to_class.removeContext(node_idx, .{ .oir = oir }));
 
+        const node = oir.getNodePtr(node_idx);
         for (node.mutableOperands()) |*id| {
-            const found_idx = oir.find.find(id.*);
+            const found_idx = oir.find.findMutable(id.*);
             id.* = found_idx;
         }
+
         const gop = try oir.node_to_class.getOrPutContext(
             oir.allocator,
             node_idx,
             .{ .oir = oir },
         );
+
         if (gop.found_existing) {
             const mem_class = gop.value_ptr.*;
             _ = try oir.@"union"(mem_class, class_idx);
@@ -997,13 +1056,23 @@ pub fn rebuild(oir: *Oir) !void {
         gop.value_ptr.* = class_idx;
     }
 
-    var iter = oir.classes.valueIterator();
-    while (iter.next()) |class| {
-        for (class.bag.items) |node_idx| {
+    var iter = oir.classes.iterator();
+    while (iter.next()) |entry| {
+        for (entry.value_ptr.bag.items) |node_idx| {
+            assert(oir.node_to_class.removeContext(node_idx, .{ .oir = oir }));
+
             const node = oir.getNodePtr(node_idx);
             for (node.mutableOperands()) |*child| {
-                child.* = oir.find.find(child.*);
+                child.* = oir.find.findMutable(child.*);
             }
+
+            // place the newly changed node back on the map
+            try oir.node_to_class.putNoClobberContext(
+                oir.allocator,
+                node_idx,
+                entry.key_ptr.*,
+                .{ .oir = oir },
+            );
         }
     }
 
@@ -1093,6 +1162,7 @@ pub fn classContains(oir: *Oir, idx: Class.Index, comptime tag: Node.Tag) ?Node.
 const Oir = @This();
 const std = @import("std");
 const IR = @import("Ir.zig");
+const print_oir = @import("print_oir.zig");
 const SExpr = @import("rewrites/SExpr.zig");
 
 const log = std.log.scoped(.oir);

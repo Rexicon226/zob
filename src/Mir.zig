@@ -117,6 +117,7 @@ pub const Instruction = struct {
     };
 };
 
+/// Machine Code Value
 pub const Value = union(enum) {
     none: void,
     register: Register,
