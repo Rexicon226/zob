@@ -156,8 +156,7 @@ pub const Extractor = struct {
         _ = try e.extractNode(ret_node_idx);
     }
 
-    /// TODO: don't just search for a `ret` node,
-    /// instead compute the mathematical leaves of the graph
+    /// TODO: don't just search for a `ret` node, there can be multiple
     fn findLeafNode(e: *Extractor) Node.Index {
         const oir = e.oir;
         const ret_node_idx: Node.Index = idx: {
@@ -209,7 +208,7 @@ pub const Extractor = struct {
             .ret => {
                 const class_idx = node.data.un_op;
 
-                const arg_idx = e.extractClass(class_idx);
+                const arg_idx = e.getClass(class_idx);
                 const arg_value = try e.getNode(arg_idx);
 
                 try mir.copyValue(.{ .register = .a0 }, arg_value);
@@ -224,7 +223,7 @@ pub const Extractor = struct {
             .load => {
                 const class_idx = node.data.un_op;
 
-                const arg_idx = e.extractClass(class_idx);
+                const arg_idx = e.getClass(class_idx);
                 const arg_value = try e.getNode(arg_idx);
 
                 const dst_value: Value = .{ .virtual = try mir.allocVirtualReg(.int) };
@@ -245,11 +244,11 @@ pub const Extractor = struct {
             => {
                 const rhs_class_idx, const lhs_class_idx = node.data.bin_op;
 
-                const rhs_idx = e.extractClass(rhs_class_idx);
-                const lhs_idx = e.extractClass(lhs_class_idx);
+                const rhs_idx = e.getClass(rhs_class_idx);
+                const lhs_idx = e.getClass(lhs_class_idx);
 
-                const rhs_value = try e.getNode(rhs_idx);
-                const lhs_value = try e.getNode(lhs_idx);
+                var rhs_value = try e.getNode(rhs_idx);
+                var lhs_value = try e.getNode(lhs_idx);
 
                 const dst_value: Value = .{ .virtual = try mir.allocVirtualReg(.int) };
 
@@ -258,6 +257,11 @@ pub const Extractor = struct {
                     .mul => .mul,
                     else => unreachable,
                 };
+
+                if (lhs_value == .immediate) {
+                    // we want the immediate value to be rhs, uh because it looks nice!
+                    std.mem.swap(Value, &rhs_value, &lhs_value);
+                }
 
                 _ = try mir.addUnOp(.{
                     .tag = tag,
@@ -278,8 +282,8 @@ pub const Extractor = struct {
             => {
                 const rhs_class_idx, const lhs_class_idx = node.data.bin_op;
 
-                const rhs_idx = e.extractClass(rhs_class_idx);
-                const lhs_idx = e.extractClass(lhs_class_idx);
+                const rhs_idx = e.getClass(rhs_class_idx);
+                const lhs_idx = e.getClass(lhs_class_idx);
 
                 var rhs_value = try e.getNode(rhs_idx);
                 var lhs_value = try e.getNode(lhs_idx);
@@ -333,8 +337,19 @@ pub const Extractor = struct {
         return e.extractNode(node);
     }
 
+    fn getClass(e: *Extractor, class_idx: Class.Index) Node.Index {
+        _, const best_node = try e.extractClass(class_idx);
+
+        log.debug("best node for class {} is {s}", .{
+            class_idx,
+            @tagName(e.oir.getNode(best_node).tag),
+        });
+
+        return best_node;
+    }
+
     /// Given a class, extract the "best" node from it.
-    fn extractClass(e: *Extractor, class_idx: Class.Index) Node.Index {
+    fn extractClass(e: *Extractor, class_idx: Class.Index) !struct { u32, Node.Index } {
         const oir = e.oir;
         const class = oir.classes.get(class_idx).?;
         assert(class.bag.items.len > 0);
@@ -346,19 +361,24 @@ pub const Extractor = struct {
 
                 for (class.bag.items) |node_idx| {
                     const node = oir.getNode(node_idx);
-                    const node_cost = cost.getCost(node.tag);
+
+                    const base_cost = cost.getCost(node.tag);
+                    var child_cost: u32 = 0;
+                    for (node.operands()) |sub_class_idx| {
+                        if (sub_class_idx == class_idx) break;
+
+                        const extracted_cost, _ = try e.extractClass(sub_class_idx);
+                        child_cost += extracted_cost;
+                    }
+
+                    const node_cost = base_cost + child_cost;
                     if (node_cost < best_cost) {
                         best_cost = node_cost;
                         best_node = node_idx;
                     }
                 }
 
-                log.debug("best node for class {} is {s}", .{
-                    class_idx,
-                    @tagName(oir.getNode(best_node).tag),
-                });
-
-                return best_node;
+                return .{ best_cost, best_node };
             },
         }
     }
