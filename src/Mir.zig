@@ -146,6 +146,17 @@ pub const Extractor = struct {
     cost_strategy: Oir.CostStrategy,
     virt_map: std.AutoHashMapUnmanaged(Register, VirtualRegister) = .{},
 
+    /// Relates class indicies to the best node in them. Since the classes
+    /// are immutable after the OIR optimization passes, we can confidently
+    /// reuse the extraction. This amortization makes our extraction strategy
+    /// just barely usable.
+    memo: std.AutoHashMapUnmanaged(Class.Index, NodeCost) = .{},
+
+    const NodeCost = struct {
+        u32,
+        Node.Index,
+    };
+
     /// Extracts the best pattern of Oir from the E-Graph given a cost model.
     pub fn extract(e: *Extractor) !void {
         // First we need to find what the root class is. This will usually be the class containing a `ret`,
@@ -208,7 +219,7 @@ pub const Extractor = struct {
             .ret => {
                 const class_idx = node.data.un_op;
 
-                const arg_idx = e.getClass(class_idx);
+                const arg_idx = try e.getClass(class_idx);
                 const arg_value = try e.getNode(arg_idx);
 
                 try mir.copyValue(.{ .register = .a0 }, arg_value);
@@ -223,7 +234,7 @@ pub const Extractor = struct {
             .load => {
                 const class_idx = node.data.un_op;
 
-                const arg_idx = e.getClass(class_idx);
+                const arg_idx = try e.getClass(class_idx);
                 const arg_value = try e.getNode(arg_idx);
 
                 const dst_value: Value = .{ .virtual = try mir.allocVirtualReg(.int) };
@@ -244,8 +255,8 @@ pub const Extractor = struct {
             => {
                 const rhs_class_idx, const lhs_class_idx = node.data.bin_op;
 
-                const rhs_idx = e.getClass(rhs_class_idx);
-                const lhs_idx = e.getClass(lhs_class_idx);
+                const rhs_idx = try e.getClass(rhs_class_idx);
+                const lhs_idx = try e.getClass(lhs_class_idx);
 
                 var rhs_value = try e.getNode(rhs_idx);
                 var lhs_value = try e.getNode(lhs_idx);
@@ -282,8 +293,8 @@ pub const Extractor = struct {
             => {
                 const rhs_class_idx, const lhs_class_idx = node.data.bin_op;
 
-                const rhs_idx = e.getClass(rhs_class_idx);
-                const lhs_idx = e.getClass(lhs_class_idx);
+                const rhs_idx = try e.getClass(rhs_class_idx);
+                const lhs_idx = try e.getClass(lhs_class_idx);
 
                 var rhs_value = try e.getNode(rhs_idx);
                 var lhs_value = try e.getNode(lhs_idx);
@@ -325,20 +336,11 @@ pub const Extractor = struct {
     }
 
     fn getNode(e: *Extractor, node: Node.Index) error{OutOfMemory}!Value {
-        // TODO: this map performs a weird version of CNE which doesn't
-        // consider node assignment side-effects. i'd rather just have extra
-        // MIR instructions for now
-
-        // const gop = try e.map.getOrPut(e.oir.allocator, node);
-        // if (!gop.found_existing) {
-        //     gop.value_ptr.* = try e.extractNode(node);
-        // }
-        // return gop.value_ptr.*;
         return e.extractNode(node);
     }
 
-    fn getClass(e: *Extractor, class_idx: Class.Index) Node.Index {
-        _, const best_node = e.extractClass(class_idx);
+    fn getClass(e: *Extractor, class_idx: Class.Index) !Node.Index {
+        _, const best_node = try e.extractClass(class_idx);
 
         log.debug("best node for class {} is {s}", .{
             class_idx,
@@ -349,10 +351,13 @@ pub const Extractor = struct {
     }
 
     /// Given a class, extract the "best" node from it.
-    fn extractClass(e: *Extractor, class_idx: Class.Index) struct { u32, Node.Index } {
+    fn extractClass(e: *Extractor, class_idx: Class.Index) !NodeCost {
         const oir = e.oir;
         const class = oir.classes.get(class_idx).?;
         assert(class.bag.items.len > 0);
+
+        const gop = try e.memo.getOrPut(oir.allocator, class_idx);
+        if (gop.found_existing) return gop.value_ptr.*;
 
         switch (e.cost_strategy) {
             .simple_latency => {
@@ -367,7 +372,7 @@ pub const Extractor = struct {
                     for (node.operands()) |sub_class_idx| {
                         if (sub_class_idx == class_idx) break;
 
-                        const extracted_cost, _ = e.extractClass(sub_class_idx);
+                        const extracted_cost, _ = try e.extractClass(sub_class_idx);
                         child_cost += extracted_cost;
                     }
 
@@ -378,13 +383,16 @@ pub const Extractor = struct {
                     }
                 }
 
+                gop.value_ptr.* = .{ best_cost, best_node };
                 return .{ best_cost, best_node };
             },
         }
     }
 
     pub fn deinit(e: *Extractor) void {
-        e.virt_map.deinit(e.oir.allocator);
+        const allocator = e.oir.allocator;
+        e.virt_map.deinit(allocator);
+        e.memo.deinit(allocator);
     }
 };
 
