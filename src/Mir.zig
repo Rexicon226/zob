@@ -187,8 +187,6 @@ pub const Extractor = struct {
 
         switch (node.tag) {
             .arg => {
-                assert(node.out.items.len == 0);
-
                 const arg_reg: Register = bits.Registers.Integer.function_arg_regs[@intCast(node.data.constant)];
                 const arg_value: Value = .{ .register = arg_reg };
                 const gop = try e.virt_map.getOrPut(oir.allocator, arg_reg);
@@ -208,8 +206,7 @@ pub const Extractor = struct {
                 return dst_value;
             },
             .ret => {
-                assert(node.out.items.len == 1);
-                const class_idx = node.out.items[0];
+                const class_idx = node.data.un_op;
 
                 const arg_idx = e.extractClass(class_idx);
                 const arg_value = try e.getNode(arg_idx);
@@ -224,8 +221,7 @@ pub const Extractor = struct {
             },
             // memory operations
             .load => {
-                assert(node.out.items.len == 1);
-                const class_idx = node.out.items[0];
+                const class_idx = node.data.un_op;
 
                 const arg_idx = e.extractClass(class_idx);
                 const arg_value = try e.getNode(arg_idx);
@@ -246,10 +242,7 @@ pub const Extractor = struct {
             .div_exact,
             .mul, // putting mul here for now even though it's commutative
             => {
-                assert(node.out.items.len == 2);
-
-                const rhs_class_idx = node.out.items[1];
-                const lhs_class_idx = node.out.items[0];
+                const rhs_class_idx, const lhs_class_idx = node.data.bin_op;
 
                 const rhs_idx = e.extractClass(rhs_class_idx);
                 const lhs_idx = e.extractClass(lhs_class_idx);
@@ -282,10 +275,7 @@ pub const Extractor = struct {
             .shl,
             .shr,
             => {
-                assert(node.out.items.len == 2);
-
-                const rhs_class_idx = node.out.items[1];
-                const lhs_class_idx = node.out.items[0];
+                const rhs_class_idx, const lhs_class_idx = node.data.bin_op;
 
                 const rhs_idx = e.extractClass(rhs_class_idx);
                 const lhs_idx = e.extractClass(lhs_class_idx);
@@ -322,7 +312,6 @@ pub const Extractor = struct {
                 return dst_value;
             },
             .constant => {
-                assert(node.out.items.len == 0);
                 const value: Value = .{ .immediate = node.data.constant };
                 return value;
             },

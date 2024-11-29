@@ -56,7 +56,7 @@ pub fn dumpGraphViz(
         for (class.bag.items, 0..) |node_idx, i| {
             var arg_i: usize = 0;
             const node = oir.getNode(node_idx);
-            for (node.out.items) |child_idx| {
+            for (node.operands()) |child_idx| {
                 try file_writer.print(
                     "  {}.{} -> {}.0 [lhead = cluster_{}]\n",
                     .{

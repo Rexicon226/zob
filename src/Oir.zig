@@ -75,11 +75,6 @@ pub const NodeContext = struct {
 
         hasher.update(std.mem.asBytes(&node.tag));
         std.hash.autoHash(&hasher, node.data);
-        std.hash.autoHash(&hasher, node.out.items.len);
-
-        for (node.out.items) |idx| {
-            std.hash.autoHash(&hasher, idx);
-        }
 
         const result = hasher.final();
 
@@ -97,15 +92,12 @@ pub const NodeContext = struct {
         if (std.meta.activeTag(a.data) != std.meta.activeTag(b.data)) return false;
         // b.data would also be `constant` because of the above check
         if (a.data == .constant) {
-            assert(a.out.items.len == 0 and b.out.items.len == 0);
             return a.data.constant == b.data.constant;
         }
 
-        if (a.out.items.len != b.out.items.len) return false;
-
         log.debug("a: {}, b: {}", .{ a.tag, b.tag });
 
-        for (a.out.items, b.out.items) |a_class, b_class| {
+        for (a.operands(), b.operands()) |a_class, b_class| {
             std.debug.print("a class: {}, b class: {}\n", .{ a_class, b_class });
             if (a_class != b_class) {
                 return false;
@@ -123,9 +115,6 @@ pub const NodeContext = struct {
 pub const Node = struct {
     tag: Tag,
     data: Data = .none,
-
-    /// Nodes only have edges to Classes.
-    out: std.ArrayListUnmanaged(Class.Index) = .{},
 
     pub const Index = enum(u32) {
         _,
@@ -184,18 +173,72 @@ pub const Node = struct {
                 else => false,
             };
         }
+
+        fn dataType(tag: Tag) DataEnum {
+            return switch (tag) {
+                .arg,
+                .constant,
+                => .constant,
+                .add,
+                .sub,
+                .mul,
+                .shl,
+                .shr,
+                .div_trunc,
+                .div_exact,
+                => .bin_op,
+                .ret,
+                .load,
+                .store,
+                => .un_op,
+            };
+        }
     };
 
-    const Data = union(enum) {
+    const DataEnum = enum {
+        none,
+        constant,
+        bin_op,
+        un_op,
+    };
+
+    const Data = union(DataEnum) {
         none: void,
         constant: i64,
+        bin_op: [2]Class.Index,
+        un_op: Class.Index,
     };
 
-    pub fn clone(node: *const Node, allocator: std.mem.Allocator) !Node {
-        return .{
-            .tag = node.tag,
-            .data = node.data,
-            .out = try node.out.clone(allocator),
+    /// Given a tag, returns a Node with the data union initalized
+    /// to the correct tag, but with an undefined payload.
+    ///
+    /// Useful when mixing the same operations no matter the arity of the node.
+    fn new(tag: Tag) Node {
+        switch (tag) {
+            inline else => |t| {
+                return .{
+                    .tag = t,
+                    .data = @unionInit(Data, @tagName(t.dataType()), undefined),
+                };
+            },
+        }
+    }
+
+    pub fn operands(node: *const Node) []const Class.Index {
+        return switch (node.data) {
+            .none => &.{},
+            .constant => &.{},
+            .bin_op => |*bin_op| bin_op,
+            .un_op => |*un_op| un_op[0..1],
+        };
+    }
+
+    pub fn mutableOperands(node: *Node) []Class.Index {
+        return switch (node.data) {
+            .none => &.{},
+            .constant => &.{},
+            .bin_op => |*bin_op| bin_op,
+            .un_op => |*un_op| un_op[0..1],
         };
     }
 };
@@ -259,8 +302,8 @@ pub fn fromIr(ir: IR, allocator: std.mem.Allocator) !Oir {
         .clean = true,
     };
 
-    const tags = ir.instructions.items(.tag);
-    const data = ir.instructions.items(.data);
+    const tags: []const IR.Inst.Tag = ir.instructions.items(.tag);
+    const data: []const IR.Inst.Data = ir.instructions.items(.data);
 
     var ir_to_class: std.AutoHashMapUnmanaged(IR.Inst.Index, Class.Index) = .{};
     defer ir_to_class.deinit(allocator);
@@ -291,7 +334,7 @@ pub fn fromIr(ir: IR, allocator: std.mem.Allocator) !Oir {
                 switch (op) {
                     .index => |index| {
                         const class_idx = ir_to_class.get(index).?;
-                        try node.out.append(allocator, class_idx);
+                        node.data = .{ .un_op = class_idx };
 
                         const idx = try oir.add(node);
                         try ir_to_class.put(allocator, inst, idx);
@@ -303,7 +346,7 @@ pub fn fromIr(ir: IR, allocator: std.mem.Allocator) !Oir {
                             .data = .{ .constant = value },
                         };
                         const const_idx = try oir.add(const_node);
-                        try node.out.append(allocator, const_idx);
+                        node.data = .{ .un_op = const_idx };
                         const idx = try oir.add(node);
                         try ir_to_class.put(allocator, inst, idx);
                     },
@@ -312,13 +355,14 @@ pub fn fromIr(ir: IR, allocator: std.mem.Allocator) !Oir {
             2,
             => {
                 var node: Node = .{ .tag = convert_tag };
+                node.data = .{ .bin_op = undefined };
 
                 const bin_op = payload.bin_op;
-                inline for (.{ bin_op.lhs, bin_op.rhs }) |operand| {
+                inline for (.{ bin_op.lhs, bin_op.rhs }, 0..) |operand, sub_i| {
                     switch (operand) {
                         .index => |index| {
                             const class_idx = ir_to_class.get(index).?;
-                            try node.out.append(allocator, class_idx);
+                            node.data.bin_op[sub_i] = class_idx;
                         },
                         .value => |value| {
                             // materialize the implicit constant node
@@ -327,7 +371,7 @@ pub fn fromIr(ir: IR, allocator: std.mem.Allocator) !Oir {
                                 .data = .{ .constant = value },
                             };
                             const const_idx = try oir.add(const_node);
-                            try node.out.append(allocator, const_idx);
+                            node.data.bin_op[sub_i] = const_idx;
                         },
                     }
                 }
@@ -377,7 +421,7 @@ const Passes = struct {
             assert(node.tag != .constant);
             defer buffer.clearRetainingCapacity();
 
-            for (node.out.items) |child_idx| {
+            for (node.operands()) |child_idx| {
                 if (oir.classContains(child_idx, .constant)) |constant| {
                     try buffer.append(oir.allocator, constant);
                 }
@@ -590,12 +634,12 @@ fn match(
             // i.e root_node is a (mul 10 20), and the pattern wants (abs ?x)
             // this is more of a sanity check, since the tag check above would probably
             // remove all cases of this.
-            if (list.len != root_node.out.items.len) return false;
+            if (list.len != root_node.operands().len) return false;
 
             // now we're left with a list of expressions and a graph.
             // since the "out" field of the nodes is ordered from left to right, we're going to
             // iterate through it inline with the expression list, and just recursively match with match()
-            for (root_node.out.items, list) |sub_node_idx, expr| {
+            for (root_node.operands(), list) |sub_node_idx, expr| {
                 if (!try oir.matchClass(sub_node_idx, expr, bindings)) {
                     return false;
                 }
@@ -689,22 +733,18 @@ fn applyRewrite(
     to: SExpr,
     bindings: *const std.StringHashMapUnmanaged(Node.Index),
 ) !bool {
-    const allocator = oir.allocator;
     const root_class = oir.findClass(root_node_idx);
 
     var cloned = try oir.clone();
     const changed: bool = changed: {
         switch (to.data) {
             .list => |list| {
-                var new_node: Node = .{
-                    .tag = to.tag,
-                    .out = .{},
-                };
+                var new_node = Node.new(to.tag);
 
-                for (list) |sub_expr| {
+                for (list, 0..) |sub_expr, i| {
                     const new_sub_node = try oir.expressionToNode(sub_expr, bindings);
                     const sub_class_idx = try oir.add(new_sub_node);
-                    try new_node.out.append(allocator, sub_class_idx);
+                    new_node.mutableOperands()[i] = sub_class_idx;
                 }
 
                 const new_class_idx = try oir.add(new_node);
@@ -736,39 +776,30 @@ fn expressionToNode(
 ) !Node {
     switch (expr.data) {
         .list => |list| {
-            var node: Node = .{
-                .tag = expr.tag,
-                .out = .{},
-            };
+            var node = Node.new(expr.tag);
 
-            for (list) |item| {
+            for (list, 0..) |item, i| {
                 const sub_node = try oir.expressionToNode(item, bindings);
                 const sub_class_idx = try oir.add(sub_node);
-                try node.out.append(oir.allocator, sub_class_idx);
+                node.mutableOperands()[i] = sub_class_idx;
             }
 
             return node;
         },
         .atom => |atom| {
-            var node: Node = .{
-                .tag = .constant,
-                .out = .{},
+            return node: {
+                if (atom[0] == '?') {
+                    const ident = atom[1..];
+                    const from_idx = bindings.get(ident).?;
+                    break :node oir.getNode(from_idx);
+                } else {
+                    const number = try std.fmt.parseInt(i64, atom, 10);
+                    break :node .{
+                        .tag = .constant,
+                        .data = .{ .constant = number },
+                    };
+                }
             };
-
-            if (atom[0] == '?') {
-                const ident = atom[1..];
-                const from_idx = bindings.get(ident).?;
-                const from_node = oir.getNode(from_idx);
-                node = try from_node.clone(oir.allocator);
-            } else {
-                const number = try std.fmt.parseInt(i64, atom, 10);
-                node = .{
-                    .tag = .constant,
-                    .data = .{ .constant = number },
-                };
-            }
-
-            return node;
         },
         .builtin => |builtin| {
             const tag = builtin.tag;
@@ -801,13 +832,7 @@ fn clone(oir: *Oir) !Oir {
     const gpa = oir.allocator;
     return .{
         .allocator = gpa,
-        .nodes = nodes: {
-            const cloned = try oir.nodes.clone(gpa);
-            for (cloned.items) |*node| {
-                node.* = try node.clone(gpa);
-            }
-            break :nodes cloned;
-        },
+        .nodes = try oir.nodes.clone(gpa),
         .classes = classes: {
             const cloned = try oir.classes.clone(gpa);
             var iter = cloned.valueIterator();
@@ -823,7 +848,7 @@ fn clone(oir: *Oir) !Oir {
     };
 }
 
-/// Reference becomes invalid when new classes are adedd to the graph.
+/// Reference becomes invalid when new classes are added to the graph.
 fn getClassPtr(oir: *Oir, idx: Class.Index) *Class {
     const found = oir.find.find(idx);
     return oir.classes.getPtr(found).?;
@@ -839,6 +864,11 @@ fn findClass(oir: *const Oir, node_idx: Node.Index) Class.Index {
 
 pub fn getNode(oir: *const Oir, idx: Node.Index) Node {
     return oir.nodes.items[@intFromEnum(idx)];
+}
+
+/// Reference becomes invalid when new nodes are added to the graph.
+fn getNodePtr(oir: *const Oir, idx: Node.Index) *Node {
+    return &oir.nodes.items[@intFromEnum(idx)];
 }
 
 /// Adds an ENode to the EGraph, giving the node its own class.
@@ -881,7 +911,7 @@ fn makeClass(oir: *Oir, node_idx: Node.Index) !Class.Index {
     try class.bag.append(oir.allocator, node_idx);
 
     const node = oir.getNode(node_idx);
-    for (node.out.items) |child| {
+    for (node.operands()) |child| {
         const class_ptr = oir.getClassPtr(child);
         try class_ptr.parents.append(oir.allocator, .{ node_idx, id });
     }
@@ -948,10 +978,10 @@ pub fn rebuild(oir: *Oir) !void {
     while (oir.pending.popOrNull()) |pair| {
         const node_idx, const class_idx = pair;
 
-        const node = oir.getNode(node_idx);
+        const node = oir.getNodePtr(node_idx);
         std.debug.print("node: {} {}\n", .{ node.tag, node_idx });
 
-        for (oir.getNode(node_idx).out.items) |*id| {
+        for (node.mutableOperands()) |*id| {
             const found_idx = oir.find.find(id.*);
             id.* = found_idx;
         }
@@ -970,8 +1000,8 @@ pub fn rebuild(oir: *Oir) !void {
     var iter = oir.classes.valueIterator();
     while (iter.next()) |class| {
         for (class.bag.items) |node_idx| {
-            const node = oir.getNode(node_idx);
-            for (node.out.items) |*child| {
+            const node = oir.getNodePtr(node_idx);
+            for (node.mutableOperands()) |*child| {
                 child.* = oir.find.find(child.*);
             }
         }
@@ -1035,10 +1065,6 @@ pub fn deinit(oir: *Oir) void {
     }
 
     oir.node_to_class.deinit(allocator);
-
-    for (oir.nodes.items) |*node| {
-        node.out.deinit(allocator);
-    }
     oir.nodes.deinit(allocator);
 
     oir.find.deinit(allocator);
