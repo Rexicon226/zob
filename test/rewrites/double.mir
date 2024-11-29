@@ -1,15 +1,13 @@
 input IR:
 %0 = arg(0)
-%1 = arg(1)
-%2 = add(%0, %0)
-%3 = ret(%2)
+%1 = add(%0, %0)
+%2 = ret(%1)
 end IR
 
 MIR before passes:
 -----------
 %1:int = copy $a0
-%1:int = copy $a0
-%2:int = add %1:int, %1:int
+%2:int = slli %1:int, 1
 $a0 = copy %2:int
 pseudo_ret $a0
 -----------
@@ -17,15 +15,13 @@ pseudo_ret $a0
 MIR after liveVars:
 -----------
 %1:int = copy $a0
-%1:int = copy $a0
-%2:int = add %1:int killed, %1:int killed
+%2:int = slli %1:int killed, 1
 $a0 = copy %2:int killed
 pseudo_ret $a0
 -----------
 
 MIR after regAlloc:
 -----------
-$a0 = copy $a0
-$a0 = add $a0, $a0
+$a0 = slli $a0, 1
 pseudo_ret $a0
 -----------

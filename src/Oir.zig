@@ -521,6 +521,11 @@ const Passes = struct {
             .to = SExpr.parse("?x"),
         },
         .{
+            .name = "double",
+            .from = SExpr.parse("(add ?x ?x)"),
+            .to = SExpr.parse("(mul ?x 2)"),
+        },
+        .{
             .name = "zero-mul",
             .from = SExpr.parse("(mul ?x 0)"),
             .to = SExpr.parse("0"),

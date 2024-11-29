@@ -21,6 +21,7 @@ pub fn addCases(
 
     for (filenames.items) |path| {
         const run = b.addRunArtifact(compiler);
+        run.setName(path);
         step.dependOn(&run.step);
 
         var test_input = TestInput.parse(b.allocator, dir, path) catch |err| {
