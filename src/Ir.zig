@@ -224,6 +224,10 @@ pub const Parser = struct {
 
             var result_node = sides.next() orelse return error.NoResultNode;
             var expression = sides.next() orelse return error.NoExpression;
+
+            const comment_index = std.mem.indexOfScalar(u8, expression, ';');
+            if (comment_index) |index| expression = expression[0..index];
+
             if (sides.next() != null) return error.ExtraEquals;
 
             // trim any whitespace

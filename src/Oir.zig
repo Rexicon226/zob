@@ -264,6 +264,11 @@ pub const Node = struct {
             try writer.print("{}", .{op});
             if (i != inputs.len - 1) try writer.writeAll(", ");
         }
+
+        if (node.tag == .constant) {
+            try writer.print("{}", .{node.data.constant});
+        }
+
         try writer.writeAll(")");
     }
 };
@@ -462,8 +467,10 @@ const Passes = struct {
                 changed = true;
                 switch (node.tag) {
                     .add,
+                    .sub,
                     .mul,
-                    // .div_exact,
+                    .div_exact,
+                    .shl,
                     => {
                         const lhs, const rhs = buffer.items[0..2].*;
                         const lhs_value = oir.getNode(lhs).data.constant;
@@ -471,8 +478,10 @@ const Passes = struct {
 
                         const result = switch (node.tag) {
                             .add => lhs_value + rhs_value,
+                            .sub => lhs_value - rhs_value,
                             .mul => lhs_value * rhs_value,
                             .div_exact => @divExact(lhs_value, rhs_value),
+                            .shl => lhs_value << @intCast(rhs_value),
                             else => unreachable,
                         };
 
@@ -547,8 +556,13 @@ const Passes = struct {
         },
         .{
             .name = "factor",
-            .from = SExpr.parse("(add (mul ?a ?b) (mul ?a ?c))"),
-            .to = SExpr.parse("(mul ?a (add ?b ?c))"),
+            .from = SExpr.parse("(add (mul ?x ?y) (mul ?x ?z))"),
+            .to = SExpr.parse("(mul ?x (add ?y ?z))"),
+        },
+        .{
+            .name = "factor-one",
+            .from = SExpr.parse("(add ?x (mul ?x ?y))"),
+            .to = SExpr.parse("(mul ?x (add 1 ?y))"),
         },
     };
 
@@ -916,7 +930,7 @@ fn clone(oir: *Oir) !Oir {
 }
 
 /// Reference becomes invalid when new classes are added to the graph.
-fn getClassPtr(oir: *Oir, idx: Class.Index) *Class {
+pub fn getClassPtr(oir: *Oir, idx: Class.Index) *Class {
     const found = oir.find.findMutable(idx);
     return oir.classes.getPtr(found).?;
 }
@@ -944,7 +958,7 @@ pub fn add(oir: *Oir, node: Node) !Class.Index {
     const node_idx: Node.Index = @enumFromInt(oir.nodes.items.len);
     try oir.nodes.append(oir.allocator, node);
 
-    log.debug("adding node {s} {}", .{ @tagName(node.tag), node_idx });
+    log.debug("adding node {} {}", .{ node, node_idx });
 
     const class_idx = try oir.addInternal(node_idx);
     return oir.find.find(class_idx);
@@ -1048,17 +1062,12 @@ pub fn rebuild(oir: *Oir) !void {
             id.* = found_idx;
         }
 
-        const gop = try oir.node_to_class.getOrPutContext(
+        try oir.node_to_class.putNoClobberContext(
             oir.allocator,
             node_idx,
+            class_idx,
             .{ .oir = oir },
         );
-
-        if (gop.found_existing) {
-            const mem_class = gop.value_ptr.*;
-            _ = try oir.@"union"(mem_class, class_idx);
-        }
-        gop.value_ptr.* = class_idx;
     }
 
     var iter = oir.classes.iterator();

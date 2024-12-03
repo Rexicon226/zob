@@ -1,5 +1,7 @@
 #!/bin/bash
 
+rm -r graphs/*.png
+
 for file in graphs/*.dot; do
     [ -e "$file" ] || continue
     basename="${file%.dot}"

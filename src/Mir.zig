@@ -163,6 +163,8 @@ pub const Extractor = struct {
         // or something similar.
         const ret_node_idx = e.findLeafNode();
 
+        try e.findCycles();
+
         // Walk from that return node and extract the best classes.
         _ = try e.extractNode(ret_node_idx);
     }
@@ -356,8 +358,9 @@ pub const Extractor = struct {
         const class = oir.classes.get(class_idx).?;
         assert(class.bag.items.len > 0);
 
-        const gop = try e.memo.getOrPut(oir.allocator, class_idx);
-        if (gop.found_existing) return gop.value_ptr.*;
+        if (e.memo.get(class_idx)) |entry| {
+            return entry;
+        }
 
         switch (e.cost_strategy) {
             .simple_latency => {
@@ -370,25 +373,75 @@ pub const Extractor = struct {
                     const base_cost = cost.getCost(node.tag);
                     var child_cost: u32 = 0;
                     for (node.operands()) |sub_class_idx| {
-                        if (sub_class_idx == class_idx) break;
+                        if (sub_class_idx == class_idx) std.debug.panic("{} cycles with itself", .{class_idx});
 
                         const extracted_cost, _ = try e.extractClass(sub_class_idx);
                         child_cost += extracted_cost;
                     }
 
                     const node_cost = base_cost + child_cost;
+
                     if (node_cost < best_cost) {
                         best_cost = node_cost;
                         best_node = node_idx;
                     }
                 }
 
-                gop.value_ptr.* = .{ best_cost, best_node };
-                return .{ best_cost, best_node };
+                const entry: NodeCost = .{ best_cost, best_node };
+                try e.memo.putNoClobber(oir.allocator, class_idx, entry);
+                return entry;
             },
         }
     }
 
+    fn findCycles(e: *Extractor) !void {
+        const oir = e.oir;
+        const allocator = oir.allocator;
+
+        const Color = enum {
+            white,
+            gray,
+            black,
+        };
+
+        var stack = try std.ArrayList(struct { bool, Class.Index })
+            .initCapacity(allocator, oir.classes.size);
+        defer stack.deinit();
+
+        var color = std.AutoHashMap(Class.Index, Color).init(allocator);
+        defer color.deinit();
+
+        {
+            var iter = oir.classes.valueIterator();
+            while (iter.next()) |class| {
+                stack.appendAssumeCapacity(.{ true, class.index });
+                try color.put(class.index, .white);
+            }
+        }
+
+        while (stack.popOrNull()) |entry| {
+            const enter, const id = entry;
+            if (enter) {
+                color.getPtr(id).?.* = .gray;
+                try stack.append(.{ false, id });
+
+                const class_ptr = oir.getClassPtr(id);
+                for (class_ptr.bag.items) |node_idx| {
+                    const node = oir.getNode(node_idx);
+                    for (node.operands()) |child| {
+                        const child_color = color.get(child).?;
+                        switch (child_color) {
+                            .white => try stack.append(.{ true, child }),
+                            .gray => @panic("cycle found!"),
+                            .black => {},
+                        }
+                    }
+                }
+            } else {
+                color.getPtr(id).?.* = .black;
+            }
+        }
+    }
     pub fn deinit(e: *Extractor) void {
         const allocator = e.oir.allocator;
         e.virt_map.deinit(allocator);
