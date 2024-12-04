@@ -8,6 +8,9 @@ virt_map: std.AutoHashMapUnmanaged(Register, VirtualRegister) = .{},
 /// from a cyclic class pattern so we must skip them. If after iterating through
 /// all of the nodes in a class we can't find one that doesn't cycle, this means
 /// the class itself cycles and the graph is unsolvable.
+///
+/// The key is a cyclic node index and the value is the index of the class
+/// which references the class the node is in.
 cycles: std.AutoHashMapUnmanaged(Node.Index, Class.Index) = .{},
 
 /// Relates class indicies to the best node in them. Since the classes
