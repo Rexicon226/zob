@@ -349,7 +349,6 @@ const bits = @import("bits.zig");
 const cost = @import("cost.zig");
 
 const passes = @import("Mir/passes.zig");
-pub const Extractor = @import("Mir/Extractor.zig");
 
 const Class = Oir.Class;
 const Node = Oir.Node;

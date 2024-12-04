@@ -2,7 +2,6 @@ const std = @import("std");
 const Ir = @import("Ir.zig");
 const Mir = @import("Mir.zig");
 const Oir = @import("Oir.zig");
-const print_oir = @import("print_oir.zig");
 
 pub const std_options: std.Options = .{
     .logFn = log,
@@ -80,17 +79,22 @@ pub fn main() !void {
     // run optimization passes on the OIR
     try oir.optimize(.saturate, output_graph);
 
-    var mir: Mir = .{ .gpa = allocator };
-    defer mir.deinit();
+    var recv = try Oir.Extractor.extract(&oir, .simple_latency);
+    defer recv.deinit(allocator);
 
-    // extract the best OIR solution into our MIR
-    var extractor: Mir.Extractor = .{
-        .cost_strategy = .simple_latency,
-        .oir = &oir,
-        .mir = &mir,
-    };
-    try extractor.extract();
-    defer extractor.deinit();
+    try recv.dump("graphs/test_recv.dot");
 
-    try mir.run();
+    // var mir: Mir = .{ .gpa = allocator };
+    // defer mir.deinit();
+
+    // // extract the best OIR solution into our MIR
+    // var extractor: Mir.Extractor = .{
+    //     .cost_strategy = .simple_latency,
+    //     .oir = &oir,
+    //     .mir = &mir,
+    // };
+    // try extractor.extract();
+    // defer extractor.deinit();
+
+    // try mir.run();
 }

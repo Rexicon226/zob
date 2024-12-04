@@ -88,7 +88,8 @@ pub const NodeContext = struct {
         var hasher = std.hash.Wyhash.init(0);
 
         hasher.update(std.mem.asBytes(&node.tag));
-        std.hash.autoHash(&hasher, node.data);
+        std.hash.autoHash(&hasher, std.meta.activeTag(node.data));
+        for (node.operands()) |idx| std.hash.autoHash(&hasher, idx);
 
         const result = hasher.final();
         return result;
@@ -265,8 +266,11 @@ pub const Node = struct {
             if (i != inputs.len - 1) try writer.writeAll(", ");
         }
 
-        if (node.tag == .constant) {
-            try writer.print("{}", .{node.data.constant});
+        switch (node.tag) {
+            .constant,
+            .arg,
+            => try writer.print("{}", .{node.data.constant}),
+            else => {},
         }
 
         try writer.writeAll(")");
@@ -307,12 +311,6 @@ pub const Class = struct {
         class.bag.deinit(allocator);
         class.parents.deinit(allocator);
     }
-};
-
-pub const CostStrategy = enum {
-    /// A super basic cost strategy that simply looks at the number of child nodes
-    /// a particular node has to determine its cost.
-    simple_latency,
 };
 
 /// Takes in an `IR`, meant to represent a basic version of Zig's AIR
@@ -631,7 +629,6 @@ pub fn optimize(
             while (true) {
                 var new_change: bool = false;
                 inline for (passes) |pass| {
-                    // dump to a graphviz file
                     if (output_graph) {
                         const name = try std.fmt.allocPrint(
                             oir.allocator,
@@ -658,7 +655,7 @@ pub fn optimize(
 fn dump(oir: *Oir, name: []const u8) !void {
     const graphviz_file = try std.fs.cwd().createFile(name, .{});
     defer graphviz_file.close();
-    try print_oir.dumpGraphViz(oir, graphviz_file.writer());
+    try print_oir.dumpOirGraph(oir, graphviz_file.writer());
 }
 
 const RewriteError = error{ OutOfMemory, InvalidCharacter, Overflow };
@@ -935,6 +932,11 @@ pub fn getClassPtr(oir: *Oir, idx: Class.Index) *Class {
     return oir.classes.getPtr(found).?;
 }
 
+pub fn getClass(oir: *const Oir, idx: Class.Index) Class {
+    const found = oir.find.find(idx);
+    return oir.classes.get(found).?;
+}
+
 fn findClass(oir: *const Oir, node_idx: Node.Index) Class.Index {
     const memo_idx = oir.node_to_class.getContext(
         node_idx,
@@ -1095,6 +1097,57 @@ pub fn rebuild(oir: *Oir) !void {
     oir.clean = true;
 }
 
+pub fn findCycles(oir: *const Oir) !std.AutoHashMapUnmanaged(Node.Index, Class.Index) {
+    const allocator = oir.allocator;
+
+    const Color = enum {
+        white,
+        gray,
+        black,
+    };
+
+    var stack = try std.ArrayList(struct { bool, Class.Index })
+        .initCapacity(allocator, oir.classes.size);
+    defer stack.deinit();
+
+    var color = std.AutoHashMap(Class.Index, Color).init(allocator);
+    defer color.deinit();
+
+    {
+        var iter = oir.classes.valueIterator();
+        while (iter.next()) |class| {
+            stack.appendAssumeCapacity(.{ true, class.index });
+            try color.put(class.index, .white);
+        }
+    }
+
+    var cycles: std.AutoHashMapUnmanaged(Node.Index, Class.Index) = .{};
+    while (stack.popOrNull()) |entry| {
+        const enter, const id = entry;
+        if (enter) {
+            color.getPtr(id).?.* = .gray;
+            try stack.append(.{ false, id });
+
+            const class_ptr = oir.getClass(id);
+            for (class_ptr.bag.items) |node_idx| {
+                const node = oir.getNode(node_idx);
+                for (node.operands()) |child| {
+                    const child_color = color.get(child).?;
+                    switch (child_color) {
+                        .white => try stack.append(.{ true, child }),
+                        .gray => try cycles.put(allocator, node_idx, id),
+                        .black => {},
+                    }
+                }
+            }
+        } else {
+            color.getPtr(id).?.* = .black;
+        }
+    }
+
+    return cycles;
+}
+
 fn verifyNodes(oir: *Oir) !void {
     var temporary: std.HashMapUnmanaged(
         Node.Index,
@@ -1176,8 +1229,9 @@ pub fn classContains(oir: *Oir, idx: Class.Index, comptime tag: Node.Tag) ?Node.
 const Oir = @This();
 const std = @import("std");
 const IR = @import("Ir.zig");
-const print_oir = @import("print_oir.zig");
+const print_oir = @import("Oir/print_oir.zig");
 const SExpr = @import("rewrites/SExpr.zig");
+pub const Extractor = @import("Oir/Extractor.zig");
 
 const log = std.log.scoped(.oir);
 const assert = std.debug.assert;
