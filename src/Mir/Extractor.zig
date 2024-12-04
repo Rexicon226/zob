@@ -3,6 +3,13 @@ mir: *Mir,
 cost_strategy: Oir.CostStrategy,
 virt_map: std.AutoHashMapUnmanaged(Register, VirtualRegister) = .{},
 
+/// Describes cycles found in the OIR. EGraphs are allowed to have cycles,
+/// they are not DAGs. However, it's impossible to extract a "best node"
+/// from a cyclic class pattern so we must skip them. If after iterating through
+/// all of the nodes in a class we can't find one that doesn't cycle, this means
+/// the class itself cycles and the graph is unsolvable.
+cycles: std.AutoHashMapUnmanaged(Node.Index, Class.Index) = .{},
+
 /// Relates class indicies to the best node in them. Since the classes
 /// are immutable after the OIR optimization passes, we can confidently
 /// reuse the extraction. This amortization makes our extraction strategy
@@ -20,6 +27,7 @@ pub fn extract(e: *Extractor) !void {
     // or something similar.
     const ret_node_idx = e.findLeafNode();
 
+    assert(e.cycles.count() == 0); // don't run extract twice!
     try e.findCycles();
 
     // Walk from that return node and extract the best classes.
@@ -215,9 +223,7 @@ fn extractClass(e: *Extractor, class_idx: Class.Index) !NodeCost {
     const class = oir.classes.get(class_idx).?;
     assert(class.bag.items.len > 0);
 
-    if (e.memo.get(class_idx)) |entry| {
-        return entry;
-    }
+    if (e.memo.get(class_idx)) |entry| return entry;
 
     switch (e.cost_strategy) {
         .simple_latency => {
@@ -225,12 +231,15 @@ fn extractClass(e: *Extractor, class_idx: Class.Index) !NodeCost {
             var best_node: Node.Index = class.bag.items[0];
 
             for (class.bag.items) |node_idx| {
+                // the node is known to cycle, we must skip it.
+                if (e.cycles.get(node_idx) != null) continue;
+
                 const node = oir.getNode(node_idx);
 
                 const base_cost = cost.getCost(node.tag);
                 var child_cost: u32 = 0;
                 for (node.operands()) |sub_class_idx| {
-                    if (sub_class_idx == class_idx) std.debug.panic("{} cycles with itself", .{class_idx});
+                    assert(sub_class_idx != class_idx);
 
                     const extracted_cost, _ = try e.extractClass(sub_class_idx);
                     child_cost += extracted_cost;
@@ -242,6 +251,9 @@ fn extractClass(e: *Extractor, class_idx: Class.Index) !NodeCost {
                     best_cost = node_cost;
                     best_node = node_idx;
                 }
+            }
+            if (best_cost == std.math.maxInt(u32)) {
+                std.debug.panic("extracted cyclic terms, no best node could be found! {}", .{class_idx});
             }
 
             const entry: NodeCost = .{ best_cost, best_node };
@@ -276,6 +288,7 @@ fn findCycles(e: *Extractor) !void {
         }
     }
 
+    var cycles: std.AutoHashMapUnmanaged(Node.Index, Class.Index) = .{};
     while (stack.popOrNull()) |entry| {
         const enter, const id = entry;
         if (enter) {
@@ -289,7 +302,7 @@ fn findCycles(e: *Extractor) !void {
                     const child_color = color.get(child).?;
                     switch (child_color) {
                         .white => try stack.append(.{ true, child }),
-                        .gray => @panic("cycle found!"),
+                        .gray => try cycles.put(allocator, node_idx, id),
                         .black => {},
                     }
                 }
@@ -298,11 +311,22 @@ fn findCycles(e: *Extractor) !void {
             color.getPtr(id).?.* = .black;
         }
     }
+
+    // We found some cycles!
+    // if (cycles.count() > 0) {
+    //     var iter = cycles.iterator();
+    //     while (iter.next()) |entry| {
+    //         std.debug.print("{} cycles with {}\n", .{ entry.key_ptr.*, entry.value_ptr.* });
+    //     }
+    // }
+
+    e.cycles = cycles;
 }
 pub fn deinit(e: *Extractor) void {
     const allocator = e.oir.allocator;
     e.virt_map.deinit(allocator);
     e.memo.deinit(allocator);
+    e.cycles.deinit(allocator);
 }
 
 const std = @import("std");
