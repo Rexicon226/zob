@@ -64,12 +64,11 @@ pub fn extract(oir: *const Oir, cost_strategy: CostStrategy) !Recursive {
     };
     defer e.deinit();
 
+    log.debug("cycles found: {}", .{e.cycles.count()});
+
     // First we need to find what the root class is. This will usually be the class containing a `ret`,
     // or something similar.
     const ret_node_idx = e.findLeafNode();
-
-    std.debug.print("ret node: {}\n", .{ret_node_idx});
-    log.debug("cycles found: {}", .{e.cycles.count()});
 
     var recv: Recursive = .{};
     _ = try e.extractNode(ret_node_idx, &recv);
@@ -124,7 +123,12 @@ fn extractNode(
         .constant,
         => return recv.addNode(allocator, node),
 
-        .add => {
+        .add,
+        .sub,
+        .shl,
+        .div_exact,
+        .mul,
+        => {
             const rhs_class_idx, const lhs_class_idx = node.data.bin_op;
             const rhs_idx = try e.getClass(rhs_class_idx);
             const lhs_idx = try e.getClass(lhs_class_idx);

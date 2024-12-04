@@ -31,19 +31,7 @@ pub fn dumpOirGraph(
             for (class.bag.items, 0..) |node_idx, i| {
                 const node = oir.getNode(node_idx);
                 try stream.print("    {}.{} [label=\"", .{ class_idx, i });
-                switch (node.tag) {
-                    .constant => {
-                        const val = node.data.constant;
-                        try stream.print("constant:{d}", .{val});
-                    },
-                    .arg => {
-                        try stream.print(
-                            "arg({d})",
-                            .{node.data.constant},
-                        );
-                    },
-                    else => try stream.writeAll(@tagName(node.tag)),
-                }
+                try printNodeLabel(stream, node);
                 try stream.writeAll("\", color=\"grey\"];\n");
             }
             try stream.writeAll("  }\n");
@@ -89,10 +77,9 @@ pub fn dumpRecvGraph(
     );
 
     for (recv.nodes.items, 0..) |node, i| {
-        try stream.print("    {d} [label=\"{s}\"];\n", .{
-            i,
-            @tagName(node.tag),
-        });
+        try stream.print("    {} [label=\"", .{i});
+        try printNodeLabel(stream, node);
+        try stream.writeAll("\", color=\"grey\"];\n");
     }
     try stream.writeAll("\n");
 
@@ -103,4 +90,23 @@ pub fn dumpRecvGraph(
     }
 
     try stream.writeAll("}\n");
+}
+
+fn printNodeLabel(
+    stream: anytype,
+    node: Oir.Node,
+) !void {
+    switch (node.tag) {
+        .constant => {
+            const val = node.data.constant;
+            try stream.print("constant:{d}", .{val});
+        },
+        .arg => {
+            try stream.print(
+                "arg({d})",
+                .{node.data.constant},
+            );
+        },
+        else => try stream.writeAll(@tagName(node.tag)),
+    }
 }
