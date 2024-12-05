@@ -80,8 +80,8 @@ pub fn main() !void {
     };
     defer block.deinit();
 
-    // const arg1 = try block.addConstant(.arg, 0);
-    // const arg2 = try block.addConstant(.arg, 1);
+    const arg1 = try block.addConstant(.arg, 0);
+    const arg2 = try block.addConstant(.arg, 1);
 
     {
         var child_block: Ir.Builder.Block = .{
@@ -90,10 +90,36 @@ pub fn main() !void {
         };
         const child_index = try block.addNone(.dead);
 
-        _ = try child_block.addBinOp(.br, .{ .index = child_index }, .{ .value = 10 });
+        const compare_index = try child_block.addBinOp(
+            .cmp_gt,
+            .{ .index = arg1 },
+            .{ .index = arg2 },
+        );
+
+        var then_case: Ir.Builder.Block = .{
+            .instructions = .{},
+            .parent = &builder,
+        };
+        _ = try then_case.addBinOp(.br, .{ .index = child_index }, .{ .value = 0 });
+
+        var else_case: Ir.Builder.Block = .{
+            .instructions = .{},
+            .parent = &builder,
+        };
+        _ = try else_case.addBinOp(.br, .{ .index = child_index }, .{ .value = 0 });
+
+        _ = try child_block.addInst(.{
+            .tag = .cond_br,
+            .data = .{
+                .cond_br = .{
+                    .pred = compare_index,
+                    .then = try then_case.instructions.toOwnedSlice(allocator),
+                    .@"else" = try else_case.instructions.toOwnedSlice(allocator),
+                },
+            },
+        });
 
         try builder.setBlock(child_index, &child_block);
-
         _ = try block.addUnOp(.ret, .{ .index = child_index });
     }
 
