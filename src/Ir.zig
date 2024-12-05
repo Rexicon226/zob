@@ -18,8 +18,13 @@ pub const Inst = struct {
         ret,
         load,
         store,
+
         block,
         br,
+        cond_br,
+
+        cmp_gt,
+
         dead,
 
         pub const max_args = 2;
@@ -54,6 +59,11 @@ pub const Inst = struct {
             rhs: Operand,
         },
         list: []const Inst.Index,
+        cond_br: struct {
+            pred: Inst.Index,
+            then: []const Inst.Index,
+            @"else": []const Inst.Index,
+        },
     };
 
     pub const Index = enum(u32) {
@@ -177,6 +187,11 @@ pub fn deinit(ir: *Ir, allocator: std.mem.Allocator) void {
         const inst = ir.instructions.get(i);
         switch (inst.tag) {
             .block => allocator.free(inst.data.list),
+            .cond_br => {
+                const cond_br = inst.data.cond_br;
+                allocator.free(cond_br.then);
+                allocator.free(cond_br.@"else");
+            },
             else => {},
         }
     }
@@ -211,11 +226,14 @@ const Writer = struct {
             .div_trunc,
             .div_exact,
             .br,
+            .cmp_gt,
             => try w.writeBinOp(inst, s),
             .arg,
             => try w.writeArg(inst, s),
             .block,
             => try w.writeBlock(inst, s),
+            .cond_br,
+            => try w.writeCondBr(inst, s),
             else => std.debug.panic("TODO: {s}", .{@tagName(tag)}),
         }
         try s.writeAll(")");
@@ -239,13 +257,32 @@ const Writer = struct {
     }
 
     fn writeBlock(w: *Writer, inst: Ir.Inst.Index, s: anytype) @TypeOf(s).Error!void {
-        w.indent += 4;
+        const list = w.ir.instructions.items(.data)[@intFromEnum(inst)].list;
 
         try s.writeAll("{\n");
-        const list = w.ir.instructions.items(.data)[@intFromEnum(inst)].list;
+        w.indent += 4;
         try w.printBody(list, s);
-
         w.indent -= 4;
+        try s.writeAll("}");
+    }
+
+    fn writeCondBr(w: *Writer, inst: Ir.Inst.Index, s: anytype) @TypeOf(s).Error!void {
+        const cond_br = w.ir.instructions.items(.data)[@intFromEnum(inst)].cond_br;
+
+        try s.print("%{}, {{\n", .{@intFromEnum(cond_br.pred)});
+
+        w.indent += 4;
+        try w.printBody(cond_br.then, s);
+        w.indent -= 4;
+
+        try s.writeByteNTimes(' ', w.indent);
+        try s.writeAll("}, {\n");
+
+        w.indent += 4;
+        try w.printBody(cond_br.@"else", s);
+        w.indent -= 4;
+
+        try s.writeByteNTimes(' ', w.indent);
         try s.writeAll("}");
     }
 };
