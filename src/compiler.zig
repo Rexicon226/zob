@@ -59,30 +59,62 @@ pub fn main() !void {
     }
     if (input_path == null) @panic("expected input path");
 
+    const stdout = std.io.getStdOut().writer();
+
     const input = try std.fs.cwd().readFileAlloc(allocator, input_path.?, 1 * 1024 * 1024);
     defer allocator.free(input);
 
     // parse the input IR
-    var ir = try Ir.Parser.parse(allocator, input);
-    defer ir.deinit(allocator);
+    // var ir = try Ir.Parser.parse(allocator, input);
+    // defer ir.deinit(allocator);
 
-    const stdout = std.io.getStdOut().writer();
+    var builder: Ir.Builder = .{
+        .allocator = allocator,
+        .instructions = .{},
+    };
+    defer builder.deinit();
+
+    var block: Ir.Builder.Block = .{
+        .instructions = .{},
+        .parent = &builder,
+    };
+    defer block.deinit();
+
+    // const arg1 = try block.addConstant(.arg, 0);
+    // const arg2 = try block.addConstant(.arg, 1);
+
+    {
+        var child_block: Ir.Builder.Block = .{
+            .instructions = .{},
+            .parent = &builder,
+        };
+        const child_index = try block.addNone(.dead);
+
+        _ = try child_block.addBinOp(.br, .{ .index = child_index }, .{ .value = 10 });
+
+        try builder.setBlock(child_index, &child_block);
+
+        _ = try block.addUnOp(.ret, .{ .index = child_index });
+    }
+
+    var ir = try builder.toIr(&block);
+    defer ir.deinit(allocator);
 
     try stdout.writeAll("input IR:\n");
     try ir.dump(stdout);
     try stdout.writeAll("end IR\n");
 
-    // create the Oir from the IR.
-    var oir = try Oir.fromIr(ir, allocator);
-    defer oir.deinit();
+    // // create the Oir from the IR.
+    // var oir = try Oir.fromIr(ir, allocator);
+    // defer oir.deinit();
 
-    // run optimization passes on the OIR
-    try oir.optimize(.saturate, output_graph);
+    // // run optimization passes on the OIR
+    // try oir.optimize(.saturate, output_graph);
 
-    var recv = try Oir.Extractor.extract(&oir, .simple_latency);
-    defer recv.deinit(allocator);
+    // var recv = try Oir.Extractor.extract(&oir, .simple_latency);
+    // defer recv.deinit(allocator);
 
-    try recv.dump("graphs/test_recv.dot");
+    // try recv.dump("graphs/test_recv.dot");
 
     // var mir: Mir = .{ .gpa = allocator };
     // defer mir.deinit();

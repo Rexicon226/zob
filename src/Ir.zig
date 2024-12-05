@@ -1,6 +1,7 @@
 //! This is meant to be a sort of representation of the AIR in Zig
 
 instructions: std.MultiArrayList(Inst).Slice,
+main_block: []const Inst.Index,
 
 pub const Inst = struct {
     tag: Tag,
@@ -17,6 +18,9 @@ pub const Inst = struct {
         ret,
         load,
         store,
+        block,
+        br,
+        dead,
 
         pub const max_args = 2;
 
@@ -25,6 +29,7 @@ pub const Inst = struct {
         pub fn numNodeArgs(tag: Tag) u32 {
             return switch (tag) {
                 .arg,
+                .block,
                 => 0,
                 .ret,
                 .load,
@@ -48,6 +53,7 @@ pub const Inst = struct {
             lhs: Operand,
             rhs: Operand,
         },
+        list: []const Inst.Index,
     };
 
     pub const Index = enum(u32) {
@@ -77,80 +83,118 @@ pub const Builder = struct {
     allocator: std.mem.Allocator,
     instructions: std.MultiArrayList(Inst),
 
-    pub fn toIr(b: *Builder) Ir {
-        return .{ .instructions = b.instructions.toOwnedSlice() };
+    pub const Block = struct {
+        parent: *Builder,
+        instructions: std.ArrayListUnmanaged(Inst.Index) = .{},
+
+        pub fn addInst(b: *Block, inst: Inst) !Inst.Index {
+            const parent = b.parent;
+            const gpa = parent.allocator;
+            try parent.instructions.ensureUnusedCapacity(gpa, 1);
+
+            const result_index: Inst.Index = @enumFromInt(parent.instructions.len);
+            parent.instructions.appendAssumeCapacity(inst);
+            try b.instructions.append(gpa, result_index);
+            return result_index;
+        }
+
+        pub fn addUnOp(
+            b: *Block,
+            tag: Inst.Tag,
+            operand: Inst.Operand,
+        ) !Inst.Index {
+            return b.addInst(.{
+                .tag = tag,
+                .data = .{ .un_op = operand },
+            });
+        }
+
+        pub fn addBinOp(
+            b: *Block,
+            tag: Inst.Tag,
+            lhs: Inst.Operand,
+            rhs: Inst.Operand,
+        ) !Inst.Index {
+            return b.addInst(.{
+                .tag = tag,
+                .data = .{ .bin_op = .{
+                    .lhs = lhs,
+                    .rhs = rhs,
+                } },
+            });
+        }
+
+        pub fn addNone(
+            b: *Block,
+            tag: Inst.Tag,
+        ) !Inst.Index {
+            return b.addInst(.{
+                .tag = tag,
+                .data = .none,
+            });
+        }
+
+        pub fn addConstant(
+            b: *Block,
+            tag: Inst.Tag,
+            val: i64,
+        ) !Inst.Index {
+            return b.addInst(.{
+                .tag = tag,
+                .data = .{ .un_op = .{ .value = val } },
+            });
+        }
+
+        pub fn deinit(b: *Block) void {
+            const allocator = b.parent.allocator;
+            b.instructions.deinit(allocator);
+        }
+    };
+
+    pub fn setBlock(b: *Builder, index: Inst.Index, block: *Block) !void {
+        b.instructions.set(@intFromEnum(index), .{
+            .tag = .block,
+            .data = .{ .list = try block.instructions.toOwnedSlice(b.allocator) },
+        });
+    }
+
+    pub fn toIr(b: *Builder, main_block: *Block) !Ir {
+        return .{
+            .instructions = b.instructions.toOwnedSlice(),
+            .main_block = try main_block.instructions.toOwnedSlice(b.allocator),
+        };
     }
 
     pub fn deinit(b: *Builder) void {
         b.instructions.deinit(b.allocator);
-    }
-
-    pub fn addUnOp(
-        b: *Builder,
-        tag: Inst.Tag,
-        operand: Inst.Index,
-    ) !Inst.Index {
-        return b.addInst(.{
-            .tag = tag,
-            .data = .{ .un_op = operand },
-        });
-    }
-
-    pub fn addBinOp(
-        b: *Builder,
-        tag: Inst.Tag,
-        lhs: Inst.Index,
-        rhs: Inst.Index,
-    ) !Inst.Index {
-        return b.addInst(.{
-            .tag = tag,
-            .data = .{ .bin_op = .{
-                .lhs = lhs,
-                .rhs = rhs,
-            } },
-        });
-    }
-
-    pub fn addNone(
-        b: *Builder,
-        tag: Inst.Tag,
-    ) !Inst.Index {
-        return b.addInst(.{
-            .tag = tag,
-            .data = .none,
-        });
-    }
-
-    pub fn addConstant(
-        b: *Builder,
-        tag: Inst.Tag,
-        val: i64,
-    ) !Inst.Index {
-        return b.addInst(.{
-            .tag = tag,
-            .data = .{ .un_op = .{ .value = val } },
-        });
-    }
-
-    fn addInst(b: *Builder, inst: Inst) !Inst.Index {
-        const gpa = b.allocator;
-        try b.instructions.ensureUnusedCapacity(gpa, 1);
-
-        const result_index: Inst.Index = @enumFromInt(b.instructions.len);
-        b.instructions.appendAssumeCapacity(inst);
-        return result_index;
     }
 };
 
 /// Only call when you're the direct owner of the Ir. Make
 /// sure it hasn't been passed into an OIR.
 pub fn deinit(ir: *Ir, allocator: std.mem.Allocator) void {
+    for (0..ir.instructions.len) |i| {
+        const inst = ir.instructions.get(i);
+        switch (inst.tag) {
+            .block => allocator.free(inst.data.list),
+            else => {},
+        }
+    }
+
     ir.instructions.deinit(allocator);
+    allocator.free(ir.main_block);
 }
 
 const Writer = struct {
     ir: *const Ir,
     indent: usize,
+
+    fn printBody(w: *Writer, body: []const Inst.Index, s: anytype) @TypeOf(s).Error!void {
+        for (body) |index| {
+            try w.printInst(index, s);
+            try s.writeByte('\n');
+        }
+    }
 
     fn printInst(w: *Writer, inst: Inst.Index, s: anytype) @TypeOf(s).Error!void {
         const tag = w.ir.instructions.items(.tag)[@intFromEnum(inst)];
@@ -166,9 +210,12 @@ const Writer = struct {
             .sub,
             .div_trunc,
             .div_exact,
+            .br,
             => try w.writeBinOp(inst, s),
             .arg,
             => try w.writeArg(inst, s),
+            .block,
+            => try w.writeBlock(inst, s),
             else => std.debug.panic("TODO: {s}", .{@tagName(tag)}),
         }
         try s.writeAll(")");
@@ -190,6 +237,17 @@ const Writer = struct {
         const un_op = w.ir.instructions.items(.data)[@intFromEnum(inst)].un_op;
         try s.print("{d}", .{un_op.value});
     }
+
+    fn writeBlock(w: *Writer, inst: Ir.Inst.Index, s: anytype) @TypeOf(s).Error!void {
+        w.indent += 4;
+
+        try s.writeAll("{\n");
+        const list = w.ir.instructions.items(.data)[@intFromEnum(inst)].list;
+        try w.printBody(list, s);
+
+        w.indent -= 4;
+        try s.writeAll("}");
+    }
 };
 
 /// Dumps the Ir in a human-readable form.
@@ -199,10 +257,7 @@ pub fn dump(ir: *const Ir, writer: anytype) !void {
         .indent = 0,
     };
 
-    for (0..ir.instructions.len) |i| {
-        try w.printInst(@enumFromInt(i), writer);
-        try writer.writeByte('\n');
-    }
+    try w.printBody(ir.main_block, writer);
 }
 
 /// Simple parser for a made-up syntax for the Ir
@@ -224,10 +279,6 @@ pub const Parser = struct {
 
             var result_node = sides.next() orelse return error.NoResultNode;
             var expression = sides.next() orelse return error.NoExpression;
-
-            const comment_index = std.mem.indexOfScalar(u8, expression, ';');
-            if (comment_index) |index| expression = expression[0..index];
-
             if (sides.next() != null) return error.ExtraEquals;
 
             // trim any whitespace
