@@ -128,6 +128,7 @@ fn extractNode(
         .shl,
         .div_exact,
         .mul,
+        .cmp_gt,
         => {
             const rhs_class_idx, const lhs_class_idx = node.data.bin_op;
             const rhs_idx = try e.getClass(rhs_class_idx);
@@ -143,7 +144,7 @@ fn extractNode(
 
             return recv.addNode(allocator, new_node);
         },
-        else => std.debug.panic("TODO: mir extractNode {s}", .{@tagName(node.tag)}),
+        else => std.debug.panic("TODO: extractNode {s}", .{@tagName(node.tag)}),
     }
 }
 

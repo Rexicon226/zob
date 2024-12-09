@@ -80,47 +80,37 @@ pub fn main() !void {
     };
     defer block.deinit();
 
-    const arg1 = try block.addConstant(.arg, 0);
-    const arg2 = try block.addConstant(.arg, 1);
+    const arg0 = try block.addConstant(.arg, 0);
+    const arg1 = try block.addConstant(.arg, 1);
 
     {
-        var child_block: Ir.Builder.Block = .{
-            .instructions = .{},
-            .parent = &builder,
-        };
-        const child_index = try block.addNone(.dead);
+        var inner_block: Ir.Builder.Block = .{ .parent = &builder };
+        const block_index = try block.addNone(.dead);
 
-        const compare_index = try child_block.addBinOp(
+        const cmp_index = try inner_block.addBinOp(
             .cmp_gt,
+            .{ .index = arg0 },
             .{ .index = arg1 },
-            .{ .index = arg2 },
         );
 
-        var then_case: Ir.Builder.Block = .{
-            .instructions = .{},
-            .parent = &builder,
-        };
-        _ = try then_case.addBinOp(.br, .{ .index = child_index }, .{ .value = 0 });
+        var then_block: Ir.Builder.Block = .{ .parent = &builder };
+        var else_block: Ir.Builder.Block = .{ .parent = &builder };
 
-        var else_case: Ir.Builder.Block = .{
-            .instructions = .{},
-            .parent = &builder,
-        };
-        _ = try else_case.addBinOp(.br, .{ .index = child_index }, .{ .value = 0 });
+        _ = try then_block.addBinOp(.br, .{ .index = block_index }, .{ .value = 10 });
+        _ = try else_block.addBinOp(.br, .{ .index = block_index }, .{ .value = 20 });
 
-        _ = try child_block.addInst(.{
+        _ = try inner_block.addInst(.{
             .tag = .cond_br,
             .data = .{
                 .cond_br = .{
-                    .pred = compare_index,
-                    .then = try then_case.instructions.toOwnedSlice(allocator),
-                    .@"else" = try else_case.instructions.toOwnedSlice(allocator),
+                    .pred = cmp_index,
+                    .then = try then_block.instructions.toOwnedSlice(allocator),
+                    .@"else" = try else_block.instructions.toOwnedSlice(allocator),
                 },
             },
         });
 
-        try builder.setBlock(child_index, &child_block);
-        _ = try block.addUnOp(.ret, .{ .index = child_index });
+        try builder.setBlock(block_index, &inner_block);
     }
 
     var ir = try builder.toIr(&block);
@@ -130,9 +120,9 @@ pub fn main() !void {
     try ir.dump(stdout);
     try stdout.writeAll("end IR\n");
 
-    // // create the Oir from the IR.
-    // var oir = try Oir.fromIr(ir, allocator);
-    // defer oir.deinit();
+    // create the Oir from the IR.
+    var oir = try Ir.Extractor.extract(ir, allocator);
+    defer oir.deinit();
 
     // // run optimization passes on the OIR
     // try oir.optimize(.saturate, output_graph);
@@ -141,18 +131,4 @@ pub fn main() !void {
     // defer recv.deinit(allocator);
 
     // try recv.dump("graphs/test_recv.dot");
-
-    // var mir: Mir = .{ .gpa = allocator };
-    // defer mir.deinit();
-
-    // // extract the best OIR solution into our MIR
-    // var extractor: Mir.Extractor = .{
-    //     .cost_strategy = .simple_latency,
-    //     .oir = &oir,
-    //     .mir = &mir,
-    // };
-    // try extractor.extract();
-    // defer extractor.deinit();
-
-    // try mir.run();
 }

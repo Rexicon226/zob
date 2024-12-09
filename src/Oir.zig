@@ -138,14 +138,19 @@ pub const Node = struct {
         shr,
         div_trunc,
         div_exact,
+        cmp_gt,
+
         ret,
         constant,
+
         load,
         store,
 
+        gamma,
+
         /// Returns the number of arguments that are other nodes.
         /// Does not include constants,
-        pub fn numNodeArgs(tag: Tag) u32 {
+        pub fn numNodeArgs(tag: Tag) ?u32 {
             return switch (tag) {
                 .arg,
                 .constant,
@@ -161,7 +166,10 @@ pub const Node = struct {
                 .div_trunc,
                 .div_exact,
                 .store,
+                .cmp_gt,
                 => 2,
+                .gamma,
+                => null,
             };
         }
 
@@ -195,11 +203,14 @@ pub const Node = struct {
                 .shr,
                 .div_trunc,
                 .div_exact,
+                .cmp_gt,
                 => .bin_op,
                 .ret,
                 .load,
                 .store,
                 => .un_op,
+                .gamma,
+                => .gamma,
             };
         }
     };
@@ -209,6 +220,7 @@ pub const Node = struct {
         constant,
         bin_op,
         un_op,
+        gamma,
     };
 
     const Data = union(DataEnum) {
@@ -216,6 +228,11 @@ pub const Node = struct {
         constant: i64,
         bin_op: [2]Class.Index,
         un_op: Class.Index,
+        gamma: struct {
+            predicate: Class.Index,
+            then_node: Class.Index,
+            else_node: Class.Index,
+        },
     };
 
     /// Given a tag, returns a Node with the data union initalized
@@ -239,6 +256,7 @@ pub const Node = struct {
             .constant => &.{},
             .bin_op => |*bin_op| bin_op,
             .un_op => |*un_op| un_op[0..1],
+            .gamma => @panic("TODO"),
         };
     }
 
@@ -248,6 +266,7 @@ pub const Node = struct {
             .constant => &.{},
             .bin_op => |*bin_op| bin_op,
             .un_op => |*un_op| un_op[0..1],
+            .gamma => @panic("TODO"),
         };
     }
 
@@ -313,116 +332,6 @@ pub const Class = struct {
     }
 };
 
-/// Takes in an `IR`, meant to represent a basic version of Zig's AIR
-/// and does some basic analysis to convert it to an Oir. Since AIR is
-/// a linear graph, each new node has its own class.
-///
-/// TODO: run a rebuild of the graph at the end of constructing the Oir
-/// to remove things such as duplicate constants which wouldn't be caught.
-pub fn fromIr(ir: IR, allocator: std.mem.Allocator) !Oir {
-    var oir: Oir = .{
-        .allocator = allocator,
-        .nodes = .{},
-        .classes = .{},
-        .node_to_class = .{},
-        .find = .{},
-        .pending = .{},
-        .clean = true,
-    };
-
-    const tags: []const IR.Inst.Tag = ir.instructions.items(.tag);
-    const data: []const IR.Inst.Data = ir.instructions.items(.data);
-
-    var ir_to_class: std.AutoHashMapUnmanaged(IR.Inst.Index, Class.Index) = .{};
-    defer ir_to_class.deinit(allocator);
-
-    for (tags, data, 0..) |tag, payload, i| {
-        log.debug("tag: {s} : {s}", .{ @tagName(tag), @tagName(payload) });
-
-        // TODO: unify the two Tag enums
-        const convert_tag: Oir.Node.Tag = switch (tag) {
-            .ret => .ret,
-            .mul => .mul,
-            .arg => .arg,
-            .shl => .shl,
-            .add => .add,
-            .sub => .sub,
-            .div_exact => .div_exact,
-            .div_trunc => .div_trunc,
-            .load => .load,
-            .store => .store,
-        };
-
-        const inst: IR.Inst.Index = @enumFromInt(i);
-        switch (tag.numNodeArgs()) {
-            1 => {
-                var node: Node = .{ .tag = convert_tag };
-
-                const op = payload.un_op;
-                switch (op) {
-                    .index => |index| {
-                        const class_idx = ir_to_class.get(index).?;
-                        node.data = .{ .un_op = class_idx };
-
-                        const idx = try oir.add(node);
-                        try ir_to_class.put(allocator, inst, idx);
-                    },
-                    .value => |value| {
-                        // materialize the implicit constant node
-                        const const_node: Node = .{
-                            .tag = .constant,
-                            .data = .{ .constant = value },
-                        };
-                        const const_idx = try oir.add(const_node);
-                        node.data = .{ .un_op = const_idx };
-                        const idx = try oir.add(node);
-                        try ir_to_class.put(allocator, inst, idx);
-                    },
-                }
-            },
-            2,
-            => {
-                var node: Node = .{ .tag = convert_tag };
-                node.data = .{ .bin_op = undefined };
-
-                const bin_op = payload.bin_op;
-                inline for (.{ bin_op.lhs, bin_op.rhs }, 0..) |operand, sub_i| {
-                    switch (operand) {
-                        .index => |index| {
-                            const class_idx = ir_to_class.get(index).?;
-                            node.data.bin_op[sub_i] = class_idx;
-                        },
-                        .value => |value| {
-                            // materialize the implicit constant node
-                            const const_node: Node = .{
-                                .tag = .constant,
-                                .data = .{ .constant = value },
-                            };
-                            const const_idx = try oir.add(const_node);
-                            node.data.bin_op[sub_i] = const_idx;
-                        },
-                    }
-                }
-
-                const idx = try oir.add(node);
-                try ir_to_class.put(allocator, inst, idx);
-            },
-            0,
-            => {
-                const node: Node = .{
-                    .tag = convert_tag,
-                    .data = .{ .constant = payload.un_op.value },
-                };
-                const idx = try oir.add(node);
-                try ir_to_class.put(allocator, inst, idx);
-            },
-            else => std.debug.panic("TODO: find {s}", .{@tagName(tag)}),
-        }
-    }
-
-    return oir;
-}
-
 const Passes = struct {
     const Error = error{ OutOfMemory, Overflow, InvalidCharacter };
 
@@ -458,8 +367,9 @@ const Passes = struct {
             }
 
             // all nodes are constants
-            assert(buffer.items.len <= node.tag.numNodeArgs());
-            if (buffer.items.len == node.tag.numNodeArgs() and
+            const num_nodes = node.tag.numNodeArgs() orelse continue;
+            assert(buffer.items.len <= num_nodes);
+            if (buffer.items.len == num_nodes and
                 !node.tag.isVolatile())
             {
                 changed = true;
@@ -652,7 +562,7 @@ pub fn optimize(
     }
 }
 
-fn dump(oir: *Oir, name: []const u8) !void {
+pub fn dump(oir: *Oir, name: []const u8) !void {
     const graphviz_file = try std.fs.cwd().createFile(name, .{});
     defer graphviz_file.close();
     try print_oir.dumpOirGraph(oir, graphviz_file.writer());

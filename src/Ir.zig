@@ -1,7 +1,7 @@
 //! This is meant to be a sort of representation of the AIR in Zig
 
 instructions: std.MultiArrayList(Inst).Slice,
-main_block: []const Inst.Index,
+main_body: []const Inst.Index,
 
 pub const Inst = struct {
     tag: Tag,
@@ -31,13 +31,16 @@ pub const Inst = struct {
 
         /// Returns the number of arguments that are other nodes.
         /// Does not include constants,
-        pub fn numNodeArgs(tag: Tag) u32 {
+        fn numNodeArgs(tag: Tag) u32 {
             return switch (tag) {
+                .dead,
+                => unreachable,
                 .arg,
                 .block,
                 => 0,
                 .ret,
                 .load,
+                .br,
                 => 1,
                 .add,
                 .sub,
@@ -46,7 +49,10 @@ pub const Inst = struct {
                 .div_trunc,
                 .div_exact,
                 .store,
+                .cmp_gt,
                 => 2,
+                .cond_br,
+                => 3,
             };
         }
     };
@@ -168,10 +174,10 @@ pub const Builder = struct {
         });
     }
 
-    pub fn toIr(b: *Builder, main_block: *Block) !Ir {
+    pub fn toIr(b: *Builder, block: *Block) !Ir {
         return .{
             .instructions = b.instructions.toOwnedSlice(),
-            .main_block = try main_block.instructions.toOwnedSlice(b.allocator),
+            .main_body = try block.instructions.toOwnedSlice(b.allocator),
         };
     }
 
@@ -197,7 +203,7 @@ pub fn deinit(ir: *Ir, allocator: std.mem.Allocator) void {
     }
 
     ir.instructions.deinit(allocator);
-    allocator.free(ir.main_block);
+    allocator.free(ir.main_body);
 }
 
 const Writer = struct {
@@ -293,8 +299,7 @@ pub fn dump(ir: *const Ir, writer: anytype) !void {
         .ir = ir,
         .indent = 0,
     };
-
-    try w.printBody(ir.main_block, writer);
+    try w.printBody(ir.main_body, writer);
 }
 
 /// Simple parser for a made-up syntax for the Ir
@@ -388,6 +393,147 @@ pub const Parser = struct {
     }
 };
 
+/// Translates IR into OIR.
+pub const Extractor = struct {
+    oir: *Oir,
+    ir: *const Ir,
+    ir_to_class: std.AutoHashMapUnmanaged(Inst.Index, Class.Index) = .{},
+
+    const Class = Oir.Class;
+    const Node = Oir.Node;
+
+    pub fn extract(ir: Ir, allocator: std.mem.Allocator) !Oir {
+        var oir: Oir = .{
+            .allocator = allocator,
+            .nodes = .{},
+            .classes = .{},
+            .node_to_class = .{},
+            .find = .{},
+            .pending = .{},
+            .clean = true,
+        };
+
+        var extractor: Extractor = .{
+            .oir = &oir,
+            .ir = &ir,
+            .ir_to_class = .{},
+        };
+        defer extractor.ir_to_class.deinit(allocator);
+
+        try extractor.selectBody(ir.main_body);
+
+        try oir.rebuild();
+        return oir;
+    }
+
+    fn selectBody(e: *Extractor, insts: []const Inst.Index) error{OutOfMemory}!void {
+        for (insts) |inst| {
+            try e.select(inst);
+        }
+    }
+
+    fn select(e: *Extractor, inst: Inst.Index) !void {
+        const oir = e.oir;
+        const ir = e.ir;
+        const allocator = oir.allocator;
+        const ir_to_class = &e.ir_to_class;
+
+        const tag = ir.instructions.items(.tag)[@intFromEnum(inst)];
+        const data = ir.instructions.items(.data)[@intFromEnum(inst)];
+
+        switch (tag) {
+            .ret,
+            .load,
+            .store,
+            => {
+                var node: Node = .{
+                    .tag = switch (tag) {
+                        .ret => .ret,
+                        .load => .load,
+                        .store => .store,
+                        else => unreachable,
+                    },
+                };
+
+                const op = data.un_op;
+                switch (op) {
+                    .index => |index| {
+                        const class_idx = ir_to_class.get(index).?;
+                        node.data = .{ .un_op = class_idx };
+
+                        const idx = try oir.add(node);
+                        try ir_to_class.put(allocator, inst, idx);
+                    },
+                    .value => |value| {
+                        // materialize the implicit constant node
+                        const const_node: Node = .{
+                            .tag = .constant,
+                            .data = .{ .constant = value },
+                        };
+                        const const_idx = try oir.add(const_node);
+                        node.data = .{ .un_op = const_idx };
+                        const idx = try oir.add(node);
+                        try ir_to_class.put(allocator, inst, idx);
+                    },
+                }
+            },
+            .add,
+            .sub,
+            .div_exact,
+            .mul,
+            .cmp_gt,
+            => {
+                var node: Node = .{
+                    .tag = switch (tag) {
+                        .add => .add,
+                        .sub => .sub,
+                        .div_exact => .div_exact,
+                        .mul => .mul,
+                        .cmp_gt => .cmp_gt,
+                        else => unreachable,
+                    },
+                    .data = .{ .bin_op = undefined },
+                };
+
+                const bin_op = data.bin_op;
+                inline for (.{ bin_op.lhs, bin_op.rhs }, 0..) |operand, sub_i| {
+                    switch (operand) {
+                        .index => |index| {
+                            const class_idx = ir_to_class.get(index).?;
+                            node.data.bin_op[sub_i] = class_idx;
+                        },
+                        .value => |value| {
+                            // materialize the implicit constant node
+                            const const_node: Node = .{
+                                .tag = .constant,
+                                .data = .{ .constant = value },
+                            };
+                            const const_idx = try oir.add(const_node);
+                            node.data.bin_op[sub_i] = const_idx;
+                        },
+                    }
+                }
+
+                const idx = try oir.add(node);
+                try ir_to_class.put(allocator, inst, idx);
+            },
+            .arg,
+            => {
+                const node: Node = .{
+                    .tag = switch (tag) {
+                        .arg => .arg,
+                        else => unreachable,
+                    },
+                    .data = .{ .constant = data.un_op.value },
+                };
+                const idx = try oir.add(node);
+                try ir_to_class.put(allocator, inst, idx);
+            },
+            else => std.debug.panic("TODO: find {s}", .{@tagName(tag)}),
+        }
+    }
+};
+
 const testing = std.testing;
 const expect = testing.expect;
 
@@ -410,4 +556,5 @@ test "parser basic" {
 
 const Ir = @This();
 const std = @import("std");
+const Oir = @import("Oir.zig");
 const assert = std.debug.assert;
