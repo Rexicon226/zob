@@ -96,8 +96,8 @@ pub fn main() !void {
         var then_block: Ir.Builder.Block = .{ .parent = &builder };
         var else_block: Ir.Builder.Block = .{ .parent = &builder };
 
-        _ = try then_block.addBinOp(.br, .{ .index = block_index }, .{ .value = 10 });
-        _ = try else_block.addBinOp(.br, .{ .index = block_index }, .{ .value = 20 });
+        _ = try then_block.addBinOp(.br, .{ .index = block_index }, .{ .index = arg0 });
+        _ = try else_block.addBinOp(.br, .{ .index = block_index }, .{ .index = arg1 });
 
         _ = try inner_block.addInst(.{
             .tag = .cond_br,
@@ -111,12 +111,14 @@ pub fn main() !void {
         });
 
         try builder.setBlock(block_index, &inner_block);
+
+        _ = try block.addUnOp(.ret, .{ .index = block_index });
     }
 
     var ir = try builder.toIr(&block);
     defer ir.deinit(allocator);
 
-    try stdout.writeAll("input IR:\n");
+    try stdout.writeAll("unstructured IR:\n");
     try ir.dump(stdout);
     try stdout.writeAll("end IR\n");
 
@@ -124,11 +126,11 @@ pub fn main() !void {
     var oir = try Ir.Extractor.extract(ir, allocator);
     defer oir.deinit();
 
-    // // run optimization passes on the OIR
-    // try oir.optimize(.saturate, output_graph);
+    // run optimization passes on the OIR
+    try oir.optimize(.saturate, output_graph);
 
-    // var recv = try Oir.Extractor.extract(&oir, .simple_latency);
-    // defer recv.deinit(allocator);
+    var recv = try Oir.Extractor.extract(&oir, .simple_latency);
+    defer recv.deinit(allocator);
 
-    // try recv.dump("graphs/test_recv.dot");
+    try recv.dump("graphs/test_recv.dot");
 }

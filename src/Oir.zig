@@ -56,6 +56,7 @@ const Find = struct {
         return current;
     }
 
+    /// Same thing as `find` but performs path-compression.
     fn findMutable(f: *Find, idx: Class.Index) Class.Index {
         var current = idx;
         while (current != f.parent(current)) {
@@ -229,9 +230,7 @@ pub const Node = struct {
         bin_op: [2]Class.Index,
         un_op: Class.Index,
         gamma: struct {
-            predicate: Class.Index,
-            then_node: Class.Index,
-            else_node: Class.Index,
+            operands: std.ArrayListUnmanaged(Class.Index),
         },
     };
 
@@ -239,6 +238,8 @@ pub const Node = struct {
     /// to the correct tag, but with an undefined payload.
     ///
     /// Useful when mixing the same operations no matter the arity of the node.
+    ///
+    /// TODO: remove this function
     fn new(tag: Tag) Node {
         switch (tag) {
             inline else => |t| {
@@ -256,7 +257,7 @@ pub const Node = struct {
             .constant => &.{},
             .bin_op => |*bin_op| bin_op,
             .un_op => |*un_op| un_op[0..1],
-            .gamma => @panic("TODO"),
+            .gamma => |*gamma| gamma.operands.items,
         };
     }
 
@@ -266,7 +267,7 @@ pub const Node = struct {
             .constant => &.{},
             .bin_op => |*bin_op| bin_op,
             .un_op => |*un_op| un_op[0..1],
-            .gamma => @panic("TODO"),
+            .gamma => |*gamma| gamma.operands.items,
         };
     }
 
@@ -953,9 +954,9 @@ pub fn @"union"(oir: *Oir, a_idx: Class.Index, b_idx: Class.Index) !bool {
     return true;
 }
 
-/// Performs a rebuild of the E-Graph to ensure that the invariances are met.
+/// Performs a rebuild of the E-Graph to ensure that invariances are met.
 ///
-/// Currently this looks over hashes of the nodes and merges duplicate nodes.
+/// This looks over hashes of the nodes and merges duplicate nodes.
 /// We can hash based on the class indices themselves, as they don't change during the
 /// rebuild.
 pub fn rebuild(oir: *Oir) !void {
@@ -1023,12 +1024,10 @@ pub fn findCycles(oir: *const Oir) !std.AutoHashMapUnmanaged(Node.Index, Class.I
     var color = std.AutoHashMap(Class.Index, Color).init(allocator);
     defer color.deinit();
 
-    {
-        var iter = oir.classes.valueIterator();
-        while (iter.next()) |class| {
-            stack.appendAssumeCapacity(.{ true, class.index });
-            try color.put(class.index, .white);
-        }
+    var iter = oir.classes.valueIterator();
+    while (iter.next()) |class| {
+        stack.appendAssumeCapacity(.{ true, class.index });
+        try color.put(class.index, .white);
     }
 
     var cycles: std.AutoHashMapUnmanaged(Node.Index, Class.Index) = .{};
@@ -1050,9 +1049,7 @@ pub fn findCycles(oir: *const Oir) !std.AutoHashMapUnmanaged(Node.Index, Class.I
                     }
                 }
             }
-        } else {
-            color.getPtr(id).?.* = .black;
-        }
+        } else color.getPtr(id).?.* = .black;
     }
 
     return cycles;
@@ -1111,6 +1108,13 @@ pub fn deinit(oir: *Oir) void {
     }
 
     oir.node_to_class.deinit(allocator);
+
+    for (oir.nodes.items) |*node| {
+        switch (node.tag) {
+            .gamma => node.data.gamma.operands.deinit(allocator),
+            else => {},
+        }
+    }
     oir.nodes.deinit(allocator);
 
     oir.find.deinit(allocator);

@@ -65,11 +65,13 @@ pub const Inst = struct {
             rhs: Operand,
         },
         list: []const Inst.Index,
-        cond_br: struct {
+        cond_br: CondBr,
+
+        const CondBr = struct {
             pred: Inst.Index,
             then: []const Inst.Index,
             @"else": []const Inst.Index,
-        },
+        };
     };
 
     pub const Index = enum(u32) {
@@ -206,6 +208,15 @@ pub fn deinit(ir: *Ir, allocator: std.mem.Allocator) void {
     allocator.free(ir.main_body);
 }
 
+/// Dumps the Ir in a human-readable form.
+pub fn dump(ir: *const Ir, writer: anytype) !void {
+    var w: Writer = .{
+        .ir = ir,
+        .indent = 0,
+    };
+    try w.printBody(ir.main_body, writer);
+}
+
 const Writer = struct {
     ir: *const Ir,
     indent: usize,
@@ -292,15 +303,6 @@ const Writer = struct {
         try s.writeAll("}");
     }
 };
-
-/// Dumps the Ir in a human-readable form.
-pub fn dump(ir: *const Ir, writer: anytype) !void {
-    var w: Writer = .{
-        .ir = ir,
-        .indent = 0,
-    };
-    try w.printBody(ir.main_body, writer);
-}
 
 /// Simple parser for a made-up syntax for the Ir
 pub const Parser = struct {
@@ -398,9 +400,14 @@ pub const Extractor = struct {
     oir: *Oir,
     ir: *const Ir,
     ir_to_class: std.AutoHashMapUnmanaged(Inst.Index, Class.Index) = .{},
+    block_info: std.AutoHashMapUnmanaged(Inst.Index, BlockInfo) = .{},
 
     const Class = Oir.Class;
     const Node = Oir.Node;
+
+    const BlockInfo = struct {
+        branch: Class.Index,
+    };
 
     pub fn extract(ir: Ir, allocator: std.mem.Allocator) !Oir {
         var oir: Oir = .{
@@ -418,7 +425,7 @@ pub const Extractor = struct {
             .ir = &ir,
             .ir_to_class = .{},
         };
-        defer extractor.ir_to_class.deinit(allocator);
+        defer extractor.deinit();
 
         try extractor.selectBody(ir.main_body);
 
@@ -446,36 +453,19 @@ pub const Extractor = struct {
             .load,
             .store,
             => {
-                var node: Node = .{
+                const op = data.un_op;
+                const node: Node = .{
                     .tag = switch (tag) {
                         .ret => .ret,
                         .load => .load,
                         .store => .store,
                         else => unreachable,
                     },
+                    .data = .{ .un_op = try e.matOrGet(op) },
                 };
 
-                const op = data.un_op;
-                switch (op) {
-                    .index => |index| {
-                        const class_idx = ir_to_class.get(index).?;
-                        node.data = .{ .un_op = class_idx };
-
-                        const idx = try oir.add(node);
-                        try ir_to_class.put(allocator, inst, idx);
-                    },
-                    .value => |value| {
-                        // materialize the implicit constant node
-                        const const_node: Node = .{
-                            .tag = .constant,
-                            .data = .{ .constant = value },
-                        };
-                        const const_idx = try oir.add(const_node);
-                        node.data = .{ .un_op = const_idx };
-                        const idx = try oir.add(node);
-                        try ir_to_class.put(allocator, inst, idx);
-                    },
-                }
+                const idx = try oir.add(node);
+                try ir_to_class.put(allocator, inst, idx);
             },
             .add,
             .sub,
@@ -497,21 +487,7 @@ pub const Extractor = struct {
 
                 const bin_op = data.bin_op;
                 inline for (.{ bin_op.lhs, bin_op.rhs }, 0..) |operand, sub_i| {
-                    switch (operand) {
-                        .index => |index| {
-                            const class_idx = ir_to_class.get(index).?;
-                            node.data.bin_op[sub_i] = class_idx;
-                        },
-                        .value => |value| {
-                            // materialize the implicit constant node
-                            const const_node: Node = .{
-                                .tag = .constant,
-                                .data = .{ .constant = value },
-                            };
-                            const const_idx = try oir.add(const_node);
-                            node.data.bin_op[sub_i] = const_idx;
-                        },
-                    }
+                    node.data.bin_op[sub_i] = try e.matOrGet(operand);
                 }
 
                 const idx = try oir.add(node);
@@ -529,8 +505,69 @@ pub const Extractor = struct {
                 const idx = try oir.add(node);
                 try ir_to_class.put(allocator, inst, idx);
             },
+            .block => {
+                const body = data.list;
+                try e.selectBody(body);
+
+                const block_info = e.block_info.get(inst).?;
+                try ir_to_class.put(allocator, inst, block_info.branch);
+            },
+            .cond_br => {
+                const cond_br: Inst.Data.CondBr = data.cond_br;
+
+                const then_br_inst = for (cond_br.then) |then_inst| {
+                    if (ir.instructions.get(@intFromEnum(then_inst)).tag == .br) break then_inst;
+                } else @panic("no then br");
+
+                const else_br_inst = for (cond_br.@"else") |else_inst| {
+                    if (ir.instructions.get(@intFromEnum(else_inst)).tag == .br) break else_inst;
+                } else @panic("no else br");
+
+                const then_br = ir.instructions.get(@intFromEnum(then_br_inst));
+                const else_br = ir.instructions.get(@intFromEnum(else_br_inst));
+
+                var operands: std.ArrayListUnmanaged(Class.Index) = .{};
+                try operands.appendSlice(allocator, &.{
+                    ir_to_class.get(cond_br.pred).?,
+                    try e.matOrGet(then_br.data.bin_op.rhs),
+                    try e.matOrGet(else_br.data.bin_op.rhs),
+                });
+
+                const gamma: Node = .{
+                    .tag = .gamma,
+                    .data = .{ .gamma = .{ .operands = operands } },
+                };
+
+                const idx = try oir.add(gamma);
+                try ir_to_class.put(allocator, inst, idx);
+
+                if (then_br.data.bin_op.lhs.index != else_br.data.bin_op.lhs.index) {
+                    @panic("TODO: nested blocks");
+                }
+                const parent_block = then_br.data.bin_op.lhs.index;
+                try e.block_info.put(allocator, parent_block, .{ .branch = idx });
+            },
             else => std.debug.panic("TODO: find {s}", .{@tagName(tag)}),
         }
+    }
+
+    fn matOrGet(e: *Extractor, op: Inst.Operand) !Class.Index {
+        switch (op) {
+            .index => |idx| return e.ir_to_class.get(idx).?,
+            .value => |val| {
+                const const_node: Node = .{
+                    .tag = .constant,
+                    .data = .{ .constant = val },
+                };
+                return e.oir.add(const_node);
+            },
+        }
+    }
+
+    fn deinit(e: *Extractor) void {
+        const allocator = e.oir.allocator;
+        e.ir_to_class.deinit(allocator);
+        e.block_info.deinit(allocator);
     }
 };
 
