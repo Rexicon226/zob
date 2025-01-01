@@ -44,10 +44,6 @@ const UnionFind = struct {
         return f.parents.items[@intFromEnum(idx)];
     }
 
-    fn parentPtr(f: *UnionFind, idx: Class.Index) *Class.Index {
-        return &f.parents.items[@intFromEnum(idx)];
-    }
-
     fn find(f: *const UnionFind, idx: Class.Index) Class.Index {
         var current = idx;
         while (current != f.parent(current)) {
@@ -61,7 +57,7 @@ const UnionFind = struct {
         var current = idx;
         while (current != f.parent(current)) {
             const grandparent = f.parent(f.parent(current));
-            f.parentPtr(current).* = grandparent;
+            f.parents.items[@intFromEnum(idx)] = grandparent;
             current = grandparent;
         }
         return current;
@@ -229,9 +225,21 @@ pub const Node = struct {
         constant: i64,
         bin_op: [2]Class.Index,
         un_op: Class.Index,
-        gamma: struct {
-            operands: std.ArrayListUnmanaged(Class.Index),
-        },
+        gamma: Gamma,
+
+        const Gamma = struct {
+            /// The predicate must evaluate to a integral within `0 <= v <= k`.
+            predicate: Class.Index,
+            /// Maps the operands of the gamma node to the entry values of the cases.
+            /// This map is shared by all of the cases because `gamma` nodes are symetric.
+            map: std.AutoHashMapUnmanaged(Class.Index, Class.Index),
+            exit_values: std.ArrayListUnmanaged(Class.Index),
+
+            pub fn deinit(gamma: *Gamma, allocator: std.mem.Allocator) void {
+                gamma.map.deinit(allocator);
+                gamma.exit_values.deinit(allocator);
+            }
+        };
     };
 
     /// Given a tag, returns a Node with the data union initalized
@@ -239,7 +247,7 @@ pub const Node = struct {
     ///
     /// Useful when mixing the same operations no matter the arity of the node.
     ///
-    /// TODO: remove this function
+    /// TODO: remove this function!
     fn new(tag: Tag) Node {
         switch (tag) {
             inline else => |t| {
@@ -257,7 +265,7 @@ pub const Node = struct {
             .constant => &.{},
             .bin_op => |*bin_op| bin_op,
             .un_op => |*un_op| un_op[0..1],
-            .gamma => |*gamma| gamma.operands.items,
+            .gamma => |_| &.{},
         };
     }
 
@@ -267,7 +275,7 @@ pub const Node = struct {
             .constant => &.{},
             .bin_op => |*bin_op| bin_op,
             .un_op => |*un_op| un_op[0..1],
-            .gamma => |*gamma| gamma.operands.items,
+            .gamma => &.{}, // gamma nodes should never be mutated through this.
         };
     }
 
@@ -1110,8 +1118,8 @@ pub fn deinit(oir: *Oir) void {
     oir.node_to_class.deinit(allocator);
 
     for (oir.nodes.items) |*node| {
-        switch (node.tag) {
-            .gamma => node.data.gamma.operands.deinit(allocator),
+        switch (node.data) {
+            .gamma => |*gamma| gamma.deinit(allocator),
             else => {},
         }
     }

@@ -96,19 +96,57 @@ pub fn printRecv(
     recv: Extractor.Recursive,
     stream: anytype,
 ) !void {
-    for (recv.nodes.items, 0..) |node, i| {
-        try stream.print("%{d} = {s}(", .{ i, @tagName(node.tag) });
-        try printNode(node, stream);
-        try stream.writeAll(")\n");
-    }
+    var writer: RecvWriter = .{ .nodes = recv.nodes.items };
+    try writer.printBody(stream);
 }
 
-fn printNode(node: Oir.Node, stream: anytype) !void {
-    switch (node.tag) {
-        .arg => try stream.print("{d}", .{node.data.constant}),
-        else => try stream.print("TODO: {s}", .{@tagName(node.tag)}),
+const RecvWriter = struct {
+    indent: u32 = 0,
+    nodes: []const Oir.Node,
+
+    fn printBody(w: *RecvWriter, stream: anytype) !void {
+        for (0..w.nodes.len) |i| {
+            try w.printNode(i, stream);
+            try stream.writeByteNTimes(' ', w.indent);
+        }
     }
-}
+
+    fn printNode(w: *RecvWriter, index: usize, stream: anytype) !void {
+        const node = w.nodes[index];
+        try stream.print("%{d} = {s}(", .{ index, @tagName(node.tag) });
+        switch (node.tag) {
+            .arg => try stream.print("{d}", .{node.data.constant}),
+            .ret,
+            => try w.printUnOp(node, stream),
+            .cmp_gt,
+            => try w.printBinOp(node, stream),
+            .gamma => try w.printGamma(node, stream),
+            else => try stream.print("TODO: {s}", .{@tagName(node.tag)}),
+        }
+        try stream.writeAll(")\n");
+    }
+
+    fn printUnOp(_: *RecvWriter, node: Oir.Node, stream: anytype) !void {
+        const op = node.data.un_op;
+        try stream.print("%{d}", .{@intFromEnum(op)});
+    }
+
+    fn printBinOp(_: *RecvWriter, node: Oir.Node, stream: anytype) !void {
+        const bin_op = node.data.bin_op;
+        try stream.print("%{d}, %{d}", .{ @intFromEnum(bin_op[0]), @intFromEnum(bin_op[1]) });
+    }
+
+    fn printGamma(_: *RecvWriter, node: Oir.Node, stream: anytype) !void {
+        const gamma = node.data.gamma;
+        const predicate = gamma.predicate;
+        try stream.print("%{d}, {{ ", .{@intFromEnum(predicate)});
+        // for (operands[1..], 0..) |arg, i| {
+        //     try stream.print("%{d} -> %{d}", .{ @intFromEnum(arg), i });
+        //     if (i != operands.len - 2) try stream.writeAll(", ");
+        // }
+        try stream.writeAll(" }, ");
+    }
+};
 
 fn printNodeLabel(
     stream: anytype,

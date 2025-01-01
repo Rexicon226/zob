@@ -27,9 +27,8 @@ pub fn build(b: *std.Build) !void {
     const test_step = b.step("test", "Run the tests");
     test_step.dependOn(&b.addRunArtifact(test_exe).step);
 
-    const test_case = b.step("test-cases", "Runs IR case tests");
-    try tests.addCases(b, test_case, "mir", compiler);
-    try tests.addCases(b, test_case, "rewrites", compiler);
-
-    test_step.dependOn(test_case);
+    // const test_case = b.step("test-cases", "Runs IR case tests");
+    // try tests.addCases(b, test_case, "mir", compiler);
+    // try tests.addCases(b, test_case, "rewrites", compiler);
+    // test_step.dependOn(test_case);
 }

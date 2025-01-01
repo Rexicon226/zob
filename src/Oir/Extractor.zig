@@ -45,8 +45,8 @@ pub const Recursive = struct {
 
     pub fn deinit(r: *Recursive, allocator: std.mem.Allocator) void {
         for (r.nodes.items) |*node| {
-            switch (node.tag) {
-                .gamma => node.data.gamma.operands.deinit(allocator),
+            switch (node.data) {
+                .gamma => |*gamma| gamma.deinit(allocator),
                 else => {},
             }
         }
@@ -157,16 +157,17 @@ fn extractNode(
 
         .gamma => {
             const gamma = node.data.gamma;
-            var operands: std.ArrayListUnmanaged(Class.Index) = .{};
-            for (gamma.operands.items) |operand| {
-                const idx = try e.getClass(operand);
-                const new_idx = try e.getNode(idx, recv);
-                try operands.append(allocator, new_idx);
-            }
+
+            const pred_idx = try e.getClass(gamma.predicate);
+            const predicate = try e.getNode(pred_idx, recv);
 
             const new_node: Node = .{
                 .tag = .gamma,
-                .data = .{ .gamma = .{ .operands = operands } },
+                .data = .{ .gamma = .{
+                    .predicate = predicate,
+                    .map = .{},
+                    .exit_values = .{},
+                } },
             };
 
             return recv.addNode(allocator, new_node);

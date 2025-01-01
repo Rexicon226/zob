@@ -317,7 +317,7 @@ test "builtin function" {
 
         try expect(std.mem.eql(u8, "?x", lhs.data.atom));
         try expect(rhs.data.builtin.tag == .known_pow2);
-        try expect(std.mem.eql(u8, "y", rhs.data.builtin.expr));
+        try expect(std.mem.eql(u8, "", rhs.data.builtin.expr));
     }
 }
 

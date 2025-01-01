@@ -83,6 +83,9 @@ pub fn main() !void {
     const arg0 = try block.addConstant(.arg, 0);
     const arg1 = try block.addConstant(.arg, 1);
 
+    // const add = try block.addBinOp(.add, .{ .value = 10 }, .{ .value = 20 });
+    // _ = try block.addUnOp(.ret, .{ .index = add });
+
     {
         var inner_block: Ir.Builder.Block = .{ .parent = &builder };
         const block_index = try block.addNone(.dead);
@@ -96,8 +99,8 @@ pub fn main() !void {
         var then_block: Ir.Builder.Block = .{ .parent = &builder };
         var else_block: Ir.Builder.Block = .{ .parent = &builder };
 
-        _ = try then_block.addBinOp(.br, .{ .index = block_index }, .{ .index = arg0 });
-        _ = try else_block.addBinOp(.br, .{ .index = block_index }, .{ .index = arg1 });
+        _ = try then_block.addBinOp(.br, .{ .index = block_index }, .{ .value = 10 });
+        _ = try else_block.addBinOp(.br, .{ .index = block_index }, .{ .value = 20 });
 
         _ = try inner_block.addInst(.{
             .tag = .cond_br,
@@ -129,8 +132,12 @@ pub fn main() !void {
     // run optimization passes on the OIR
     try oir.optimize(.saturate, output_graph);
 
+    try oir.dump("graphs/oir.dot");
+
     var recv = try Oir.Extractor.extract(&oir, .simple_latency);
     defer recv.deinit(allocator);
+
+    try recv.dump("graphs/test.dot");
 
     std.debug.print("recv:\n{}", .{recv});
 }
