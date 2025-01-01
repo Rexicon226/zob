@@ -64,7 +64,7 @@ pub fn dumpOirGraph(
 }
 
 pub fn dumpRecvGraph(
-    recv: *const Extractor.Recursive,
+    recv: Extractor.Recursive,
     stream: anytype,
 ) !void {
     try stream.writeAll(
@@ -77,7 +77,7 @@ pub fn dumpRecvGraph(
     );
 
     for (recv.nodes.items, 0..) |node, i| {
-        try stream.print("    {} [label=\"", .{i});
+        try stream.print("  {} [label=\"", .{i});
         try printNodeLabel(stream, node);
         try stream.writeAll("\", color=\"grey\"];\n");
     }
@@ -90,6 +90,24 @@ pub fn dumpRecvGraph(
     }
 
     try stream.writeAll("}\n");
+}
+
+pub fn printRecv(
+    recv: Extractor.Recursive,
+    stream: anytype,
+) !void {
+    for (recv.nodes.items, 0..) |node, i| {
+        try stream.print("%{d} = {s}(", .{ i, @tagName(node.tag) });
+        try printNode(node, stream);
+        try stream.writeAll(")\n");
+    }
+}
+
+fn printNode(node: Oir.Node, stream: anytype) !void {
+    switch (node.tag) {
+        .arg => try stream.print("{d}", .{node.data.constant}),
+        else => try stream.print("TODO: {s}", .{@tagName(node.tag)}),
+    }
 }
 
 fn printNodeLabel(

@@ -41,6 +41,7 @@ pub fn main() !void {
     const allocator = gpa.allocator();
     defer log_scopes.deinit(allocator);
 
+    const stdout = std.io.getStdOut().writer();
     var output_graph: bool = false;
     var input_path: ?[]const u8 = null;
 
@@ -57,12 +58,11 @@ pub fn main() !void {
             input_path = arg;
         }
     }
-    if (input_path == null) @panic("expected input path");
 
-    const stdout = std.io.getStdOut().writer();
+    // if (input_path == null) @panic("expected input path");
 
-    const input = try std.fs.cwd().readFileAlloc(allocator, input_path.?, 1 * 1024 * 1024);
-    defer allocator.free(input);
+    // const input = try std.fs.cwd().readFileAlloc(allocator, input_path.?, 1 * 1024 * 1024);
+    // defer allocator.free(input);
 
     // parse the input IR
     // var ir = try Ir.Parser.parse(allocator, input);
@@ -132,5 +132,5 @@ pub fn main() !void {
     var recv = try Oir.Extractor.extract(&oir, .simple_latency);
     defer recv.deinit(allocator);
 
-    try recv.dump("graphs/test_recv.dot");
+    std.debug.print("recv:\n{}", .{recv});
 }

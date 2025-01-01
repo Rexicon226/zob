@@ -37,7 +37,7 @@ pub const Recursive = struct {
         return idx;
     }
 
-    pub fn dump(recv: *Recursive, name: []const u8) !void {
+    pub fn dump(recv: Recursive, name: []const u8) !void {
         const graphviz_file = try std.fs.cwd().createFile(name, .{});
         defer graphviz_file.close();
         try print_oir.dumpRecvGraph(recv, graphviz_file.writer());
@@ -51,6 +51,10 @@ pub const Recursive = struct {
             }
         }
         r.nodes.deinit(allocator);
+    }
+
+    pub fn format(r: Recursive, comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
+        try print_oir.printRecv(r, writer);
     }
 };
 
