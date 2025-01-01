@@ -18,7 +18,7 @@ node_to_class: std.HashMapUnmanaged(
     std.hash_map.default_max_load_percentage,
 ),
 
-find: Find,
+union_find: UnionFind,
 
 /// A list of pending `Pair`s which have made the E-Graph unclean. This is a part of incremental
 /// rebuilding and lets the graph process faster. `add` and `union` dirty the graph, marking `clean`
@@ -31,24 +31,24 @@ pending: std.ArrayListUnmanaged(Pair),
 /// Mutating operations set this to `false`, and `rebuild` will set it back to `true`.
 clean: bool,
 
-const Find = struct {
+const UnionFind = struct {
     parents: std.ArrayListUnmanaged(Class.Index) = .{},
 
-    fn makeSet(f: *Find, gpa: std.mem.Allocator) !Class.Index {
+    fn makeSet(f: *UnionFind, gpa: std.mem.Allocator) !Class.Index {
         const id: Class.Index = @enumFromInt(f.parents.items.len);
         try f.parents.append(gpa, id);
         return id;
     }
 
-    fn parent(f: *const Find, idx: Class.Index) Class.Index {
+    fn parent(f: *const UnionFind, idx: Class.Index) Class.Index {
         return f.parents.items[@intFromEnum(idx)];
     }
 
-    fn parentPtr(f: *Find, idx: Class.Index) *Class.Index {
+    fn parentPtr(f: *UnionFind, idx: Class.Index) *Class.Index {
         return &f.parents.items[@intFromEnum(idx)];
     }
 
-    fn find(f: *const Find, idx: Class.Index) Class.Index {
+    fn find(f: *const UnionFind, idx: Class.Index) Class.Index {
         var current = idx;
         while (current != f.parent(current)) {
             current = f.parent(current);
@@ -57,7 +57,7 @@ const Find = struct {
     }
 
     /// Same thing as `find` but performs path-compression.
-    fn findMutable(f: *Find, idx: Class.Index) Class.Index {
+    fn findMutable(f: *UnionFind, idx: Class.Index) Class.Index {
         var current = idx;
         while (current != f.parent(current)) {
             const grandparent = f.parent(f.parent(current));
@@ -67,16 +67,16 @@ const Find = struct {
         return current;
     }
 
-    fn @"union"(f: *Find, a: Class.Index, b: Class.Index) Class.Index {
+    fn @"union"(f: *UnionFind, a: Class.Index, b: Class.Index) Class.Index {
         f.parents.items[@intFromEnum(b)] = a;
         return a;
     }
 
-    fn clone(f: *Find, allocator: std.mem.Allocator) !Find {
+    fn clone(f: *UnionFind, allocator: std.mem.Allocator) !UnionFind {
         return .{ .parents = try f.parents.clone(allocator) };
     }
 
-    fn deinit(f: *Find, gpa: std.mem.Allocator) void {
+    fn deinit(f: *UnionFind, gpa: std.mem.Allocator) void {
         f.parents.deinit(gpa);
     }
 };
@@ -353,7 +353,7 @@ const Passes = struct {
         for (copied_nodes.items, 0..) |node, i| {
             const node_idx: Node.Index = @enumFromInt(i);
             const memo_class_idx = oir.node_to_class.getContext(node_idx, .{ .oir = oir }).?;
-            const class_idx = oir.find.find(memo_class_idx);
+            const class_idx = oir.union_find.find(memo_class_idx);
 
             // the class has already been solved for a constant, no need to do anything else!
             if (oir.classContains(class_idx, .constant) != null) continue;
@@ -833,18 +833,18 @@ fn clone(oir: *Oir) !Oir {
         .node_to_class = try oir.node_to_class.cloneContext(gpa, @as(NodeContext, .{ .oir = oir })),
         .clean = oir.clean,
         .pending = try oir.pending.clone(gpa),
-        .find = try oir.find.clone(gpa),
+        .union_find = try oir.union_find.clone(gpa),
     };
 }
 
 /// Reference becomes invalid when new classes are added to the graph.
 pub fn getClassPtr(oir: *Oir, idx: Class.Index) *Class {
-    const found = oir.find.findMutable(idx);
+    const found = oir.union_find.findMutable(idx);
     return oir.classes.getPtr(found).?;
 }
 
 pub fn getClass(oir: *const Oir, idx: Class.Index) Class {
-    const found = oir.find.find(idx);
+    const found = oir.union_find.find(idx);
     return oir.classes.get(found).?;
 }
 
@@ -853,7 +853,7 @@ fn findClass(oir: *const Oir, node_idx: Node.Index) Class.Index {
         node_idx,
         .{ .oir = oir },
     ).?;
-    return oir.find.find(memo_idx);
+    return oir.union_find.find(memo_idx);
 }
 
 pub fn getNode(oir: *const Oir, idx: Node.Index) Node {
@@ -874,7 +874,7 @@ pub fn add(oir: *Oir, node: Node) !Class.Index {
     log.debug("adding node {} {}", .{ node, node_idx });
 
     const class_idx = try oir.addInternal(node_idx);
-    return oir.find.find(class_idx);
+    return oir.union_find.find(class_idx);
 }
 
 /// An internal function to simplify adding nodes to the Oir.
@@ -894,7 +894,7 @@ fn addInternal(oir: *Oir, node: Node.Index) !Class.Index {
 }
 
 fn makeClass(oir: *Oir, node_idx: Node.Index) !Class.Index {
-    const id = try oir.find.makeSet(oir.allocator);
+    const id = try oir.union_find.makeSet(oir.allocator);
     log.debug("adding {} to {}", .{ node_idx, id });
 
     var class: Class = .{
@@ -925,8 +925,8 @@ fn makeClass(oir: *Oir, node_idx: Node.Index) !Class.Index {
 /// proven to be equivalent.
 pub fn @"union"(oir: *Oir, a_idx: Class.Index, b_idx: Class.Index) !bool {
     oir.clean = false;
-    var a = oir.find.findMutable(a_idx);
-    var b = oir.find.findMutable(b_idx);
+    var a = oir.union_find.findMutable(a_idx);
+    var b = oir.union_find.findMutable(b_idx);
     if (a == b) return false;
 
     const a_parents = oir.classes.get(a).?.parents.items.len;
@@ -939,7 +939,7 @@ pub fn @"union"(oir: *Oir, a_idx: Class.Index, b_idx: Class.Index) !bool {
     log.debug("union on {} -> {}", .{ b, a });
 
     // make `a` the leader class
-    _ = oir.find.@"union"(a, b);
+    _ = oir.union_find.@"union"(a, b);
 
     var b_class = oir.classes.fetchRemove(b).?.value;
     defer b_class.deinit(oir.allocator);
@@ -971,7 +971,7 @@ pub fn rebuild(oir: *Oir) !void {
 
         const node = oir.getNodePtr(node_idx);
         for (node.mutableOperands()) |*id| {
-            const found_idx = oir.find.findMutable(id.*);
+            const found_idx = oir.union_find.findMutable(id.*);
             id.* = found_idx;
         }
 
@@ -990,7 +990,7 @@ pub fn rebuild(oir: *Oir) !void {
 
             const node = oir.getNodePtr(node_idx);
             for (node.mutableOperands()) |*child| {
-                child.* = oir.find.findMutable(child.*);
+                child.* = oir.union_find.findMutable(child.*);
             }
 
             // place the newly changed node back on the map
@@ -1075,8 +1075,8 @@ fn verifyNodes(oir: *Oir) !void {
                 .{ .oir = oir },
             );
             if (gop.found_existing) {
-                const found_id = oir.find.find(id);
-                const found_old = oir.find.find(gop.value_ptr.*);
+                const found_id = oir.union_find.find(id);
+                const found_old = oir.union_find.find(gop.value_ptr.*);
                 if (found_id != found_id) {
                     std.debug.panic(
                         "found unexpected equivalence for {}\n{any}\nvs\n{any}",
@@ -1094,7 +1094,7 @@ fn verifyNodes(oir: *Oir) !void {
     var temp_iter = temporary.iterator();
     while (temp_iter.next()) |entry| {
         const e = entry.value_ptr.*;
-        assert(e == oir.find.find(e));
+        assert(e == oir.union_find.find(e));
     }
 }
 
@@ -1117,7 +1117,7 @@ pub fn deinit(oir: *Oir) void {
     }
     oir.nodes.deinit(allocator);
 
-    oir.find.deinit(allocator);
+    oir.union_find.deinit(allocator);
     oir.pending.deinit(allocator);
 }
 

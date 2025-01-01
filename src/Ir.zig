@@ -415,7 +415,7 @@ pub const Extractor = struct {
             .nodes = .{},
             .classes = .{},
             .node_to_class = .{},
-            .find = .{},
+            .union_find = .{},
             .pending = .{},
             .clean = true,
         };
