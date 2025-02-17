@@ -970,7 +970,7 @@ pub fn @"union"(oir: *Oir, a_idx: Class.Index, b_idx: Class.Index) !bool {
 pub fn rebuild(oir: *Oir) !void {
     log.debug("rebuilding", .{});
 
-    while (oir.pending.popOrNull()) |pair| {
+    while (oir.pending.pop()) |pair| {
         const node_idx, const class_idx = pair;
 
         // before modifying the node in-place, we must remove it from the hashmap
@@ -1039,7 +1039,7 @@ pub fn findCycles(oir: *const Oir) !std.AutoHashMapUnmanaged(Node.Index, Class.I
     }
 
     var cycles: std.AutoHashMapUnmanaged(Node.Index, Class.Index) = .{};
-    while (stack.popOrNull()) |entry| {
+    while (stack.pop()) |entry| {
         const enter, const id = entry;
         if (enter) {
             color.getPtr(id).?.* = .gray;

@@ -2,6 +2,7 @@ const std = @import("std");
 const Ir = @import("Ir.zig");
 const Mir = @import("Mir.zig");
 const Oir = @import("Oir.zig");
+const driver = @import("driver.zig");
 
 pub const std_options: std.Options = .{
     .logFn = log,
@@ -41,11 +42,12 @@ pub fn main() !void {
     const allocator = gpa.allocator();
     defer log_scopes.deinit(allocator);
 
-    const stdout = std.io.getStdOut().writer();
+    // const stdout = std.io.getStdOut().writer();
     var output_graph: bool = false;
     var input_path: ?[]const u8 = null;
 
     var iter = try std.process.argsWithAllocator(allocator);
+    _ = iter.skip();
     while (iter.next()) |arg| {
         if (std.mem.eql(u8, arg, "--debug-log")) {
             try log_scopes.append(
@@ -59,7 +61,8 @@ pub fn main() !void {
         }
     }
 
-    // if (input_path == null) @panic("expected input path");
+    if (input_path == null) @panic("expected input path");
+    try driver.run(input_path.?);
 
     // const input = try std.fs.cwd().readFileAlloc(allocator, input_path.?, 1 * 1024 * 1024);
     // defer allocator.free(input);
@@ -68,76 +71,76 @@ pub fn main() !void {
     // var ir = try Ir.Parser.parse(allocator, input);
     // defer ir.deinit(allocator);
 
-    var builder: Ir.Builder = .{
-        .allocator = allocator,
-        .instructions = .{},
-    };
-    defer builder.deinit();
+    // var builder: Ir.Builder = .{
+    //     .allocator = allocator,
+    //     .instructions = .{},
+    // };
+    // defer builder.deinit();
 
-    var block: Ir.Builder.Block = .{
-        .instructions = .{},
-        .parent = &builder,
-    };
-    defer block.deinit();
+    // var block: Ir.Builder.Block = .{
+    //     .instructions = .{},
+    //     .parent = &builder,
+    // };
+    // defer block.deinit();
 
-    const arg0 = try block.addConstant(.arg, 0);
-    const arg1 = try block.addConstant(.arg, 1);
+    // const arg0 = try block.addConstant(.arg, 0);
+    // const arg1 = try block.addConstant(.arg, 1);
 
-    // const add = try block.addBinOp(.add, .{ .value = 10 }, .{ .value = 20 });
-    // _ = try block.addUnOp(.ret, .{ .index = add });
+    // // const add = try block.addBinOp(.add, .{ .value = 10 }, .{ .value = 20 });
+    // // _ = try block.addUnOp(.ret, .{ .index = add });
 
-    {
-        var inner_block: Ir.Builder.Block = .{ .parent = &builder };
-        const block_index = try block.addNone(.dead);
+    // {
+    //     var inner_block: Ir.Builder.Block = .{ .parent = &builder };
+    //     const block_index = try block.addNone(.dead);
 
-        const cmp_index = try inner_block.addBinOp(
-            .cmp_gt,
-            .{ .index = arg0 },
-            .{ .index = arg1 },
-        );
+    //     const cmp_index = try inner_block.addBinOp(
+    //         .cmp_gt,
+    //         .{ .index = arg0 },
+    //         .{ .index = arg1 },
+    //     );
 
-        var then_block: Ir.Builder.Block = .{ .parent = &builder };
-        var else_block: Ir.Builder.Block = .{ .parent = &builder };
+    //     var then_block: Ir.Builder.Block = .{ .parent = &builder };
+    //     var else_block: Ir.Builder.Block = .{ .parent = &builder };
 
-        _ = try then_block.addBinOp(.br, .{ .index = block_index }, .{ .value = 10 });
-        _ = try else_block.addBinOp(.br, .{ .index = block_index }, .{ .value = 20 });
+    //     _ = try then_block.addBinOp(.br, .{ .index = block_index }, .{ .value = 10 });
+    //     _ = try else_block.addBinOp(.br, .{ .index = block_index }, .{ .value = 20 });
 
-        _ = try inner_block.addInst(.{
-            .tag = .cond_br,
-            .data = .{
-                .cond_br = .{
-                    .pred = cmp_index,
-                    .then = try then_block.instructions.toOwnedSlice(allocator),
-                    .@"else" = try else_block.instructions.toOwnedSlice(allocator),
-                },
-            },
-        });
+    //     _ = try inner_block.addInst(.{
+    //         .tag = .cond_br,
+    //         .data = .{
+    //             .cond_br = .{
+    //                 .pred = cmp_index,
+    //                 .then = try then_block.instructions.toOwnedSlice(allocator),
+    //                 .@"else" = try else_block.instructions.toOwnedSlice(allocator),
+    //             },
+    //         },
+    //     });
 
-        try builder.setBlock(block_index, &inner_block);
+    //     try builder.setBlock(block_index, &inner_block);
 
-        _ = try block.addUnOp(.ret, .{ .index = block_index });
-    }
+    //     _ = try block.addUnOp(.ret, .{ .index = block_index });
+    // }
 
-    var ir = try builder.toIr(&block);
-    defer ir.deinit(allocator);
+    // var ir = try builder.toIr(&block);
+    // defer ir.deinit(allocator);
 
-    try stdout.writeAll("unstructured IR:\n");
-    try ir.dump(stdout);
-    try stdout.writeAll("end IR\n");
+    // try stdout.writeAll("unstructured IR:\n");
+    // try ir.dump(stdout);
+    // try stdout.writeAll("end IR\n");
 
-    // create the Oir from the IR.
-    var oir = try Ir.Extractor.extract(ir, allocator);
-    defer oir.deinit();
+    // // create the Oir from the IR.
+    // var oir = try Ir.Extractor.extract(ir, allocator);
+    // defer oir.deinit();
 
-    // run optimization passes on the OIR
-    try oir.optimize(.saturate, output_graph);
+    // // run optimization passes on the OIR
+    // try oir.optimize(.saturate, output_graph);
 
-    try oir.dump("graphs/oir.dot");
+    // try oir.dump("graphs/oir.dot");
 
-    var recv = try Oir.Extractor.extract(&oir, .simple_latency);
-    defer recv.deinit(allocator);
+    // var recv = try Oir.Extractor.extract(&oir, .simple_latency);
+    // defer recv.deinit(allocator);
 
-    try recv.dump("graphs/test.dot");
+    // try recv.dump("graphs/test.dot");
 
-    std.debug.print("recv:\n{}", .{recv});
+    // std.debug.print("recv:\n{}", .{recv});
 }
