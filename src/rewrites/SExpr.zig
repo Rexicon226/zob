@@ -52,14 +52,14 @@ const BuiltinFn = struct {
         /// Its parameter is the name of the identifier that will be set in the bindings
         /// when it finds that node/constant.
         ///
-        /// `(mul ?x @known_pow2(y))` will create bindings where `"y"` is the constant node
+        /// `(mul ?x @known_pow2(y))` will create bindings where `y` is the constant node
         /// that was proven to be a known power of two.
         src,
         /// This builtin can be used in the destination expression, during applying.
         ///
         /// Its parameter is a link to the name of the identifier that was found during matching.
         ///
-        /// `(shl ?x @log2(y))` will search up for `"y"` in the bindings and take the log2 of
+        /// `(shl ?x @log2(y))` will search up for `y` in the bindings and take the log2 of
         /// the constant node that was found.
         dst,
     };

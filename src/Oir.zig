@@ -176,8 +176,6 @@ pub const Node = struct {
             };
         }
 
-        /// TODO: is this function needed? are there any absorbing node
-        // types other than constant?
         pub fn isAbsorbing(tag: Tag) bool {
             return switch (tag) {
                 .constant,
@@ -1051,8 +1049,10 @@ pub fn findCycles(oir: *const Oir) !std.AutoHashMapUnmanaged(Node.Index, Class.I
         black,
     };
 
-    var stack = try std.ArrayList(struct { bool, Class.Index })
-        .initCapacity(allocator, oir.classes.size);
+    var stack = try std.ArrayList(struct {
+        bool,
+        Class.Index,
+    }).initCapacity(allocator, oir.classes.size);
     defer stack.deinit();
 
     var color = std.AutoHashMap(Class.Index, Color).init(allocator);

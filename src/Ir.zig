@@ -164,6 +164,17 @@ pub const Builder = struct {
             });
         }
 
+        pub fn addArg(
+            b: *Block,
+            tag: Inst.Tag,
+            index: u32,
+        ) !Inst.Index {
+            return b.addInst(.{
+                .tag = tag,
+                .data = .{ .arg = index },
+            });
+        }
+
         pub fn deinit(b: *Block) void {
             const allocator = b.parent.allocator;
             b.instructions.deinit(allocator);

@@ -135,6 +135,10 @@ fn select(e: *Extractor, inst: Inst.Index) !void {
             const idx = try oir.add(node);
             try ir_to_class.put(allocator, inst, idx);
         },
+        .block => {
+            const payload = data.list;
+            try e.extractBody(payload);
+        },
         else => std.debug.panic("TODO: find {s}", .{@tagName(tag)}),
     }
 }

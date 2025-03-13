@@ -58,11 +58,8 @@ pub fn main() !void {
         };
         defer block.deinit();
 
-        const arg0 = try block.addConstant(.arg, 0);
-        const arg1 = try block.addConstant(.arg, 1);
-
-        // const add = try block.addBinOp(.add, .{ .value = 10 }, .{ .value = 20 });
-        // _ = try block.addUnOp(.ret, .{ .index = add });
+        const arg0 = try block.addArg(.arg, 0);
+        const arg1 = try block.addArg(.arg, 1);
 
         {
             var inner_block: Ir.Builder.Block = .{ .parent = &builder };
