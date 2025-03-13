@@ -1,9 +1,11 @@
 .{
-    .name = "zob",
+    .name = .zob,
     .version = "0.0.0",
     .paths = .{""},
+    .fingerprint = 0xe7fe43888bef583b,
     .dependencies = .{
         .zig = .{
+            .lazy = true,
             .url = "git+https://github.com/ziglang/zig#55c46870b23ac16670beaa3ff1c082b703738307",
             .hash = "1220f2597e8f5adbae4e4911be981004dd733256e646a517403dbbf0d4d50b4fba7c",
         },

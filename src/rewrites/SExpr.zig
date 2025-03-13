@@ -304,21 +304,19 @@ test "multi-layer, multi-variable" {
 }
 
 test "builtin function" {
-    comptime {
-        const expr = SExpr.parse("(mul ?x @known_pow2(y))");
+    const expr = comptime SExpr.parse("(mul ?x @known_pow2(y))");
 
-        try expect(expr.tag == .mul and expr.data == .list);
+    try expect(expr.tag == .mul and expr.data == .list);
 
-        const lhs = expr.data.list[0];
-        const rhs = expr.data.list[1];
+    const lhs = expr.data.list[0];
+    const rhs = expr.data.list[1];
 
-        try expect(lhs.tag == .constant and lhs.data == .atom);
-        try expect(rhs.tag == .constant and rhs.data == .builtin);
+    try expect(lhs.tag == .constant and lhs.data == .atom);
+    try expect(rhs.tag == .constant and rhs.data == .builtin);
 
-        try expect(std.mem.eql(u8, "?x", lhs.data.atom));
-        try expect(rhs.data.builtin.tag == .known_pow2);
-        try expect(std.mem.eql(u8, "", rhs.data.builtin.expr));
-    }
+    try expect(std.mem.eql(u8, "?x", lhs.data.atom));
+    try expect(rhs.data.builtin.tag == .known_pow2);
+    try expect(std.mem.eql(u8, "y", rhs.data.builtin.expr));
 }
 
 const SExpr = @This();

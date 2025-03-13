@@ -59,6 +59,7 @@ pub const Inst = struct {
 
     pub const Data = union(enum) {
         none: void,
+        arg: u32,
         un_op: Operand,
         bin_op: struct {
             lhs: Operand,
@@ -188,8 +189,6 @@ pub const Builder = struct {
     }
 };
 
-/// Only call when you're the direct owner of the Ir. Make
-/// sure it hasn't been passed into an OIR.
 pub fn deinit(ir: *Ir, allocator: std.mem.Allocator) void {
     for (0..ir.instructions.len) |i| {
         const inst = ir.instructions.get(i);
@@ -269,8 +268,8 @@ const Writer = struct {
     }
 
     fn writeArg(w: *Writer, inst: Ir.Inst.Index, s: anytype) @TypeOf(s).Error!void {
-        const un_op = w.ir.instructions.items(.data)[@intFromEnum(inst)].un_op;
-        try s.print("{d}", .{un_op.value});
+        const arg = w.ir.instructions.items(.data)[@intFromEnum(inst)].arg;
+        try s.print("{d}", .{arg});
     }
 
     fn writeBlock(w: *Writer, inst: Ir.Inst.Index, s: anytype) @TypeOf(s).Error!void {
@@ -307,15 +306,25 @@ const Writer = struct {
 /// Simple parser for a made-up syntax for the Ir
 pub const Parser = struct {
     pub fn parse(allocator: std.mem.Allocator, buffer: []const u8) !Ir {
+        var builder: Ir.Builder = .{
+            .allocator = allocator,
+            .instructions = .{},
+        };
+        defer builder.deinit();
+
+        var block: Ir.Builder.Block = .{
+            .instructions = .{},
+            .parent = &builder,
+        };
+        defer block.deinit();
+
         var lines = std.mem.splitScalar(u8, buffer, '\n');
 
-        var list: std.MultiArrayList(Inst) = .{};
-        var args_buffer = std.ArrayList(Inst.Operand).init(allocator);
-        errdefer list.deinit(allocator);
-        defer args_buffer.deinit();
+        var scratch = std.ArrayList(Inst.Operand).init(allocator);
+        defer scratch.deinit();
 
         while (lines.next()) |line| {
-            defer args_buffer.clearRetainingCapacity();
+            defer scratch.clearRetainingCapacity();
             if (line.len == 0) continue;
 
             // split on the '=' of "%1 = arg(1)"
@@ -338,18 +347,18 @@ pub const Parser = struct {
             const args_slice = expression[left_paren + 1 .. right_paren];
 
             var args = std.mem.splitScalar(u8, args_slice, ',');
-            while (args.next()) |arg_whitespace| {
-                var arg = arg_whitespace;
+            while (args.next()) |arg_with_whitespace| {
+                var arg = arg_with_whitespace;
                 arg = std.mem.trim(u8, arg, &std.ascii.whitespace);
 
                 // it's refering to another node
                 if (std.mem.startsWith(u8, arg, "%")) {
                     const number = try parseNodeNumber(arg);
-                    try args_buffer.append(.{ .index = @enumFromInt(number) });
+                    try scratch.append(.{ .index = @enumFromInt(number) });
                 } else {
                     // must be a constant value
                     const number = try std.fmt.parseInt(i64, arg, 10);
-                    try args_buffer.append(.{ .value = number });
+                    try scratch.append(.{ .value = number });
                 }
             }
 
@@ -358,32 +367,31 @@ pub const Parser = struct {
 
             var data: Inst.Data = undefined;
             switch (tag.numNodeArgs()) {
-                0 => {
-                    assert(args_buffer.items.len == 1);
-                    data = .{ .un_op = args_buffer.items[0] };
+                0 => switch (tag) {
+                    .arg => {
+                        assert(scratch.items.len == 1);
+                        data = .{ .arg = @intCast(scratch.items[0].value) };
+                    },
+                    else => std.debug.panic("TODO: {s}", .{@tagName(tag)}),
                 },
                 1 => {
-                    assert(args_buffer.items.len == 1);
-                    data = .{ .un_op = args_buffer.items[0] };
+                    assert(scratch.items.len == 1);
+                    data = .{ .un_op = scratch.items[0] };
                 },
                 2 => {
-                    assert(args_buffer.items.len == 2);
+                    assert(scratch.items.len == 2);
                     data = .{ .bin_op = .{
-                        .lhs = args_buffer.items[0],
-                        .rhs = args_buffer.items[1],
+                        .lhs = scratch.items[0],
+                        .rhs = scratch.items[1],
                     } };
                 },
                 else => std.debug.panic("TODO: {s}", .{@tagName(tag)}),
             }
 
-            const result_number = try parseNodeNumber(result_node);
-            try list.insert(allocator, result_number, .{
-                .tag = tag,
-                .data = data,
-            });
+            _ = try block.addInst(.{ .tag = tag, .data = data });
         }
 
-        return .{ .instructions = list.toOwnedSlice(), .main_body = &.{} };
+        return builder.toIr(&block);
     }
 
     fn parseNodeNumber(string: []const u8) !usize {

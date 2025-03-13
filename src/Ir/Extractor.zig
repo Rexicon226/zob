@@ -1,4 +1,4 @@
-//! Translates IR into OIR.
+//! Translates an IR function into OIR.
 
 const Extractor = @This();
 const std = @import("std");
@@ -8,8 +8,10 @@ const Inst = Ir.Inst;
 
 oir: *Oir,
 ir: *const Ir,
+start_class: Class.Index,
 ir_to_class: std.AutoHashMapUnmanaged(Inst.Index, Class.Index) = .{},
 block_info: std.AutoHashMapUnmanaged(Inst.Index, BlockInfo) = .{},
+start_args: std.ArrayListUnmanaged(Class.Index) = .{},
 
 const Class = Oir.Class;
 const Node = Oir.Node;
@@ -26,23 +28,27 @@ pub fn extract(ir: Ir, allocator: std.mem.Allocator) !Oir {
         .node_to_class = .{},
         .union_find = .{},
         .pending = .{},
+        .extra = .{},
         .clean = true,
     };
+
+    const start_class = try oir.add(.{ .tag = .start });
 
     var extractor: Extractor = .{
         .oir = &oir,
         .ir = &ir,
+        .start_class = start_class,
         .ir_to_class = .{},
     };
     defer extractor.deinit();
 
-    try extractor.selectBody(ir.main_body);
-
+    try extractor.extractBody(ir.main_body);
     try oir.rebuild();
+
     return oir;
 }
 
-fn selectBody(e: *Extractor, insts: []const Inst.Index) error{OutOfMemory}!void {
+fn extractBody(e: *Extractor, insts: []const Inst.Index) error{OutOfMemory}!void {
     for (insts) |inst| {
         try e.select(inst);
     }
@@ -58,19 +64,46 @@ fn select(e: *Extractor, inst: Inst.Index) !void {
     const data = ir.instructions.items(.data)[@intFromEnum(inst)];
 
     switch (tag) {
-        .ret,
+        .arg => {
+            const index = data.arg;
+            const node: Node = .{
+                .tag = .project,
+                .data = .{ .project = .{
+                    .index = index,
+                    .tuple = e.start_class,
+                } },
+            };
+
+            const arg_idx = try oir.add(node);
+            try e.ir_to_class.put(allocator, inst, arg_idx);
+        },
+        .ret => {
+            const un_op = data.un_op;
+            const node: Node = .{
+                .tag = .ret,
+                .data = .{
+                    .bin_op = .{
+                        e.start_class,
+                        try e.matOrGet(un_op),
+                    },
+                },
+            };
+
+            const idx = try oir.add(node);
+            try e.start_args.append(allocator, idx);
+            try e.ir_to_class.put(allocator, inst, idx);
+        },
         .load,
         .store,
         => {
-            const op = data.un_op;
+            const un_op = data.un_op;
             const node: Node = .{
                 .tag = switch (tag) {
-                    .ret => .ret,
                     .load => .load,
                     .store => .store,
                     else => unreachable,
                 },
-                .data = .{ .un_op = try e.matOrGet(op) },
+                .data = .{ .un_op = try e.matOrGet(un_op) },
             };
 
             const idx = try oir.add(node);
@@ -102,69 +135,6 @@ fn select(e: *Extractor, inst: Inst.Index) !void {
             const idx = try oir.add(node);
             try ir_to_class.put(allocator, inst, idx);
         },
-        .arg,
-        => {
-            const node: Node = .{
-                .tag = switch (tag) {
-                    .arg => .arg,
-                    else => unreachable,
-                },
-                .data = .{ .constant = data.un_op.value },
-            };
-            const idx = try oir.add(node);
-            try ir_to_class.put(allocator, inst, idx);
-        },
-        .block => {
-            const body = data.list;
-            try e.selectBody(body);
-
-            const block_info = e.block_info.get(inst).?;
-            try ir_to_class.put(allocator, inst, block_info.branch);
-        },
-        .cond_br => {
-            const cond_br: Inst.Data.CondBr = data.cond_br;
-
-            const then_br_inst = for (cond_br.then) |then_inst| {
-                if (ir.instructions.get(@intFromEnum(then_inst)).tag == .br) break then_inst;
-            } else @panic("no then br");
-
-            const else_br_inst = for (cond_br.@"else") |else_inst| {
-                if (ir.instructions.get(@intFromEnum(else_inst)).tag == .br) break else_inst;
-            } else @panic("no else br");
-
-            const then_br = ir.instructions.get(@intFromEnum(then_br_inst));
-            const else_br = ir.instructions.get(@intFromEnum(else_br_inst));
-
-            var exit_values: std.ArrayListUnmanaged(Class.Index) = .{};
-            try exit_values.appendSlice(allocator, &.{
-                try e.matOrGet(then_br.data.bin_op.rhs),
-                try e.matOrGet(else_br.data.bin_op.rhs),
-            });
-
-            var map: std.AutoHashMapUnmanaged(Class.Index, Class.Index) = .{};
-            _ = &map;
-            for (cond_br.then) |then_inst| {
-                std.debug.print("then_inst: {}\n", .{then_inst});
-            }
-
-            const gamma: Node = .{
-                .tag = .gamma,
-                .data = .{ .gamma = .{
-                    .predicate = ir_to_class.get(cond_br.pred).?,
-                    .map = map,
-                    .exit_values = exit_values,
-                } },
-            };
-
-            const idx = try oir.add(gamma);
-            try ir_to_class.put(allocator, inst, idx);
-
-            if (then_br.data.bin_op.lhs.index != else_br.data.bin_op.lhs.index) {
-                @panic("TODO: nested blocks");
-            }
-            const parent_block = then_br.data.bin_op.lhs.index;
-            try e.block_info.put(allocator, parent_block, .{ .branch = idx });
-        },
         else => std.debug.panic("TODO: find {s}", .{@tagName(tag)}),
     }
 }
@@ -186,4 +156,5 @@ fn deinit(e: *Extractor) void {
     const allocator = e.oir.allocator;
     e.ir_to_class.deinit(allocator);
     e.block_info.deinit(allocator);
+    e.start_args.deinit(allocator);
 }

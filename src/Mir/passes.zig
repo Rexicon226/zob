@@ -335,7 +335,7 @@ const RegAllocPass = struct {
 
 const std = @import("std");
 const Mir = @import("../Mir.zig");
-const bits = @import("../bits.zig");
+const bits = @import("bits.zig");
 const RegisterManager = @import("RegisterManager.zig");
 const assert = std.debug.assert;
 

@@ -26,6 +26,7 @@ const NodeCost = struct {
 /// A form of OIR where nodes reference other nodes.
 pub const Recursive = struct {
     nodes: std.ArrayListUnmanaged(Node) = .{},
+    extra: std.ArrayListUnmanaged(u32) = .{},
 
     pub fn getNode(r: *Recursive, idx: Class.Index) Node {
         return r.nodes.items[@intFromEnum(idx)];
@@ -44,17 +45,17 @@ pub const Recursive = struct {
     }
 
     pub fn deinit(r: *Recursive, allocator: std.mem.Allocator) void {
-        for (r.nodes.items) |*node| {
-            switch (node.data) {
-                .gamma => |*gamma| gamma.deinit(allocator),
-                else => {},
-            }
-        }
         r.nodes.deinit(allocator);
+        r.extra.deinit(allocator);
     }
 
-    pub fn format(r: Recursive, comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
-        try print_oir.printRecv(r, writer);
+    pub fn format(
+        r: Recursive,
+        comptime _: []const u8,
+        _: std.fmt.FormatOptions,
+        writer: anytype,
+    ) !void {
+        try print_oir.print(r, writer);
     }
 };
 
@@ -117,22 +118,10 @@ fn extractNode(
     const node = oir.getNode(node_idx);
 
     switch (node.tag) {
-        .ret => {
-            const operand_idx = node.data.un_op;
-            const arg_node_idx = try e.getClass(operand_idx);
-            const arg_class_idx = try e.getNode(arg_node_idx, recv);
-
-            const ret_node: Node = .{
-                .tag = .ret,
-                .data = .{ .un_op = arg_class_idx },
-            };
-
-            return recv.addNode(allocator, ret_node);
-        },
-        .arg,
+        .start,
         .constant,
         => return recv.addNode(allocator, node),
-
+        .ret,
         .add,
         .sub,
         .shl,
@@ -150,24 +139,6 @@ fn extractNode(
             const new_node: Node = .{
                 .tag = node.tag,
                 .data = .{ .bin_op = .{ new_rhs_idx, new_lhs_idx } },
-            };
-
-            return recv.addNode(allocator, new_node);
-        },
-
-        .gamma => {
-            const gamma = node.data.gamma;
-
-            const pred_idx = try e.getClass(gamma.predicate);
-            const predicate = try e.getNode(pred_idx, recv);
-
-            const new_node: Node = .{
-                .tag = .gamma,
-                .data = .{ .gamma = .{
-                    .predicate = predicate,
-                    .map = .{},
-                    .exit_values = .{},
-                } },
             };
 
             return recv.addNode(allocator, new_node);
@@ -212,7 +183,7 @@ fn extractClass(e: *Extractor, class_idx: Class.Index) !NodeCost {
 
                 const base_cost = cost.getCost(node.tag);
                 var child_cost: u32 = 0;
-                for (node.operands()) |sub_class_idx| {
+                for (node.operands(oir)) |sub_class_idx| {
                     assert(sub_class_idx != class_idx);
 
                     const extracted_cost, _ = try e.extractClass(sub_class_idx);
@@ -245,7 +216,6 @@ pub fn deinit(e: *Extractor) void {
 
 const std = @import("std");
 const Oir = @import("../Oir.zig");
-const bits = @import("../bits.zig");
 const cost = @import("../cost.zig");
 const print_oir = @import("print_oir.zig");
 

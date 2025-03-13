@@ -14,6 +14,10 @@ pub fn dumpOirGraph(
         \\  clusterrank=local
         \\  graph [fontsize=14 compound=true]
         \\  node [shape=box, style=filled];
+        \\  rankdir=BT;
+        \\  ordering="in";
+        \\  concentrate="true";
+        \\
         \\
     );
 
@@ -32,7 +36,12 @@ pub fn dumpOirGraph(
                 const node = oir.getNode(node_idx);
                 try stream.print("    {}.{} [label=\"", .{ class_idx, i });
                 try printNodeLabel(stream, node);
-                try stream.writeAll("\", color=\"grey\"];\n");
+
+                const color = switch (node.tag.nodeType()) {
+                    .ctrl => "orange",
+                    .data => "grey",
+                };
+                try stream.print("\", color=\"{s}\"];\n", .{color});
             }
             try stream.writeAll("  }\n");
         }
@@ -43,19 +52,40 @@ pub fn dumpOirGraph(
         const class_idx: u32 = @intFromEnum(entry.key_ptr.*);
         const class = entry.value_ptr.*;
         for (class.bag.items, 0..) |node_idx, i| {
-            var arg_i: usize = 0;
             const node = oir.getNode(node_idx);
-            for (node.operands()) |child_idx| {
-                try stream.print(
-                    "  {}.{} -> {}.0 [lhead = cluster_{}]\n",
-                    .{
-                        class_idx,
-                        i,
-                        @intFromEnum(child_idx),
-                        @intFromEnum(child_idx),
-                    },
-                );
-                arg_i += 1;
+            switch (node.tag) {
+                .ret => {
+                    const ctrl, const data = node.data.bin_op;
+                    try stream.print(
+                        "  {}.{} -> {}.0 [lhead = cluster_{} color=\"red\"]\n",
+                        .{
+                            class_idx,
+                            i,
+                            @intFromEnum(ctrl),
+                            @intFromEnum(ctrl),
+                        },
+                    );
+                    try stream.print(
+                        "  {}.{} -> {}.0 [lhead = cluster_{}]\n",
+                        .{
+                            class_idx,
+                            i,
+                            @intFromEnum(data),
+                            @intFromEnum(data),
+                        },
+                    );
+                },
+                else => for (node.operands(oir)) |child_idx| {
+                    try stream.print(
+                        "  {}.{} -> {}.0 [lhead = cluster_{}]\n",
+                        .{
+                            class_idx,
+                            i,
+                            @intFromEnum(child_idx),
+                            @intFromEnum(child_idx),
+                        },
+                    );
+                },
             }
         }
     }
@@ -84,7 +114,7 @@ pub fn dumpRecvGraph(
     try stream.writeAll("\n");
 
     for (recv.nodes.items, 0..) |node, i| {
-        for (node.operands()) |child| {
+        for (node.operands(recv)) |child| {
             try stream.print("    {d} -> {d};\n", .{ i, @intFromEnum(child) });
         }
     }
@@ -92,59 +122,68 @@ pub fn dumpRecvGraph(
     try stream.writeAll("}\n");
 }
 
-pub fn printRecv(
-    recv: Extractor.Recursive,
+/// NOTE: Printing this with a "full" OIR graph is basically useless, since it just iterates
+/// through the node list. It only makes sense to use on recursive expressions and just created
+/// OIR graphs, for debugging.
+pub fn print(
+    repr: anytype,
     stream: anytype,
 ) !void {
-    var writer: RecvWriter = .{ .nodes = recv.nodes.items };
-    try writer.printBody(stream);
+    var writer: Writer = .{ .nodes = repr.nodes.items };
+    try writer.printBody(repr, stream);
 }
 
-const RecvWriter = struct {
+const Writer = struct {
     indent: u32 = 0,
     nodes: []const Oir.Node,
 
-    fn printBody(w: *RecvWriter, stream: anytype) !void {
+    fn printBody(w: *Writer, repr: anytype, stream: anytype) !void {
         for (0..w.nodes.len) |i| {
-            try w.printNode(i, stream);
+            try w.printNode(i, repr, stream);
             try stream.writeByteNTimes(' ', w.indent);
         }
     }
 
-    fn printNode(w: *RecvWriter, index: usize, stream: anytype) !void {
+    fn printNode(w: *Writer, index: usize, repr: anytype, stream: anytype) !void {
+        _ = repr;
         const node = w.nodes[index];
         try stream.print("%{d} = {s}(", .{ index, @tagName(node.tag) });
         switch (node.tag) {
-            .arg => try stream.print("{d}", .{node.data.constant}),
             .ret,
-            => try w.printUnOp(node, stream),
+            .add,
             .cmp_gt,
             => try w.printBinOp(node, stream),
-            .gamma => try w.printGamma(node, stream),
+            .start => try w.printStart(node, stream),
+            .project => try w.printProject(node, stream),
+            .constant => try w.printConstant(node, stream),
             else => try stream.print("TODO: {s}", .{@tagName(node.tag)}),
         }
         try stream.writeAll(")\n");
     }
 
-    fn printUnOp(_: *RecvWriter, node: Oir.Node, stream: anytype) !void {
+    fn printUnOp(_: *Writer, node: Oir.Node, stream: anytype) !void {
         const op = node.data.un_op;
-        try stream.print("%{d}", .{@intFromEnum(op)});
+        try stream.print("{}", .{op});
     }
 
-    fn printBinOp(_: *RecvWriter, node: Oir.Node, stream: anytype) !void {
+    fn printBinOp(_: *Writer, node: Oir.Node, stream: anytype) !void {
         const bin_op = node.data.bin_op;
-        try stream.print("%{d}, %{d}", .{ @intFromEnum(bin_op[0]), @intFromEnum(bin_op[1]) });
+        try stream.print("{}, {}", .{ bin_op[0], bin_op[1] });
     }
 
-    fn printGamma(_: *RecvWriter, node: Oir.Node, stream: anytype) !void {
-        const gamma = node.data.gamma;
-        const predicate = gamma.predicate;
-        try stream.print("%{d}, {{ ", .{@intFromEnum(predicate)});
-        // for (operands[1..], 0..) |arg, i| {
-        //     try stream.print("%{d} -> %{d}", .{ @intFromEnum(arg), i });
-        //     if (i != operands.len - 2) try stream.writeAll(", ");
-        // }
-        try stream.writeAll(" }, ");
+    fn printStart(_: *Writer, node: Oir.Node, stream: anytype) !void {
+        _ = node;
+        try stream.print("TODO: arguments", .{});
+    }
+
+    fn printProject(_: *Writer, node: Oir.Node, stream: anytype) !void {
+        const project = node.data.project;
+        try stream.print("{d} ( {} )", .{ project.index, project.tuple });
+    }
+
+    fn printConstant(_: *Writer, node: Oir.Node, stream: anytype) !void {
+        const constant = node.data.constant;
+        try stream.print("{d}", .{constant});
     }
 };
 
@@ -156,12 +195,6 @@ fn printNodeLabel(
         .constant => {
             const val = node.data.constant;
             try stream.print("constant:{d}", .{val});
-        },
-        .arg => {
-            try stream.print(
-                "arg({d})",
-                .{node.data.constant},
-            );
         },
         else => try stream.writeAll(@tagName(node.tag)),
     }

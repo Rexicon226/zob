@@ -345,7 +345,7 @@ const Writer = struct {
 const Mir = @This();
 const std = @import("std");
 const Oir = @import("Oir.zig");
-const bits = @import("bits.zig");
+const bits = @import("Mir/bits.zig");
 const cost = @import("cost.zig");
 
 const passes = @import("Mir/passes.zig");

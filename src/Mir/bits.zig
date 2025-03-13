@@ -1,5 +1,5 @@
 const std = @import("std");
-const RegisterManager = @import("Mir/RegisterManager.zig");
+const RegisterManager = @import("RegisterManager.zig");
 const RegisterBitSet = RegisterManager.RegisterBitSet;
 
 pub const Registers = struct {

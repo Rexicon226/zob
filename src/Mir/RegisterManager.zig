@@ -110,6 +110,6 @@ const log = std.log.scoped(.register_manager);
 const std = @import("std");
 const assert = std.debug.assert;
 const Manager = @This();
-const bits = @import("../bits.zig");
+const bits = @import("bits.zig");
 const Register = bits.Register;
 const Registers = bits.Registers;
