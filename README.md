@@ -1,18 +1,19 @@
-### Zig Optimizing Backend
+ ### Zig Optimizing Backend
 
-## What is it?
+This is sort of two projects in one. The first goal is to develop a prototype optimizing backend
+for the Zig compiler, testing out different IRs and representations, to find the one that will
+suite Zig the best. A second goal is to create a general optimizing backend, one that can be used
+as for simple compiled languages, test out new and interesting optimizations, and just see how Zig
+fairs as a language, for writing optimizers.
 
-I've dragged out my e-graph OIR (optimizable IR) into its own repo here for easier development. 
-I've also commented it out like crazy in an attempt to make it more digestible.
-
-This is hopefully to become the Zig compiler's optimizing layer/backend.
-This research project's goals are to:
-- Figure out what's best for the Zig project. What optimization method do we want?
-- Document resources needed for implementing such a layer in the Zig compiler.
-- Provide an implemented proof of concept in order to educate those who didn't spend
-a god awful amount of time thinking this up and implementing it.
+The current implementation is a mix of E-Graphs and Sea of Nodes. At first, I was keen on using RVSDG
+since given Zig's very structural nature it seemed like it would be a good fit, however after a few
+months of fiddling around with it, RVSDG is just too restrictive. This is likely just my own experience,
+but I found it extremely difficult to develop algorithms to convert from Zig's SSA to RVSDG.
+Maybe I'll come back to it one day, but for now, I'd like to use something a bit less esoteric, such as 
+SoN, and move further in the implementation.
 
 Implementation goals are:
-- Implement an abstract optimizing IR based off of e-graphs and rvsdg.
-- Implement a RISC-V machine code backend for proving a simpler method 
+- Implement an abstract optimizing IR based on e-graphs, rvsdg, and SoN.
+- Implement a RISC-V machine code backend to provide a simpler method 
 of register allocation and backend generalization.
