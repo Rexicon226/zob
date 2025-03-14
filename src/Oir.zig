@@ -130,8 +130,8 @@ pub const Node = struct {
 
         // Control flow
         /// There can only ever be one `start` node in the function.
-        /// The inputs to the start node is a tuple of the return values.
-        /// The output of the start node is a tuple of the arguments to the function.
+        /// The inputs to the start node is a list of the return values.
+        /// The output of the start node is a list of the arguments to the function.
         start,
         /// The return nodes are input to the `start` node in the function
         ///
@@ -1014,6 +1014,29 @@ pub fn @"union"(oir: *Oir, a_idx: Class.Index, b_idx: Class.Index) !bool {
     return true;
 }
 
+/// **NOTE: DOES NOT PERFORM AN UPDATE ON THE OPERANDS.**
+///
+/// This function should be rarely used. It performs an incremental rebuild
+/// in order to not break the E-Graph, however it could still have unforseen side
+/// effects.
+pub fn modifyNode(
+    oir: *Oir,
+    node_idx: Node.Index,
+    new_node: Node,
+) !void {
+    assert(oir.clean);
+    const node_ptr = &oir.nodes.items[@intFromEnum(node_idx)];
+    const entry = oir.node_to_class.fetchRemoveContext(node_idx, .{ .oir = oir }).?;
+    const class_idx = entry.value;
+    node_ptr.* = new_node;
+    try oir.node_to_class.putNoClobberContext(
+        oir.allocator,
+        node_idx,
+        class_idx,
+        .{ .oir = oir },
+    );
+}
+
 /// Performs a rebuild of the E-Graph to ensure that invariances are met.
 ///
 /// This looks over hashes of the nodes and merges duplicate nodes.
@@ -1046,6 +1069,7 @@ pub fn rebuild(oir: *Oir) !void {
     var iter = oir.classes.iterator();
     while (iter.next()) |entry| {
         for (entry.value_ptr.bag.items) |node_idx| {
+            // NOTE: if this assert fails, you've modified the underlying data of a node
             assert(oir.node_to_class.removeContext(node_idx, .{ .oir = oir }));
 
             const node = oir.getNodePtr(node_idx);

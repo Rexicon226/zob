@@ -152,11 +152,10 @@ pub const Writer = struct {
             .add,
             .cmp_gt,
             => try w.printBinOp(node, stream),
-            .start => try w.printStart(node, stream),
             .project => try w.printProject(node, stream),
             .constant => try w.printConstant(node, stream),
             .branch => try w.printCtrlDataOp(node, stream),
-            .region => try w.printCtrlList(node, repr, stream),
+            .region, .start => try w.printCtrlList(node, repr, stream),
             else => try stream.print("TODO: {s}", .{@tagName(node.tag)}),
         }
         try stream.writeAll(")");
@@ -170,11 +169,6 @@ pub const Writer = struct {
     fn printBinOp(_: *Writer, node: Oir.Node, stream: anytype) !void {
         const bin_op = node.data.bin_op;
         try stream.print("{}, {}", .{ bin_op[0], bin_op[1] });
-    }
-
-    fn printStart(_: *Writer, node: Oir.Node, stream: anytype) !void {
-        _ = node;
-        _ = stream;
     }
 
     fn printProject(_: *Writer, node: Oir.Node, stream: anytype) !void {

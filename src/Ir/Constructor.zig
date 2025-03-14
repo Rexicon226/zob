@@ -12,7 +12,7 @@ start_class: Class.Index,
 ctrl_class: Class.Index,
 ir_to_class: std.AutoHashMapUnmanaged(Inst.Index, Class.Index) = .{},
 block_info: std.AutoHashMapUnmanaged(Inst.Index, BlockInfo) = .{},
-start_args: std.ArrayListUnmanaged(Class.Index) = .{},
+exits: std.ArrayListUnmanaged(Class.Index) = .{},
 
 const Class = Oir.Class;
 const Node = Oir.Node;
@@ -33,14 +33,16 @@ pub fn extract(ir: Ir, allocator: std.mem.Allocator) !Oir {
         .clean = true,
     };
 
-    const start_class = try oir.add(.{ .tag = .start });
-    const ctrl_class = try oir.add(.{
-        .tag = .project,
-        .data = .{ .project = .{
-            .index = 0,
-            .tuple = start_class,
-        } },
+    const start_class = try oir.add(.{
+        .tag = .start,
+        .data = .{ .list = .{ .start = 0, .end = 0 } },
     });
+
+    // We can guarntee that the start node will never move,
+    // since the `start` node is absorbant.
+    try oir.rebuild();
+    const start_node = oir.classContains(start_class, .start).?;
+    const ctrl_class = try oir.add(.project(0, start_class));
 
     var extractor: Extractor = .{
         .oir = &oir,
@@ -52,7 +54,15 @@ pub fn extract(ir: Ir, allocator: std.mem.Allocator) !Oir {
     defer extractor.deinit();
 
     try extractor.extractBody(ir.main_body);
+
     try oir.rebuild();
+
+    // Update the `start` node, now that we've generated all exits.
+    const exit_list = try oir.listToSpan(extractor.exits.items);
+    try oir.modifyNode(start_node, .{
+        .tag = .start,
+        .data = .{ .list = exit_list },
+    });
 
     return oir;
 }
@@ -102,7 +112,7 @@ fn select(e: *Extractor, inst: Inst.Index) !void {
             };
 
             const idx = try oir.add(node);
-            try e.start_args.append(allocator, idx);
+            try e.exits.append(allocator, idx);
             try e.ir_to_class.put(allocator, inst, idx);
         },
         .load,
@@ -198,5 +208,5 @@ fn deinit(e: *Extractor) void {
     const allocator = e.oir.allocator;
     e.ir_to_class.deinit(allocator);
     e.block_info.deinit(allocator);
-    e.start_args.deinit(allocator);
+    e.exits.deinit(allocator);
 }
