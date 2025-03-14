@@ -437,5 +437,5 @@ test "parser basic" {
 const Ir = @This();
 const std = @import("std");
 const Oir = @import("Oir.zig");
-pub const Extractor = @import("Ir/Extractor.zig");
+pub const Constructor = @import("Ir/Constructor.zig");
 const assert = std.debug.assert;

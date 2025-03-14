@@ -1,4 +1,4 @@
-//! Translates an IR function into OIR.
+//! Constructs OIR from IR.
 
 const Extractor = @This();
 const std = @import("std");
@@ -9,6 +9,7 @@ const Inst = Ir.Inst;
 oir: *Oir,
 ir: *const Ir,
 start_class: Class.Index,
+ctrl_class: Class.Index,
 ir_to_class: std.AutoHashMapUnmanaged(Inst.Index, Class.Index) = .{},
 block_info: std.AutoHashMapUnmanaged(Inst.Index, BlockInfo) = .{},
 start_args: std.ArrayListUnmanaged(Class.Index) = .{},
@@ -33,11 +34,19 @@ pub fn extract(ir: Ir, allocator: std.mem.Allocator) !Oir {
     };
 
     const start_class = try oir.add(.{ .tag = .start });
+    const ctrl_class = try oir.add(.{
+        .tag = .project,
+        .data = .{ .project = .{
+            .index = 0,
+            .tuple = start_class,
+        } },
+    });
 
     var extractor: Extractor = .{
         .oir = &oir,
         .ir = &ir,
         .start_class = start_class,
+        .ctrl_class = ctrl_class,
         .ir_to_class = .{},
     };
     defer extractor.deinit();
@@ -68,10 +77,13 @@ fn select(e: *Extractor, inst: Inst.Index) !void {
             const index = data.arg;
             const node: Node = .{
                 .tag = .project,
-                .data = .{ .project = .{
-                    .index = index,
-                    .tuple = e.start_class,
-                } },
+                .data = .{
+                    .project = .{
+                        // first index is the ctrl node
+                        .index = index + 1,
+                        .tuple = e.start_class,
+                    },
+                },
             };
 
             const arg_idx = try oir.add(node);
@@ -83,7 +95,7 @@ fn select(e: *Extractor, inst: Inst.Index) !void {
                 .tag = .ret,
                 .data = .{
                     .bin_op = .{
-                        e.start_class,
+                        e.ctrl_class,
                         try e.matOrGet(un_op),
                     },
                 },
@@ -138,6 +150,32 @@ fn select(e: *Extractor, inst: Inst.Index) !void {
         .block => {
             const payload = data.list;
             try e.extractBody(payload);
+        },
+        .cond_br => {
+            const cond_br = data.cond_br;
+            const pred = e.ir_to_class.get(cond_br.pred).?;
+
+            const then_case = cond_br.then;
+            const else_case = cond_br.@"else";
+
+            const branch = try oir.add(.branch(e.ctrl_class, pred));
+            const true_project = try oir.add(.project(0, branch));
+            const false_project = try oir.add(.project(1, branch));
+
+            e.ctrl_class = true_project;
+            try e.extractBody(then_case);
+            const latest_true_ctrl = e.ctrl_class;
+
+            e.ctrl_class = false_project;
+            try e.extractBody(else_case);
+            const latest_false_ctrl = e.ctrl_class;
+
+            const list = try oir.listToSpan(&.{
+                latest_true_ctrl,
+                latest_false_ctrl,
+            });
+
+            e.ctrl_class = try oir.add(.region(list));
         },
         else => std.debug.panic("TODO: find {s}", .{@tagName(tag)}),
     }

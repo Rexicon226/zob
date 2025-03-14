@@ -83,14 +83,9 @@ pub const NodeContext = struct {
 
     pub fn hash(ctx: NodeContext, node_idx: Node.Index) u64 {
         const node = ctx.oir.getNode(node_idx);
-        var hasher = std.hash.Wyhash.init(0);
-
-        hasher.update(std.mem.asBytes(&node.tag));
-        std.hash.autoHash(&hasher, std.meta.activeTag(node.data));
-        for (node.operands(ctx.oir)) |idx| std.hash.autoHash(&hasher, idx);
-
-        const result = hasher.final();
-        return result;
+        var hasher = std.hash.XxHash3.init(0);
+        std.hash.autoHash(&hasher, node);
+        return hasher.final();
     }
 
     pub fn eql(ctx: NodeContext, a_idx: Node.Index, b_idx: Node.Index) bool {
@@ -144,6 +139,8 @@ pub const Node = struct {
         /// control node, and the second item is the data node which represents
         /// the return value.
         ret,
+        branch,
+        region,
 
         // Integer arthimatics.
         add,
@@ -168,9 +165,12 @@ pub const Node = struct {
         };
 
         pub fn isVolatile(tag: Tag) bool {
+            // TODO: this isn't necessarily true, but just to be safe for now.
+            if (tag.nodeType() == .ctrl) return true;
             return switch (tag) {
                 .start,
                 .ret,
+                .branch,
                 => true,
                 else => false,
             };
@@ -189,8 +189,10 @@ pub const Node = struct {
             return switch (tag) {
                 .constant,
                 => .constant,
-                .project,
+                .region,
                 => .list,
+                .project,
+                => .project,
                 .cmp_gt,
                 .add,
                 .sub,
@@ -201,6 +203,7 @@ pub const Node = struct {
                 .div_exact,
                 .store,
                 .ret,
+                .branch,
                 => .bin_op,
                 .load,
                 => .un_op,
@@ -225,7 +228,11 @@ pub const Node = struct {
                 .div_trunc,
                 .div_exact,
                 => .data,
-                .start, .ret => .ctrl,
+                .start,
+                .ret,
+                .branch,
+                .region,
+                => .ctrl,
                 .dead => unreachable,
             };
         }
@@ -281,6 +288,40 @@ pub const Node = struct {
         };
     }
 
+    // Helper functions
+    pub fn branch(ctrl: Class.Index, pred: Class.Index) Node {
+        return .{
+            .tag = .branch,
+            .data = .{ .bin_op = .{ ctrl, pred } },
+        };
+    }
+
+    pub fn project(index: u32, tuple: Class.Index) Node {
+        return .{
+            .tag = .project,
+            .data = .{ .project = .{
+                .index = index,
+                .tuple = tuple,
+            } },
+        };
+    }
+
+    pub fn region(span: Span) Node {
+        return .{
+            .tag = .region,
+            .data = .{ .list = span },
+        };
+    }
+
+    pub fn format(
+        _: Node,
+        comptime _: []const u8,
+        _: std.fmt.FormatOptions,
+        _: anytype,
+    ) !void {
+        @compileError("don't format nodes directly, use Node.fmt");
+    }
+
     pub fn fmt(node: Node, oir: *const Oir) std.fmt.Formatter(format2) {
         return .{ .data = .{
             .node = node,
@@ -297,24 +338,11 @@ pub const Node = struct {
         ctx: FormatContext,
         comptime _: []const u8,
         _: std.fmt.FormatOptions,
-        writer: anytype,
+        stream: anytype,
     ) !void {
         const node = ctx.node;
-        try writer.print("{s}(", .{@tagName(node.tag)});
-
-        const inputs = node.operands(ctx.oir);
-        for (inputs, 0..) |op, i| {
-            try writer.print("{}", .{op});
-            if (i != inputs.len - 1) try writer.writeAll(", ");
-        }
-
-        switch (node.tag) {
-            .constant,
-            => try writer.print("{}", .{node.data.constant}),
-            else => {},
-        }
-
-        try writer.writeAll(")");
+        var writer: print_oir.Writer = .{ .nodes = ctx.oir.nodes.items };
+        try writer.printNode(node, ctx.oir, stream);
     }
 };
 
@@ -903,7 +931,7 @@ pub fn add(oir: *Oir, node: Node) !Class.Index {
     const node_idx: Node.Index = @enumFromInt(oir.nodes.items.len);
     try oir.nodes.append(oir.allocator, node);
 
-    log.debug("adding node {} {}", .{ node, node_idx });
+    log.debug("adding node {} {}", .{ node.fmt(oir), node_idx });
 
     const class_idx = try oir.addInternal(node_idx);
     return oir.union_find.find(class_idx);
@@ -1175,6 +1203,14 @@ pub fn classContains(oir: *Oir, idx: Class.Index, comptime tag: Node.Tag) ?Node.
     }
 
     return null;
+}
+
+pub fn listToSpan(oir: *Oir, list: []const Class.Index) !Node.Span {
+    try oir.extra.appendSlice(oir.allocator, @ptrCast(list));
+    return .{
+        .start = @intCast(oir.extra.items.len - list.len),
+        .end = @intCast(oir.extra.items.len),
+    };
 }
 
 const Oir = @This();

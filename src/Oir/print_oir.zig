@@ -133,21 +133,20 @@ pub fn print(
     try writer.printBody(repr, stream);
 }
 
-const Writer = struct {
+pub const Writer = struct {
     indent: u32 = 0,
     nodes: []const Oir.Node,
 
     fn printBody(w: *Writer, repr: anytype, stream: anytype) !void {
         for (0..w.nodes.len) |i| {
-            try w.printNode(i, repr, stream);
-            try stream.writeByteNTimes(' ', w.indent);
+            try stream.print("%{d} = ", .{i});
+            try w.printNode(w.nodes[i], repr, stream);
+            try stream.writeByte('\n');
         }
     }
 
-    fn printNode(w: *Writer, index: usize, repr: anytype, stream: anytype) !void {
-        _ = repr;
-        const node = w.nodes[index];
-        try stream.print("%{d} = {s}(", .{ index, @tagName(node.tag) });
+    pub fn printNode(w: *Writer, node: Oir.Node, repr: anytype, stream: anytype) !void {
+        try stream.print("{s}(", .{@tagName(node.tag)});
         switch (node.tag) {
             .ret,
             .add,
@@ -156,9 +155,11 @@ const Writer = struct {
             .start => try w.printStart(node, stream),
             .project => try w.printProject(node, stream),
             .constant => try w.printConstant(node, stream),
+            .branch => try w.printCtrlDataOp(node, stream),
+            .region => try w.printCtrlList(node, repr, stream),
             else => try stream.print("TODO: {s}", .{@tagName(node.tag)}),
         }
-        try stream.writeAll(")\n");
+        try stream.writeAll(")");
     }
 
     fn printUnOp(_: *Writer, node: Oir.Node, stream: anytype) !void {
@@ -173,17 +174,30 @@ const Writer = struct {
 
     fn printStart(_: *Writer, node: Oir.Node, stream: anytype) !void {
         _ = node;
-        try stream.print("TODO: arguments", .{});
+        _ = stream;
     }
 
     fn printProject(_: *Writer, node: Oir.Node, stream: anytype) !void {
         const project = node.data.project;
-        try stream.print("{d} ( {} )", .{ project.index, project.tuple });
+        try stream.print("{d} {}", .{ project.index, project.tuple });
     }
 
     fn printConstant(_: *Writer, node: Oir.Node, stream: anytype) !void {
         const constant = node.data.constant;
         try stream.print("{d}", .{constant});
+    }
+
+    fn printCtrlDataOp(_: *Writer, node: Oir.Node, stream: anytype) !void {
+        const bin_op = node.data.bin_op;
+        try stream.print("{}, {}", .{ bin_op[0], bin_op[1] });
+    }
+
+    fn printCtrlList(_: *Writer, node: Oir.Node, repr: anytype, stream: anytype) !void {
+        const span = node.data.list;
+        for (repr.extra.items[span.start..span.end], 0..) |item, i| {
+            try stream.writeAll(if (i == 0) "" else ", ");
+            try stream.print("%{d}", .{item});
+        }
     }
 };
 

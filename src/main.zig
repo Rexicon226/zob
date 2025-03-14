@@ -62,10 +62,7 @@ pub fn main() !void {
         const arg1 = try block.addArg(.arg, 1);
 
         {
-            var inner_block: Ir.Builder.Block = .{ .parent = &builder };
-            const block_index = try block.addNone(.dead);
-
-            const cmp_index = try inner_block.addBinOp(
+            const cmp_index = try block.addBinOp(
                 .cmp_gt,
                 .{ .index = arg0 },
                 .{ .index = arg1 },
@@ -74,10 +71,10 @@ pub fn main() !void {
             var then_block: Ir.Builder.Block = .{ .parent = &builder };
             var else_block: Ir.Builder.Block = .{ .parent = &builder };
 
-            _ = try then_block.addBinOp(.br, .{ .index = block_index }, .{ .value = 10 });
-            _ = try else_block.addBinOp(.br, .{ .index = block_index }, .{ .value = 20 });
+            _ = try then_block.addUnOp(.ret, .{ .value = 10 });
+            _ = try else_block.addUnOp(.ret, .{ .value = 20 });
 
-            _ = try inner_block.addInst(.{
+            _ = try block.addInst(.{
                 .tag = .cond_br,
                 .data = .{
                     .cond_br = .{
@@ -87,10 +84,6 @@ pub fn main() !void {
                     },
                 },
             });
-
-            try builder.setBlock(block_index, &inner_block);
-
-            _ = try block.addUnOp(.ret, .{ .index = block_index });
         }
 
         break :ir try builder.toIr(&block);
@@ -102,7 +95,7 @@ pub fn main() !void {
     try stdout.writeAll("end IR\n");
 
     // create the Oir from the IR.
-    var oir = try Ir.Extractor.extract(ir, allocator);
+    var oir = try Ir.Constructor.extract(ir, allocator);
     defer oir.deinit();
 
     try stdout.writeAll("unoptimized OIR:\n");
@@ -110,19 +103,19 @@ pub fn main() !void {
     try stdout.writeAll("end OIR\n");
 
     // run optimization passes on the OIR
-    try oir.optimize(.saturate, output_graph);
-    if (output_graph) {
-        try oir.dump("graphs/oir.dot");
-    }
+    // try oir.optimize(.saturate, output_graph);
+    // if (output_graph) {
+    //     try oir.dump("graphs/oir.dot");
+    // }
 
-    var recv = try Oir.Extractor.extract(&oir, .simple_latency);
-    defer recv.deinit(allocator);
+    // var recv = try Oir.Extractor.extract(&oir, .simple_latency);
+    // defer recv.deinit(allocator);
 
     // if (output_graph) {
     //     try recv.dump("graphs/test.dot");
     // }
 
-    std.debug.print("recv:\n{}", .{recv});
+    // std.debug.print("recv:\n{}", .{recv});
 }
 
 pub const std_options: std.Options = .{
