@@ -1090,7 +1090,13 @@ pub fn rebuild(oir: *Oir) !void {
             id.* = found_idx;
         }
 
-        try oir.node_to_class.putNoClobberContext(
+        // NOTE: even if we removed that specific key, collisions can still happen
+        // from other nodes. Imagine the cases where before we removed and modifyied the node
+        // it was different, and the removal was fine. Then we updated the operands, and now
+        // it collidides with something. This is totally fine, and we want it to collide and
+        // deduplicate. The custom hashmap context should prevent actual data loss from the
+        // collision.
+        try oir.node_to_class.putContext(
             oir.allocator,
             node_idx,
             class_idx,

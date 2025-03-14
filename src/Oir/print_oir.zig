@@ -98,6 +98,7 @@ fn printClassEdge(
     idx: Oir.Class.Index,
     color: enum { black, red },
 ) !void {
+    if (class_idx == idx) return; // We can't print arrows inside of a class.
     try stream.print(
         "  {}.{} -> {}.0 [lhead = cluster_{} color=\"{s}\"]\n",
         .{
