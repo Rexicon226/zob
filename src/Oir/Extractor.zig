@@ -15,8 +15,14 @@ cycles: std.AutoHashMapUnmanaged(Node.Index, Class.Index),
 /// are immutable after the OIR optimization passes, we can confidently
 /// reuse the extraction. This amortization makes our extraction strategy
 /// just barely usable.
-cost_memo: std.AutoHashMapUnmanaged(Class.Index, NodeCost) = .{},
+cost_memo: std.AutoHashMapUnmanaged(Class.Index, NodeCost),
 cost_strategy: CostStrategy,
+users: UserList,
+
+best_node: std.AutoHashMapUnmanaged(Class.Index, Node.Index),
+map: std.AutoHashMapUnmanaged(Class.Index, Class.Index),
+
+const UserList = std.AutoHashMapUnmanaged(Class.Index, std.ArrayListUnmanaged(Node.Index));
 
 const NodeCost = struct {
     u32,
@@ -28,7 +34,15 @@ pub const Recursive = struct {
     nodes: std.ArrayListUnmanaged(Node) = .{},
     extra: std.ArrayListUnmanaged(u32) = .{},
 
-    pub fn getNode(r: *Recursive, idx: Class.Index) Node {
+    // TODO: Explore making this its own unique type. Currently we can't do that because
+    // the Node data payload types use Class.Index to reference other Classes, which isn't
+    // compatible with this.
+    // pub const Index = enum(u32) {
+    //     start,
+    //     _,
+    // };
+
+    pub fn getNode(r: *const Recursive, idx: Class.Index) Node {
         return r.nodes.items[@intFromEnum(idx)];
     }
 
@@ -41,7 +55,7 @@ pub const Recursive = struct {
     pub fn dump(recv: Recursive, name: []const u8) !void {
         const graphviz_file = try std.fs.cwd().createFile(name, .{});
         defer graphviz_file.close();
-        try print_oir.dumpRecvGraph(recv, graphviz_file.writer());
+        try @import("print_oir.zig").dumpRecvGraph(recv, graphviz_file.writer());
     }
 
     pub fn deinit(r: *Recursive, allocator: std.mem.Allocator) void {
@@ -55,7 +69,7 @@ pub const Recursive = struct {
         _: std.fmt.FormatOptions,
         writer: anytype,
     ) !void {
-        try print_oir.print(r, writer);
+        try @import("print_oir.zig").print(r, writer);
     }
 };
 
@@ -71,88 +85,122 @@ pub fn extract(oir: *const Oir, cost_strategy: CostStrategy) !Recursive {
         .oir = oir,
         .allocator = oir.allocator,
         .cost_strategy = cost_strategy,
+        .users = try computeUsers(oir),
         .cycles = try oir.findCycles(),
+        .cost_memo = .empty,
+        .best_node = .{},
+        .map = .{},
     };
     defer e.deinit();
 
     log.debug("cycles found: {}", .{e.cycles.count()});
 
-    // First we need to find what the root class is. This will usually be the class containing a `ret`,
-    // or something similar.
-    const ret_node_idx = e.findLeafNode();
+    {
+        var iter = oir.classes.valueIterator();
+        while (iter.next()) |class| {
+            const best_node = try e.getBestNode(class.index);
+            try e.best_node.put(e.allocator, class.index, best_node);
+        }
+    }
 
     var recv: Recursive = .{};
-    _ = try e.extractNode(ret_node_idx, &recv);
+
+    const exit_list = oir.getNode(.start).data.list.toSlice(oir);
+    for (exit_list) |exit| {
+        _ = try e.extractClass(@enumFromInt(exit), &recv);
+    }
 
     return recv;
 }
 
-/// TODO: don't just search for a `ret` node, there can be multiple
-fn findLeafNode(e: *Extractor) Node.Index {
+fn extractClass(e: *Extractor, class_idx: Class.Index, recv: *Recursive) !Class.Index {
     const oir = e.oir;
-    const ret_node_idx: Node.Index = idx: {
-        var class_iter = oir.classes.valueIterator();
-        while (class_iter.next()) |class| {
-            for (class.bag.items) |node_idx| {
-                const node = oir.getNode(node_idx);
-                if (node.tag == .ret) break :idx node_idx;
-            }
-        }
-        @panic("no ret node found!");
-    };
+    const gpa = e.allocator;
 
-    return ret_node_idx;
-}
+    if (e.map.get(class_idx)) |memo| return memo;
 
-/// Given a `Node`, walk the edges of that node to find the optimal
-/// linear nodes to make up the graph. Converts the normal "node-class" relationship
-/// into a "node-node" one, where the child node is extracted from its class using
-/// the given cost model.
-fn extractNode(
-    e: *Extractor,
-    node_idx: Node.Index,
-    recv: *Recursive,
-) !Class.Index {
-    const oir = e.oir;
-    const allocator = e.allocator;
-    const node = oir.getNode(node_idx);
+    const best_node_idx = e.best_node.get(class_idx).?;
+    const best_node = oir.getNode(best_node_idx);
 
-    switch (node.tag) {
-        .start,
-        .constant,
-        => return recv.addNode(allocator, node),
+    switch (best_node.tag) {
+        .start => {
+            const new_node: Node = .{ .tag = .start, .data = .{ .list = .empty } };
+            const idx = try recv.addNode(gpa, new_node);
+            try e.map.put(gpa, class_idx, idx);
+            return idx;
+        },
+        .project => {
+            const project = best_node.data.project;
+
+            const tuple = try e.extractClass(project.tuple, recv);
+
+            const new_node: Node = .project(project.index, tuple, project.type);
+            const new_node_idx = try recv.addNode(gpa, new_node);
+            try e.map.put(gpa, class_idx, new_node_idx);
+            return new_node_idx;
+        },
         .ret,
-        .add,
-        .sub,
-        .shl,
-        .div_exact,
-        .mul,
+        .branch,
         .cmp_gt,
         => {
-            const rhs_class_idx, const lhs_class_idx = node.data.bin_op;
-            const rhs_idx = try e.getClass(rhs_class_idx);
-            const lhs_idx = try e.getClass(lhs_class_idx);
+            const bin_op = best_node.data.bin_op;
 
-            const new_rhs_idx = try e.getNode(rhs_idx, recv);
-            const new_lhs_idx = try e.getNode(lhs_idx, recv);
+            const lhs = try e.extractClass(bin_op[0], recv);
+            const rhs = try e.extractClass(bin_op[1], recv);
 
-            const new_node: Node = .{
-                .tag = node.tag,
-                .data = .{ .bin_op = .{ new_rhs_idx, new_lhs_idx } },
-            };
-
-            return recv.addNode(allocator, new_node);
+            const new_node: Node = .binOp(best_node.tag, .{ lhs, rhs });
+            const new_node_idx = try recv.addNode(gpa, new_node);
+            try e.map.put(gpa, class_idx, new_node_idx);
+            return new_node_idx;
         },
-        else => std.debug.panic("TODO: extractNode {s}", .{@tagName(node.tag)}),
+        .constant => {
+            const idx = try recv.addNode(gpa, best_node);
+            try e.map.put(gpa, class_idx, idx);
+            return idx;
+        },
+        else => std.debug.panic("TODO: extractClass {s}\n", .{@tagName(best_node.tag)}),
     }
 }
 
-fn getNode(e: *Extractor, node: Node.Index, recv: *Recursive) error{OutOfMemory}!Class.Index {
-    return try e.extractNode(node, recv);
+/// Walks the classes and generates a hashmap that tells you the users of a particular class.
+///
+/// Nodes normally store the operands, or inputs to the node, so this computes the outputs.
+fn computeUsers(oir: *const Oir) !UserList {
+    const gpa = oir.allocator;
+    var list: UserList = .{};
+
+    var iter = oir.classes.valueIterator();
+    while (iter.next()) |class| {
+        for (class.bag.items) |node_idx| {
+            const node = oir.getNode(node_idx);
+            for (node.operands(oir)) |op| {
+                const gop = try list.getOrPut(gpa, op);
+                if (!gop.found_existing) {
+                    gop.value_ptr.* = .{};
+                }
+                try gop.value_ptr.append(gpa, node_idx);
+            }
+        }
+    }
+
+    // {
+    //     var list_iter = list.iterator();
+    //     while (list_iter.next()) |entry| {
+    //         const value = entry.value_ptr;
+    //         const key = entry.key_ptr.*;
+    //         std.debug.print("{} -> ( ", .{key});
+    //         for (value.items) |op| {
+    //             std.debug.print("{} ", .{op});
+    //         }
+    //         std.debug.print(")\n", .{});
+    //     }
+    // }
+
+    return list;
 }
 
-fn getClass(e: *Extractor, class_idx: Class.Index) !Node.Index {
-    _, const best_node = try e.extractClass(class_idx);
+fn getBestNode(e: *Extractor, class_idx: Class.Index) !Node.Index {
+    _, const best_node = try e.extractBestNode(class_idx);
 
     log.debug("best node for class {} is {s}", .{
         class_idx,
@@ -163,7 +211,7 @@ fn getClass(e: *Extractor, class_idx: Class.Index) !Node.Index {
 }
 
 /// Given a class, extract the "best" node from it.
-fn extractClass(e: *Extractor, class_idx: Class.Index) !NodeCost {
+fn extractBestNode(e: *Extractor, class_idx: Class.Index) !NodeCost {
     const oir = e.oir;
     const class = oir.classes.get(class_idx).?;
     assert(class.bag.items.len > 0);
@@ -184,9 +232,9 @@ fn extractClass(e: *Extractor, class_idx: Class.Index) !NodeCost {
                 const base_cost = cost.getCost(node.tag);
                 var child_cost: u32 = 0;
                 for (node.operands(oir)) |sub_class_idx| {
-                    assert(sub_class_idx != class_idx);
+                    assert(sub_class_idx != class_idx); // checked for cycles above
 
-                    const extracted_cost, _ = try e.extractClass(sub_class_idx);
+                    const extracted_cost, _ = try e.extractBestNode(sub_class_idx);
                     child_cost += extracted_cost;
                 }
 
@@ -212,12 +260,19 @@ pub fn deinit(e: *Extractor) void {
     const allocator = e.oir.allocator;
     e.cost_memo.deinit(allocator);
     e.cycles.deinit(allocator);
+
+    {
+        var iter = e.users.valueIterator();
+        while (iter.next()) |v| v.deinit(allocator);
+    }
+    e.users.deinit(allocator);
+    e.best_node.deinit(allocator);
+    e.map.deinit(allocator);
 }
 
 const std = @import("std");
 const Oir = @import("../Oir.zig");
 const cost = @import("../cost.zig");
-const print_oir = @import("print_oir.zig");
 
 const Class = Oir.Class;
 const Node = Oir.Node;

@@ -36,7 +36,6 @@ pub fn dumpOirGraph(
                 const node = oir.getNode(node_idx);
                 try stream.print("    {}.{} [label=\"", .{ class_idx, i });
                 try printNodeLabel(stream, node);
-
                 const color = switch (node.tag.nodeType()) {
                     .ctrl => "orange",
                     .data => "grey",
@@ -49,48 +48,79 @@ pub fn dumpOirGraph(
 
     var class_iter = oir.classes.iterator();
     while (class_iter.next()) |entry| {
-        const class_idx: u32 = @intFromEnum(entry.key_ptr.*);
+        const class_idx = entry.key_ptr.*;
         const class = entry.value_ptr.*;
         for (class.bag.items, 0..) |node_idx, i| {
             const node = oir.getNode(node_idx);
             switch (node.tag) {
-                .ret => {
+                .ret,
+                .branch,
+                => {
                     const ctrl, const data = node.data.bin_op;
-                    try stream.print(
-                        "  {}.{} -> {}.0 [lhead = cluster_{} color=\"red\"]\n",
-                        .{
+                    try printClassEdge(stream, class_idx, i, ctrl, .red);
+                    try printClassEdge(stream, class_idx, i, data, .black);
+                },
+                .project,
+                => {
+                    const project = node.data.project;
+                    const target = project.tuple;
+                    try printClassEdge(stream, class_idx, i, target, switch (project.type) {
+                        .ctrl => .red,
+                        .data => .black,
+                    });
+                },
+                .region => {
+                    const list = node.data.list;
+                    for (list.toSlice(oir)) |item| {
+                        try printClassEdge(
+                            stream,
                             class_idx,
                             i,
-                            @intFromEnum(ctrl),
-                            @intFromEnum(ctrl),
-                        },
-                    );
-                    try stream.print(
-                        "  {}.{} -> {}.0 [lhead = cluster_{}]\n",
-                        .{
-                            class_idx,
-                            i,
-                            @intFromEnum(data),
-                            @intFromEnum(data),
-                        },
-                    );
+                            @enumFromInt(item),
+                            .red,
+                        );
+                    }
                 },
                 else => for (node.operands(oir)) |child_idx| {
-                    try stream.print(
-                        "  {}.{} -> {}.0 [lhead = cluster_{}]\n",
-                        .{
-                            class_idx,
-                            i,
-                            @intFromEnum(child_idx),
-                            @intFromEnum(child_idx),
-                        },
-                    );
+                    try printClassEdge(stream, class_idx, i, child_idx, .black);
                 },
             }
         }
     }
 
     try stream.writeAll("}\n");
+}
+
+fn printClassEdge(
+    stream: anytype,
+    class_idx: Oir.Class.Index,
+    i: usize,
+    idx: Oir.Class.Index,
+    color: enum { black, red },
+) !void {
+    try stream.print(
+        "  {}.{} -> {}.0 [lhead = cluster_{} color=\"{s}\"]\n",
+        .{
+            @intFromEnum(class_idx),
+            i,
+            @intFromEnum(idx),
+            @intFromEnum(idx),
+            @tagName(color),
+        },
+    );
+}
+
+fn printEdge(
+    stream: anytype,
+    i: usize,
+    child: Oir.Class.Index,
+    color: enum { black, red },
+) !void {
+    try stream.print("    {d} -> {d} [color=\"{s}\"];\n", .{
+        i,
+        @intFromEnum(child),
+        @tagName(color),
+    });
 }
 
 pub fn dumpRecvGraph(
@@ -103,19 +133,51 @@ pub fn dumpRecvGraph(
         \\  clusterrank=local
         \\  graph [fontsize=14 compound=true]
         \\  node [shape=box, style=filled];
+        \\  rankdir=BT;
+        \\  ordering="in";
+        \\  concentrate="true";
+        \\
         \\
     );
 
     for (recv.nodes.items, 0..) |node, i| {
-        try stream.print("  {} [label=\"", .{i});
+        try stream.print("    {} [label=\"", .{i});
         try printNodeLabel(stream, node);
-        try stream.writeAll("\", color=\"grey\"];\n");
+        const color = switch (node.tag.nodeType()) {
+            .ctrl => "orange",
+            .data => "grey",
+        };
+        try stream.print("\", color=\"{s}\"];\n", .{color});
     }
     try stream.writeAll("\n");
 
     for (recv.nodes.items, 0..) |node, i| {
-        for (node.operands(recv)) |child| {
-            try stream.print("    {d} -> {d};\n", .{ i, @intFromEnum(child) });
+        switch (node.tag) {
+            .ret,
+            .branch,
+            => {
+                const ctrl, const data = node.data.bin_op;
+                try printEdge(stream, i, ctrl, .black);
+                try printEdge(stream, i, data, .black);
+            },
+            .project,
+            => {
+                const project = node.data.project;
+                const target = project.tuple;
+                try printEdge(stream, i, target, switch (project.type) {
+                    .ctrl => .red,
+                    .data => .black,
+                });
+            },
+            .region => {
+                const list = node.data.list;
+                for (list.toSlice(recv)) |item| {
+                    try printEdge(stream, i, @enumFromInt(item), .red);
+                }
+            },
+            else => for (node.operands(recv)) |idx| {
+                try printEdge(stream, i, idx, .black);
+            },
         }
     }
 
@@ -203,6 +265,10 @@ fn printNodeLabel(
         .constant => {
             const val = node.data.constant;
             try stream.print("constant:{d}", .{val});
+        },
+        .project => {
+            const project = node.data.project;
+            try stream.print("project({d})", .{project.index});
         },
         else => try stream.writeAll(@tagName(node.tag)),
     }

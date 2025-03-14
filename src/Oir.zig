@@ -119,6 +119,8 @@ pub const Node = struct {
     data: Data = .none,
 
     pub const Index = enum(u32) {
+        /// The singular `start` node should always be the first node.
+        start,
         _,
     };
 
@@ -236,6 +238,13 @@ pub const Node = struct {
                 .dead => unreachable,
             };
         }
+
+        pub fn exitTag(tag: Tag) bool {
+            return switch (tag) {
+                .ret => true,
+                else => false,
+            };
+        }
     };
 
     const Data = union(enum) {
@@ -251,11 +260,18 @@ pub const Node = struct {
     const Span = struct {
         start: u32,
         end: u32,
+
+        pub const empty: Span = .{ .start = 0, .end = 0 };
+
+        pub fn toSlice(span: Span, repr: anytype) []const u32 {
+            return repr.extra.items[span.start..span.end];
+        }
     };
 
     const Project = struct {
         tuple: Class.Index,
-        index: usize,
+        index: u32,
+        type: Tag.Type,
     };
 
     pub fn init(tag: Tag, payload: anytype) Node {
@@ -269,6 +285,7 @@ pub const Node = struct {
     }
 
     pub fn operands(node: *const Node, repr: anytype) []const Class.Index {
+        if (node.tag == .start) return &.{}; // no real operands
         return switch (node.data) {
             .none, .constant => &.{},
             .bin_op => |*bin_op| bin_op,
@@ -279,6 +296,7 @@ pub const Node = struct {
     }
 
     pub fn mutableOperands(node: *Node, repr: anytype) []Class.Index {
+        if (node.tag == .start) return &.{}; // no real operands
         return switch (node.data) {
             .none, .constant => &.{},
             .bin_op => |*bin_op| bin_op,
@@ -290,26 +308,29 @@ pub const Node = struct {
 
     // Helper functions
     pub fn branch(ctrl: Class.Index, pred: Class.Index) Node {
-        return .{
-            .tag = .branch,
-            .data = .{ .bin_op = .{ ctrl, pred } },
-        };
+        return binOp(.branch, .{ ctrl, pred });
     }
-
-    pub fn project(index: u32, tuple: Class.Index) Node {
+    pub fn project(index: u32, tuple: Class.Index, ty: Tag.Type) Node {
         return .{
             .tag = .project,
             .data = .{ .project = .{
                 .index = index,
                 .tuple = tuple,
+                .type = ty,
             } },
         };
     }
-
     pub fn region(span: Span) Node {
         return .{
             .tag = .region,
             .data = .{ .list = span },
+        };
+    }
+    pub fn binOp(tag: Tag, bin_op: [2]Class.Index) Node {
+        assert(tag.dataType() == .bin_op);
+        return .{
+            .tag = tag,
+            .data = .{ .bin_op = bin_op },
         };
     }
 
@@ -355,6 +376,7 @@ pub const Class = struct {
     parents: std.ArrayListUnmanaged(Pair) = .{},
 
     pub const Index = enum(u32) {
+        start,
         _,
 
         pub fn format(
@@ -925,6 +947,14 @@ fn getNodePtr(oir: *const Oir, idx: Node.Index) *Node {
     return &oir.nodes.items[@intFromEnum(idx)];
 }
 
+/// Returns the type of the class. If the class contains a ctrl node, all other
+/// nodes must also be control.
+pub fn getClassType(oir: *const Oir, idx: Class.Index) Node.Tag.Type {
+    const class = oir.classes.get(idx).?;
+    const first = class.bag.items[0];
+    return oir.getNode(first).tag.nodeType();
+}
+
 /// Adds an ENode to the EGraph, giving the node its own class.
 /// Returns the EClass index the ENode was placed in.
 pub fn add(oir: *Oir, node: Node) !Class.Index {
@@ -989,14 +1019,16 @@ pub fn @"union"(oir: *Oir, a_idx: Class.Index, b_idx: Class.Index) !bool {
     var b = oir.union_find.findMutable(b_idx);
     if (a == b) return false;
 
+    log.debug("union on {} -> {}", .{ b, a });
+
+    assert(oir.getClassType(a_idx) == oir.getClassType(b_idx));
+
     const a_parents = oir.classes.get(a).?.parents.items.len;
     const b_parents = oir.classes.get(b).?.parents.items.len;
 
     if (a_parents < b_parents) {
         std.mem.swap(Class.Index, &a, &b);
     }
-
-    log.debug("union on {} -> {}", .{ b, a });
 
     // make `a` the leader class
     _ = oir.union_find.@"union"(a, b);

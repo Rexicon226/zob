@@ -9,10 +9,11 @@ const Inst = Ir.Inst;
 oir: *Oir,
 ir: *const Ir,
 start_class: Class.Index,
-ctrl_class: Class.Index,
+ctrl_class: ?Class.Index,
 ir_to_class: std.AutoHashMapUnmanaged(Inst.Index, Class.Index) = .{},
 block_info: std.AutoHashMapUnmanaged(Inst.Index, BlockInfo) = .{},
 exits: std.ArrayListUnmanaged(Class.Index) = .{},
+scratch: std.ArrayListUnmanaged(Class.Index) = .{},
 
 const Class = Oir.Class;
 const Node = Oir.Node;
@@ -40,9 +41,7 @@ pub fn extract(ir: Ir, allocator: std.mem.Allocator) !Oir {
 
     // We can guarntee that the start node will never move,
     // since the `start` node is absorbant.
-    try oir.rebuild();
-    const start_node = oir.classContains(start_class, .start).?;
-    const ctrl_class = try oir.add(.project(0, start_class));
+    const ctrl_class = try oir.add(.project(0, start_class, .ctrl));
 
     var extractor: Extractor = .{
         .oir = &oir,
@@ -59,7 +58,7 @@ pub fn extract(ir: Ir, allocator: std.mem.Allocator) !Oir {
 
     // Update the `start` node, now that we've generated all exits.
     const exit_list = try oir.listToSpan(extractor.exits.items);
-    try oir.modifyNode(start_node, .{
+    try oir.modifyNode(.start, .{
         .tag = .start,
         .data = .{ .list = exit_list },
     });
@@ -79,24 +78,20 @@ fn select(e: *Extractor, inst: Inst.Index) !void {
     const allocator = oir.allocator;
     const ir_to_class = &e.ir_to_class;
 
+    const scratch_top = e.scratch.items.len;
+    defer e.scratch.shrinkRetainingCapacity(scratch_top);
+
     const tag = ir.instructions.items(.tag)[@intFromEnum(inst)];
     const data = ir.instructions.items(.data)[@intFromEnum(inst)];
 
     switch (tag) {
         .arg => {
             const index = data.arg;
-            const node: Node = .{
-                .tag = .project,
-                .data = .{
-                    .project = .{
-                        // first index is the ctrl node
-                        .index = index + 1,
-                        .tuple = e.start_class,
-                    },
-                },
-            };
-
-            const arg_idx = try oir.add(node);
+            const arg_idx = try oir.add(.project(
+                index + 1,
+                e.start_class,
+                .data,
+            ));
             try e.ir_to_class.put(allocator, inst, arg_idx);
         },
         .ret => {
@@ -105,7 +100,7 @@ fn select(e: *Extractor, inst: Inst.Index) !void {
                 .tag = .ret,
                 .data = .{
                     .bin_op = .{
-                        e.ctrl_class,
+                        e.ctrl_class.?,
                         try e.matOrGet(un_op),
                     },
                 },
@@ -114,6 +109,9 @@ fn select(e: *Extractor, inst: Inst.Index) !void {
             const idx = try oir.add(node);
             try e.exits.append(allocator, idx);
             try e.ir_to_class.put(allocator, inst, idx);
+            // nothing further in this block could mutate the control edge
+            // another region will need to re-set it.
+            e.ctrl_class = null;
         },
         .load,
         .store,
@@ -168,9 +166,9 @@ fn select(e: *Extractor, inst: Inst.Index) !void {
             const then_case = cond_br.then;
             const else_case = cond_br.@"else";
 
-            const branch = try oir.add(.branch(e.ctrl_class, pred));
-            const true_project = try oir.add(.project(0, branch));
-            const false_project = try oir.add(.project(1, branch));
+            const branch = try oir.add(.branch(e.ctrl_class.?, pred));
+            const true_project = try oir.add(.project(0, branch, .ctrl));
+            const false_project = try oir.add(.project(1, branch, .ctrl));
 
             e.ctrl_class = true_project;
             try e.extractBody(then_case);
@@ -180,11 +178,22 @@ fn select(e: *Extractor, inst: Inst.Index) !void {
             try e.extractBody(else_case);
             const latest_false_ctrl = e.ctrl_class;
 
-            const list = try oir.listToSpan(&.{
-                latest_true_ctrl,
-                latest_false_ctrl,
-            });
+            if (latest_false_ctrl == null and
+                latest_true_ctrl == null)
+            {
+                // this region is completely dead, we can ignore it
+                return;
+            }
 
+            if (latest_true_ctrl) |ctrl| {
+                try e.scratch.append(allocator, ctrl);
+            }
+            if (latest_false_ctrl) |ctrl| {
+                try e.scratch.append(allocator, ctrl);
+            }
+
+            const items = e.scratch.items[scratch_top..];
+            const list = try oir.listToSpan(items);
             e.ctrl_class = try oir.add(.region(list));
         },
         else => std.debug.panic("TODO: find {s}", .{@tagName(tag)}),
@@ -209,4 +218,5 @@ fn deinit(e: *Extractor) void {
     e.ir_to_class.deinit(allocator);
     e.block_info.deinit(allocator);
     e.exits.deinit(allocator);
+    e.scratch.deinit(allocator);
 }

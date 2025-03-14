@@ -71,8 +71,13 @@ pub fn main() !void {
             var then_block: Ir.Builder.Block = .{ .parent = &builder };
             var else_block: Ir.Builder.Block = .{ .parent = &builder };
 
-            _ = try then_block.addUnOp(.ret, .{ .value = 10 });
-            _ = try else_block.addUnOp(.ret, .{ .value = 20 });
+            const add = try then_block.addBinOp(
+                .add,
+                .{ .value = 10 },
+                .{ .value = 20 },
+            );
+            _ = try then_block.addUnOp(.ret, .{ .index = add });
+            _ = try else_block.addUnOp(.ret, .{ .value = 30 });
 
             _ = try block.addInst(.{
                 .tag = .cond_br,
@@ -103,19 +108,19 @@ pub fn main() !void {
     try stdout.writeAll("end OIR\n");
 
     // run optimization passes on the OIR
-    // try oir.optimize(.saturate, output_graph);
-    // if (output_graph) {
-    //     try oir.dump("graphs/oir.dot");
-    // }
+    try oir.optimize(.saturate, output_graph);
+    if (output_graph) {
+        try oir.dump("graphs/oir.dot");
+    }
 
-    // var recv = try Oir.Extractor.extract(&oir, .simple_latency);
-    // defer recv.deinit(allocator);
+    var recv = try Oir.Extractor.extract(&oir, .simple_latency);
+    defer recv.deinit(allocator);
 
-    // if (output_graph) {
-    //     try recv.dump("graphs/test.dot");
-    // }
+    if (output_graph) {
+        try recv.dump("graphs/test.dot");
+    }
 
-    // std.debug.print("recv:\n{}", .{recv});
+    std.debug.print("recv:\n{}", .{recv});
 }
 
 pub const std_options: std.Options = .{
