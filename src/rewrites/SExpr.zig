@@ -201,7 +201,7 @@ pub const Parser = struct {
 
     fn eatUntilDelimiter(parser: *Parser, delem: u8) !void {
         while (parser.peak() != delem) : (parser.index += 1) {
-            if (parser.index == parser.buffer.len) return error.Oob;
+            if (parser.index == parser.buffer.len) return error.OutOfBounds;
         }
     }
 
@@ -209,7 +209,7 @@ pub const Parser = struct {
     const ident_delim: []const u8 = &.{ ' ', ')' };
 };
 
-pub fn parse(comptime buffer: []const u8) SExpr {
+pub inline fn parse(comptime buffer: []const u8) SExpr {
     comptime {
         var parser: Parser = .{ .buffer = buffer };
         return parser.parseInternal();
