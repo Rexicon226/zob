@@ -17,7 +17,6 @@ cycles: std.AutoHashMapUnmanaged(Node.Index, Class.Index),
 /// just barely usable.
 cost_memo: std.AutoHashMapUnmanaged(Class.Index, NodeCost),
 cost_strategy: CostStrategy,
-users: UserList,
 
 best_node: std.AutoHashMapUnmanaged(Class.Index, Node.Index),
 map: std.AutoHashMapUnmanaged(Class.Index, Class.Index),
@@ -85,7 +84,6 @@ pub fn extract(oir: *const Oir, cost_strategy: CostStrategy) !Recursive {
         .oir = oir,
         .allocator = oir.allocator,
         .cost_strategy = cost_strategy,
-        .users = try computeUsers(oir),
         .cycles = try oir.findCycles(),
         .cost_memo = .empty,
         .best_node = .{},
@@ -162,43 +160,6 @@ fn extractClass(e: *Extractor, class_idx: Class.Index, recv: *Recursive) !Class.
     }
 }
 
-/// Walks the classes and generates a hashmap that tells you the users of a particular class.
-///
-/// Nodes normally store the operands, or inputs to the node, so this computes the outputs.
-fn computeUsers(oir: *const Oir) !UserList {
-    const gpa = oir.allocator;
-    var list: UserList = .{};
-
-    var iter = oir.classes.valueIterator();
-    while (iter.next()) |class| {
-        for (class.bag.items) |node_idx| {
-            const node = oir.getNode(node_idx);
-            for (node.operands(oir)) |op| {
-                const gop = try list.getOrPut(gpa, op);
-                if (!gop.found_existing) {
-                    gop.value_ptr.* = .{};
-                }
-                try gop.value_ptr.append(gpa, node_idx);
-            }
-        }
-    }
-
-    // {
-    //     var list_iter = list.iterator();
-    //     while (list_iter.next()) |entry| {
-    //         const value = entry.value_ptr;
-    //         const key = entry.key_ptr.*;
-    //         std.debug.print("{} -> ( ", .{key});
-    //         for (value.items) |op| {
-    //             std.debug.print("{} ", .{op});
-    //         }
-    //         std.debug.print(")\n", .{});
-    //     }
-    // }
-
-    return list;
-}
-
 fn getBestNode(e: *Extractor, class_idx: Class.Index) !Node.Index {
     _, const best_node = try e.extractBestNode(class_idx);
 
@@ -260,12 +221,6 @@ pub fn deinit(e: *Extractor) void {
     const allocator = e.oir.allocator;
     e.cost_memo.deinit(allocator);
     e.cycles.deinit(allocator);
-
-    {
-        var iter = e.users.valueIterator();
-        while (iter.next()) |v| v.deinit(allocator);
-    }
-    e.users.deinit(allocator);
     e.best_node.deinit(allocator);
     e.map.deinit(allocator);
 }
