@@ -58,38 +58,53 @@ pub fn main() !void {
         };
         defer block.deinit();
 
-        const arg0 = try block.addArg(.arg, 0);
-        const arg1 = try block.addArg(.arg, 1);
-
-        {
-            const cmp_index = try block.addBinOp(
-                .cmp_gt,
-                .{ .index = arg0 },
-                .{ .index = arg1 },
-            );
-
-            var then_block: Ir.Builder.Block = .{ .parent = &builder };
-            var else_block: Ir.Builder.Block = .{ .parent = &builder };
-
-            const add = try then_block.addBinOp(
+        var prev_add = try block.addBinOp(
+            .add,
+            .{ .value = 0 },
+            .{ .value = 1 },
+        );
+        for (2..5) |i| {
+            prev_add = try block.addBinOp(
                 .add,
-                .{ .value = 10 },
-                .{ .value = 20 },
+                .{ .index = prev_add },
+                .{ .value = @intCast(i) },
             );
-            _ = try then_block.addUnOp(.ret, .{ .index = add });
-            _ = try else_block.addUnOp(.ret, .{ .value = 30 });
-
-            _ = try block.addInst(.{
-                .tag = .cond_br,
-                .data = .{
-                    .cond_br = .{
-                        .pred = cmp_index,
-                        .then = try then_block.instructions.toOwnedSlice(allocator),
-                        .@"else" = try else_block.instructions.toOwnedSlice(allocator),
-                    },
-                },
-            });
         }
+
+        _ = try block.addUnOp(.ret, .{ .index = prev_add });
+
+        // const arg0 = try block.addArg(.arg, 0);
+        // const arg1 = try block.addArg(.arg, 1);
+
+        // {
+        //     const cmp_index = try block.addBinOp(
+        //         .cmp_gt,
+        //         .{ .index = arg0 },
+        //         .{ .index = arg1 },
+        //     );
+
+        //     var then_block: Ir.Builder.Block = .{ .parent = &builder };
+        //     var else_block: Ir.Builder.Block = .{ .parent = &builder };
+
+        //     const add = try then_block.addBinOp(
+        //         .add,
+        //         .{ .value = 10 },
+        //         .{ .value = 20 },
+        //     );
+        //     _ = try then_block.addUnOp(.ret, .{ .index = add });
+        //     _ = try else_block.addUnOp(.ret, .{ .value = 30 });
+
+        //     _ = try block.addInst(.{
+        //         .tag = .cond_br,
+        //         .data = .{
+        //             .cond_br = .{
+        //                 .pred = cmp_index,
+        //                 .then = try then_block.instructions.toOwnedSlice(allocator),
+        //                 .@"else" = try else_block.instructions.toOwnedSlice(allocator),
+        //             },
+        //         },
+        //     });
+        // }
 
         break :ir try builder.toIr(&block);
     };

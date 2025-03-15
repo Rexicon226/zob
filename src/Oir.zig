@@ -412,15 +412,11 @@ const Passes = struct {
     /// If a node is found with "comptime-known" children, it's evaluated and the new
     /// "comptime-known" result is added to that node's class.
     fn constantFold(oir: *Oir) !bool {
-        var changed: bool = false;
-
         // A buffer of constant nodes found in operand classes.
         var constants: std.ArrayListUnmanaged(Node.Index) = .{};
         defer constants.deinit(oir.allocator);
 
-        var copied_nodes = try oir.nodes.clone(oir.allocator);
-        defer copied_nodes.deinit(oir.allocator);
-        for (copied_nodes.items, 0..) |node, i| {
+        for (oir.nodes.items, 0..) |node, i| {
             const node_idx: Node.Index = @enumFromInt(i);
             const class_idx = oir.findClass(node_idx);
 
@@ -443,44 +439,43 @@ const Passes = struct {
             // We cannot evaluate all children of this node, move on to the next node.
             if (!all_known) continue;
 
-            // all nodes are constants
-            if (!node.tag.isVolatile()) {
-                changed = true;
-                switch (node.tag) {
-                    .add,
-                    .sub,
-                    .mul,
-                    .div_exact,
-                    .shl,
-                    => {
-                        const lhs, const rhs = constants.items[0..2].*;
-                        const lhs_value = oir.getNode(lhs).data.constant;
-                        const rhs_value = oir.getNode(rhs).data.constant;
+            switch (node.tag) {
+                .add,
+                .sub,
+                .mul,
+                .div_exact,
+                .shl,
+                => {
+                    const lhs, const rhs = constants.items[0..2].*;
+                    const lhs_value = oir.getNode(lhs).data.constant;
+                    const rhs_value = oir.getNode(rhs).data.constant;
 
-                        const result = switch (node.tag) {
-                            .add => lhs_value + rhs_value,
-                            .sub => lhs_value - rhs_value,
-                            .mul => lhs_value * rhs_value,
-                            .div_exact => @divExact(lhs_value, rhs_value),
-                            .shl => lhs_value << @intCast(rhs_value),
-                            else => unreachable,
-                        };
+                    const result = switch (node.tag) {
+                        .add => lhs_value + rhs_value,
+                        .sub => lhs_value - rhs_value,
+                        .mul => lhs_value * rhs_value,
+                        .div_exact => @divExact(lhs_value, rhs_value),
+                        .shl => lhs_value << @intCast(rhs_value),
+                        else => unreachable,
+                    };
 
-                        const new_class = try oir.add(.{
-                            .tag = .constant,
-                            .data = .{ .constant = result },
-                        });
-                        _ = try oir.@"union"(new_class, class_idx);
-                    },
-                    else => std.debug.panic("TODO: constant fold {s}", .{@tagName(node.tag)}),
-                }
+                    const new_class = try oir.add(.{
+                        .tag = .constant,
+                        .data = .{ .constant = result },
+                    });
+                    _ = try oir.@"union"(new_class, class_idx);
+                    try oir.rebuild();
 
-                // rebuild afterwards, the add + union could have made it unclean
-                if (!oir.clean) try oir.rebuild();
+                    // We can't continue this iteration since the rebuild could have modified
+                    // the `nodes` list. TODO: figure out a better way to continue running, even
+                    // after a rebuild has affected the graph.
+                    return true;
+                },
+                else => std.debug.panic("TODO: constant fold {s}", .{@tagName(node.tag)}),
             }
         }
 
-        return changed;
+        return false;
     }
 
     const Rewrite = struct {
@@ -550,7 +545,6 @@ const Passes = struct {
     fn commonRewrites(oir: *Oir) !bool {
         const gpa = oir.allocator;
 
-        var changed: bool = false;
         var matches = std.ArrayList(RewriteResult).init(gpa);
         defer {
             for (matches.items) |*item| {
@@ -576,11 +570,11 @@ const Passes = struct {
                 &item.bindings,
             )) {
                 log.debug("change happened!", .{});
-                changed = true;
+                return true;
             }
         }
 
-        return changed;
+        return false;
     }
 };
 
@@ -1090,18 +1084,14 @@ pub fn rebuild(oir: *Oir) !void {
             id.* = found_idx;
         }
 
-        // NOTE: even if we removed that specific key, collisions can still happen
-        // from other nodes. Imagine the cases where before we removed and modifyied the node
-        // it was different, and the removal was fine. Then we updated the operands, and now
-        // it collidides with something. This is totally fine, and we want it to collide and
-        // deduplicate. The custom hashmap context should prevent actual data loss from the
-        // collision.
-        try oir.node_to_class.putContext(
+        if (try oir.node_to_class.fetchPutContext(
             oir.allocator,
             node_idx,
             class_idx,
             .{ .oir = oir },
-        );
+        )) |prev| {
+            _ = try oir.@"union"(prev.value, class_idx);
+        }
     }
 
     var iter = oir.classes.iterator();
