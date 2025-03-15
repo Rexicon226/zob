@@ -1,5 +1,5 @@
 const std = @import("std");
-const tests = @import("test/tests.zig");
+const cases = @import("test/cases.zig");
 
 pub fn build(b: *std.Build) !void {
     const target = b.standardTargetOptions(.{});
@@ -12,6 +12,11 @@ pub fn build(b: *std.Build) !void {
         .target = target,
         .optimize = optimize,
         .root_source_file = b.path("src/main.zig"),
+    });
+    const zob_mod = b.addModule("zob", .{
+        .target = target,
+        .optimize = optimize,
+        .root_source_file = b.path("src/lib.zig"),
     });
 
     const options = b.addOptions();
@@ -33,19 +38,37 @@ pub fn build(b: *std.Build) !void {
     run.dependOn(&run_artifact.step);
     if (b.args) |args| run_artifact.addArgs(args);
 
-    const test_exe = b.addTest(.{
+    const test_runner = b.addExecutable(.{
+        .root_source_file = b.path("test/test_runner.zig"),
+        .name = "test_runner",
         .target = target,
         .optimize = optimize,
-        .root_source_file = b.path("src/test.zig"),
     });
+    test_runner.root_module.addImport("zob", zob_mod);
 
     const test_step = b.step("test", "Run the tests");
-    test_step.dependOn(&b.addRunArtifact(test_exe).step);
 
-    // const test_case = b.step("test-cases", "Runs IR case tests");
-    // try tests.addCases(b, test_case, "mir", compiler);
-    // try tests.addCases(b, test_case, "rewrites", compiler);
-    // test_step.dependOn(test_case);
+    const test_lib = b.addTest(.{
+        .root_source_file = b.path("src/lib.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    test_step.dependOn(&b.addRunArtifact(test_lib).step);
+
+    const single = b.option(
+        bool,
+        "single",
+        "Runs a singular test provided in the args",
+    ) orelse false;
+    if (single) {
+        const run_test = b.addRunArtifact(test_runner);
+        if (b.args) |args| run_test.addArgs(args);
+        test_step.dependOn(&run_test.step);
+    } else {
+        const test_case = b.step("test-cases", "Runs IR case tests");
+        try cases.addCases(b, test_case, "rewrite", test_runner);
+        test_step.dependOn(test_case);
+    }
 }
 
 fn zigMod(b: *std.Build, zig_dep: *std.Build.Dependency) !*std.Build.Module {

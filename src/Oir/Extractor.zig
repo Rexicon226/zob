@@ -148,7 +148,7 @@ fn extractClass(e: *Extractor, class_idx: Class.Index, recv: *Recursive) !Class.
             const lhs = try e.extractClass(bin_op[0], recv);
             const rhs = try e.extractClass(bin_op[1], recv);
 
-            const new_node: Node = .binOp(best_node.tag, .{ lhs, rhs });
+            const new_node: Node = .binOp(best_node.tag, lhs, rhs);
             const new_node_idx = try recv.addNode(gpa, new_node);
             try e.map.put(gpa, class_idx, new_node_idx);
             return new_node_idx;

@@ -308,7 +308,7 @@ pub const Node = struct {
 
     // Helper functions
     pub fn branch(ctrl: Class.Index, pred: Class.Index) Node {
-        return binOp(.branch, .{ ctrl, pred });
+        return binOp(.branch, ctrl, pred);
     }
     pub fn project(index: u32, tuple: Class.Index, ty: Tag.Type) Node {
         return .{
@@ -326,11 +326,11 @@ pub const Node = struct {
             .data = .{ .list = span },
         };
     }
-    pub fn binOp(tag: Tag, bin_op: [2]Class.Index) Node {
+    pub fn binOp(tag: Tag, lhs: Class.Index, rhs: Class.Index) Node {
         assert(tag.dataType() == .bin_op);
         return .{
             .tag = tag,
-            .data = .{ .bin_op = bin_op },
+            .data = .{ .bin_op = .{ lhs, rhs } },
         };
     }
 

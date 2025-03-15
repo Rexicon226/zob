@@ -96,15 +96,11 @@ fn select(e: *Extractor, inst: Inst.Index) !void {
         },
         .ret => {
             const un_op = data.un_op;
-            const node: Node = .{
-                .tag = .ret,
-                .data = .{
-                    .bin_op = .{
-                        e.ctrl_class.?,
-                        try e.matOrGet(un_op),
-                    },
-                },
-            };
+            const node: Node = .binOp(
+                .ret,
+                e.ctrl_class.?,
+                try e.matOrGet(un_op),
+            );
 
             const idx = try oir.add(node);
             try e.exits.append(allocator, idx);
