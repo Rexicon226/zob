@@ -273,10 +273,7 @@ fn applyRewrite(
     const changed: bool = changed: {
         switch (to.data) {
             .list => |list| {
-                var new_node: Node = .{
-                    .tag = to.tag,
-                    .data = undefined,
-                };
+                var new_node = Node.init(to.tag, undefined);
 
                 for (list, 0..) |sub_expr, i| {
                     const new_sub_node = try expressionToNode(oir, sub_expr, bindings);

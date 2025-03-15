@@ -599,8 +599,7 @@ fn makeClass(oir: *Oir, node_idx: Node.Index) !Class.Index {
 ///
 /// Returns whether a union needs to happen. `true` is they are already equivalent
 ///
-/// This can be thought of as "merging" two classes. When they were
-/// proven to be equivalent.
+/// This can be thought of as "merging" two classes when they were proven to be equivalent.
 pub fn @"union"(oir: *Oir, a_idx: Class.Index, b_idx: Class.Index) !bool {
     oir.clean = false;
     var a = oir.union_find.findMutable(a_idx);
