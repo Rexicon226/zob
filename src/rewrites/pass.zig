@@ -268,7 +268,7 @@ fn applyRewrite(
 ) !bool {
     const root_class = oir.findClass(root_node_idx);
 
-    var cloned = try oir.clone();
+    var old = try oir.clone();
 
     const changed: bool = changed: {
         switch (to.data) {
@@ -282,12 +282,12 @@ fn applyRewrite(
     };
 
     if (changed) {
-        cloned.deinit();
+        old.deinit();
         return true;
     } else {
         // revert the oir back to its state before
         oir.deinit();
-        oir.* = cloned;
+        oir.* = old;
         return false;
     }
 }

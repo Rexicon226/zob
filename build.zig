@@ -67,6 +67,7 @@ pub fn build(b: *std.Build) !void {
     } else {
         const test_case = b.step("test-cases", "Runs IR case tests");
         try cases.addCases(b, test_case, "rewrite", test_runner);
+        try cases.addCases(b, test_case, "oir", test_runner);
         test_step.dependOn(test_case);
     }
 }

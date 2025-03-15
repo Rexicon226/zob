@@ -1,21 +1,8 @@
-input IR:
 %0 = arg(0)
-%1 = add(%0, 0)
-%2 = ret(%1)
-end IR
-
-unoptimized OIR:
-%0 = start(%5)
-%1 = project(0 %0)
-%2 = project(1 %0)
-%3 = constant(0)
-%4 = add(%2, %3)
-%5 = ret(%1, %4)
-end OIR
-
-extracted OIR:
-%0 = start()
-%1 = project(0 %0)
-%2 = project(1 %0)
-%3 = ret(%1, %2)
-end OIR
+%1 = arg(1)
+%2 = cmp_gt(%0, %1)
+%5 = cond_br(%2, {
+    %3 = ret(10)
+}, {
+    %4 = ret(20)
+})
