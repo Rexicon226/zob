@@ -272,19 +272,7 @@ fn applyRewrite(
 
     const changed: bool = changed: {
         switch (to.data) {
-            .list => |list| {
-                var new_node = Node.init(to.tag, undefined);
-
-                for (list, 0..) |sub_expr, i| {
-                    const new_sub_node = try expressionToNode(oir, sub_expr, bindings);
-                    const sub_class_idx = try oir.add(new_sub_node);
-                    new_node.mutableOperands(oir)[i] = sub_class_idx;
-                }
-
-                const new_class_idx = try oir.add(new_node);
-                break :changed try oir.@"union"(root_class, new_class_idx);
-            },
-            .atom => {
+            .list, .atom => {
                 const new_node = try expressionToNode(oir, to, bindings);
                 const new_class_idx = try oir.add(new_node);
                 break :changed try oir.@"union"(root_class, new_class_idx);
