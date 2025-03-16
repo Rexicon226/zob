@@ -1,0 +1,57 @@
+.{
+    .{
+        .name = "comm-mul",
+        .from = "(mul ?x ?y)",
+        .to = "(mul ?y ?x)",
+    },
+    .{
+        .name = "comm-add",
+        .from = "(add ?x ?y)",
+        .to = "(add ?y ?x)",
+    },
+    .{
+        .name = "mul-to-shl",
+        .from = "(mul ?x @known_pow2(y))",
+        .to = "(shl ?x @log2(y))",
+    },
+    .{
+        .name = "zero-add",
+        .from = "(add ?x 0)",
+        .to = "?x",
+    },
+    .{
+        .name = "double",
+        .from = "(add ?x ?x)",
+        .to = "(mul ?x 2)",
+    },
+    .{
+        .name = "zero-mul",
+        .from = "(mul ?x 0)",
+        .to = "0",
+    },
+    .{
+        .name = "one-mul",
+        .from = "(mul ?x 1)",
+        .to = "?x",
+    },
+    .{
+        .name = "one-div",
+        .from = "(div_exact ?x 1)",
+        .to = "?x",
+    },
+    .{
+        .name = "associate-div-mul",
+        .from = "(div_exact (mul ?x ?y) ?z)",
+        .to = "(mul ?x (div_exact ?y ?z))",
+    },
+    .{
+        .name = "factor",
+        .from = "(add (mul ?x ?y) (mul ?x ?z))",
+        .to = "(mul ?x (add ?y ?z))",
+    },
+    .{
+        .name = "factor-one",
+        .from = "(add ?x (mul ?x ?y))",
+        .to = "(mul ?x (add 1 ?y))",
+    },
+}

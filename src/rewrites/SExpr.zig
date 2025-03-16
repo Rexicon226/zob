@@ -71,7 +71,6 @@ pub const Parser = struct {
     index: u32 = 0,
 
     pub fn parseInternal(comptime parser: *Parser) SExpr {
-        @setEvalBranchQuota(100_000);
         while (parser.index < parser.buffer.len) {
             const c = parser.eat();
             switch (c) {
@@ -246,61 +245,56 @@ pub fn isIdent(expr: *const SExpr) bool {
 }
 
 test "single-layer, multi-variable" {
-    comptime {
-        const expr = SExpr.parse("(mul ?x ?y)");
+    const expr = comptime SExpr.parse("(mul ?x ?y)");
 
-        try expect(expr.tag == .mul and expr.data == .list);
+    try expect(expr.tag == .mul and expr.data == .list);
 
-        const lhs = expr.data.list[0];
-        const rhs = expr.data.list[1];
+    const lhs = expr.data.list[0];
+    const rhs = expr.data.list[1];
 
-        try expect(lhs.tag == .constant and lhs.data == .atom);
-        try expect(rhs.tag == .constant and rhs.data == .atom);
+    try expect(lhs.tag == .constant and lhs.data == .atom);
+    try expect(rhs.tag == .constant and rhs.data == .atom);
 
-        try expect(std.mem.eql(u8, "?x", lhs.data.atom));
-        try expect(std.mem.eql(u8, "?y", rhs.data.atom));
-    }
+    try expect(std.mem.eql(u8, "?x", lhs.data.atom));
+    try expect(std.mem.eql(u8, "?y", rhs.data.atom));
 }
 
 test "single-layer, single variable single constant" {
-    comptime {
-        const expr = SExpr.parse("(mul 10 ?y)");
+    const expr = comptime SExpr.parse("(mul 10 ?y)");
 
-        try expect(expr.tag == .mul and expr.data == .list);
+    try expect(expr.tag == .mul and expr.data == .list);
 
-        const lhs = expr.data.list[0];
-        const rhs = expr.data.list[1];
+    const lhs = expr.data.list[0];
+    const rhs = expr.data.list[1];
 
-        try expect(lhs.tag == .constant and lhs.data == .atom);
-        try expect(rhs.tag == .constant and rhs.data == .atom);
+    try expect(lhs.tag == .constant and lhs.data == .atom);
+    try expect(rhs.tag == .constant and rhs.data == .atom);
 
-        try expect(std.mem.eql(u8, "10", lhs.data.atom));
-        try expect(std.mem.eql(u8, "?y", rhs.data.atom));
-    }
+    try expect(std.mem.eql(u8, "10", lhs.data.atom));
+    try expect(std.mem.eql(u8, "?y", rhs.data.atom));
 }
 
 test "multi-layer, multi-variable" {
-    comptime {
-        const expr = SExpr.parse("(div_exact ?z (mul ?x ?y))");
+    @setEvalBranchQuota(20_000);
+    const expr = comptime SExpr.parse("(div_exact ?z (mul ?x ?y))");
 
-        try expect(expr.tag == .div_exact and expr.data == .list);
+    try expect(expr.tag == .div_exact and expr.data == .list);
 
-        const lhs = expr.data.list[0];
-        const rhs = expr.data.list[1];
+    const lhs = expr.data.list[0];
+    const rhs = expr.data.list[1];
 
-        try expect(lhs.tag == .constant and lhs.data == .atom);
-        try expect(rhs.tag == .mul and rhs.data == .list);
+    try expect(lhs.tag == .constant and lhs.data == .atom);
+    try expect(rhs.tag == .mul and rhs.data == .list);
 
-        const mul_lhs = rhs.data.list[0];
-        const mul_rhs = rhs.data.list[1];
+    const mul_lhs = rhs.data.list[0];
+    const mul_rhs = rhs.data.list[1];
 
-        try expect(mul_lhs.tag == .constant and mul_lhs.data == .atom);
-        try expect(mul_rhs.tag == .constant and mul_rhs.data == .atom);
+    try expect(mul_lhs.tag == .constant and mul_lhs.data == .atom);
+    try expect(mul_rhs.tag == .constant and mul_rhs.data == .atom);
 
-        try expect(std.mem.eql(u8, "?z", lhs.data.atom));
-        try expect(std.mem.eql(u8, "?x", mul_lhs.data.atom));
-        try expect(std.mem.eql(u8, "?y", mul_rhs.data.atom));
-    }
+    try expect(std.mem.eql(u8, "?z", lhs.data.atom));
+    try expect(std.mem.eql(u8, "?x", mul_lhs.data.atom));
+    try expect(std.mem.eql(u8, "?y", mul_rhs.data.atom));
 }
 
 test "builtin function" {
