@@ -86,10 +86,7 @@ pub fn run(oir: *Oir) !bool {
     return false;
 }
 
-fn search(
-    oir: *Oir,
-    rewrite: Rewrite,
-) RewriteError![]RewriteResult {
+fn search(oir: *Oir, rewrite: Rewrite) RewriteError![]RewriteResult {
     const gpa = oir.allocator;
     var matches = std.ArrayList(RewriteResult).init(gpa);
     for (0..oir.nodes.items.len) |node_idx| {

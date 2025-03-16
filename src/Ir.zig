@@ -27,14 +27,19 @@ pub const Inst = struct {
 
         dead,
 
-        pub const max_args = 2;
+        pub const max_args = blk: {
+            var max = 0;
+            for (@typeInfo(Tag).@"enum".fields) |tag| {
+                max = @max(max, numNodeArgs(@field(Tag, tag.name)));
+            }
+            break :blk max;
+        };
 
         /// Returns the number of arguments that are other nodes.
         /// Does not include constants,
         pub fn numNodeArgs(tag: Tag) u32 {
             return switch (tag) {
                 .dead,
-                => unreachable,
                 .arg,
                 .block,
                 => 0,

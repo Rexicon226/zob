@@ -25,9 +25,6 @@ fn parseBlock(
 ) !Ir.Builder.Block {
     var lines = std.mem.splitScalar(u8, buffer, '\n');
 
-    var scratch = std.ArrayList(Inst.Operand).init(allocator);
-    defer scratch.deinit();
-
     var block: Ir.Builder.Block = .{
         .instructions = .{},
         .parent = builder,
@@ -35,7 +32,6 @@ fn parseBlock(
     errdefer block.deinit();
 
     while (lines.next()) |line| {
-        defer scratch.clearRetainingCapacity();
         if (line.len == 0) continue;
 
         // split on the '=' of "%1 = arg(1)"
@@ -112,6 +108,8 @@ fn parseBlock(
                     return error.NoRightParen;
                 const args_slice = expression[left_paren + 1 .. right_paren];
 
+                var scratch: std.BoundedArray(Inst.Operand, Inst.Tag.max_args) = .{};
+
                 var args = std.mem.splitScalar(u8, args_slice, ',');
                 while (args.next()) |arg_with_whitespace| {
                     var arg = arg_with_whitespace;
@@ -131,20 +129,20 @@ fn parseBlock(
                 switch (tag.numNodeArgs()) {
                     0 => switch (tag) {
                         .arg => {
-                            assert(scratch.items.len == 1);
-                            break :data .{ .arg = @intCast(scratch.items[0].value) };
+                            assert(scratch.len == 1);
+                            break :data .{ .arg = @intCast(scratch.buffer[0].value) };
                         },
                         else => std.debug.panic("TODO: {s}", .{@tagName(tag)}),
                     },
                     1 => {
-                        assert(scratch.items.len == 1);
-                        break :data .{ .un_op = scratch.items[0] };
+                        assert(scratch.len == 1);
+                        break :data .{ .un_op = scratch.buffer[0] };
                     },
                     2 => {
-                        assert(scratch.items.len == 2);
+                        assert(scratch.len == 2);
                         break :data .{ .bin_op = .{
-                            .lhs = scratch.items[0],
-                            .rhs = scratch.items[1],
+                            .lhs = scratch.buffer[0],
+                            .rhs = scratch.buffer[1],
                         } };
                     },
                     else => std.debug.panic("TODO: {s}", .{@tagName(tag)}),
