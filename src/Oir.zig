@@ -256,6 +256,9 @@ pub const Node = struct {
     const Data = union(enum) {
         none: void,
         constant: i64,
+        /// NOTE: For future reference, we use an array here so that the operands()
+        /// function can return a slice, otherwise padding between struct elements
+        /// would be undefined and it wouldn't be safe.
         bin_op: [2]Class.Index,
         un_op: Class.Index,
         project: Project,
@@ -791,7 +794,7 @@ fn verifyNodes(oir: *Oir) !void {
             if (gop.found_existing) {
                 const found_id = oir.union_find.find(id);
                 const found_old = oir.union_find.find(gop.value_ptr.*);
-                if (found_id != found_id) {
+                if (found_id != found_old) {
                     std.debug.panic(
                         "found unexpected equivalence for {}\n{any}\nvs\n{any}",
                         .{
