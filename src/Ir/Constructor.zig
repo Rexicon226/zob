@@ -86,9 +86,8 @@ fn select(e: *Extractor, inst: Inst.Index) !void {
 
     switch (tag) {
         .arg => {
-            const index = data.arg;
             const arg_idx = try oir.add(.project(
-                index + 1,
+                data.arg + 1,
                 e.start_class,
                 .data,
             ));
@@ -159,19 +158,16 @@ fn select(e: *Extractor, inst: Inst.Index) !void {
             const cond_br = data.cond_br;
             const pred = e.ir_to_class.get(cond_br.pred).?;
 
-            const then_case = cond_br.then;
-            const else_case = cond_br.@"else";
-
             const branch = try oir.add(.branch(e.ctrl_class.?, pred));
             const true_project = try oir.add(.project(0, branch, .ctrl));
             const false_project = try oir.add(.project(1, branch, .ctrl));
 
             e.ctrl_class = true_project;
-            try e.extractBody(then_case);
+            try e.extractBody(cond_br.then);
             const latest_true_ctrl = e.ctrl_class;
 
             e.ctrl_class = false_project;
-            try e.extractBody(else_case);
+            try e.extractBody(cond_br.@"else");
             const latest_false_ctrl = e.ctrl_class;
 
             if (latest_false_ctrl == null and

@@ -40,6 +40,6 @@ pub fn main() !void {
     defer recv.deinit(gpa);
 
     try stdout.writeAll("\nextracted OIR:\n");
-    try stdout.print("{}", .{recv});
+    try recv.print(stdout);
     try stdout.writeAll("end OIR\n");
 }

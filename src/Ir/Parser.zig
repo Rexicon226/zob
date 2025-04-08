@@ -1,3 +1,10 @@
+//! TODO: We should have seperate tokenization passes and parsing pass.
+//! Currently this is just trying ot parse a similar output to what
+//! --verbose-air creates in the Zig compiler, but I think I'd like to go
+//! in a bit of a different direction, and create a complete textual IR.
+//! Although of course we still want the main user interface to be through the
+//! builder API.
+
 const std = @import("std");
 const Ir = @import("../Ir.zig");
 const Inst = Ir.Inst;
@@ -12,7 +19,8 @@ pub fn parse(allocator: std.mem.Allocator, buffer: []const u8) !Ir {
     };
     defer builder.deinit();
 
-    var block = try parseBlock(allocator, &builder, buffer);
+    var next_index: u32 = 0;
+    var block = try parseBlock(allocator, &builder, buffer, &next_index);
     defer block.deinit();
 
     return builder.toIr(&block);
@@ -22,6 +30,7 @@ fn parseBlock(
     allocator: std.mem.Allocator,
     builder: *Ir.Builder,
     buffer: []const u8,
+    next_index: *u32,
 ) !Ir.Builder.Block {
     var lines = std.mem.splitScalar(u8, buffer, '\n');
 
@@ -70,6 +79,7 @@ fn parseBlock(
                         allocator,
                         builder,
                         case.items,
+                        next_index,
                     );
                 };
                 errdefer then_block.deinit();
@@ -87,6 +97,7 @@ fn parseBlock(
                         allocator,
                         builder,
                         case.items,
+                        next_index,
                     );
                 };
                 errdefer else_block.deinit();
@@ -152,6 +163,8 @@ fn parseBlock(
         errdefer data.deinit(allocator);
 
         _ = try block.addInst(.{ .tag = tag, .data = data });
+        if (try parseNodeNumber(result_node) != next_index.*) @panic("nodes must be declared in order");
+        next_index.* += 1;
     }
 
     return block;

@@ -35,7 +35,7 @@ pub const Recursive = struct {
 
     // TODO: Explore making this its own unique type. Currently we can't do that because
     // the Node data payload types use Class.Index to reference other Classes, which isn't
-    // compatible with this.
+    // compatible with this. Maybe we can bitcast safely between them?
     // pub const Index = enum(u32) {
     //     start,
     //     _,
@@ -62,13 +62,8 @@ pub const Recursive = struct {
         r.extra.deinit(allocator);
     }
 
-    pub fn format(
-        r: Recursive,
-        comptime _: []const u8,
-        _: std.fmt.FormatOptions,
-        writer: anytype,
-    ) !void {
-        try @import("print_oir.zig").print(r, writer);
+    pub fn print(recv: Recursive, writer: anytype) !void {
+        try @import("print_oir.zig").print(recv, writer);
     }
 };
 
@@ -140,6 +135,10 @@ fn extractClass(e: *Extractor, class_idx: Class.Index, recv: *Recursive) !Class.
         .ret,
         .branch,
         .cmp_gt,
+        .add,
+        .sub,
+        .shl,
+        .shr,
         => {
             const bin_op = best_node.data.bin_op;
 

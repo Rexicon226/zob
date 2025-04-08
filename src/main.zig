@@ -103,7 +103,9 @@ pub fn main() !void {
         try recv.dump("graphs/test.dot");
     }
 
-    std.debug.print("recv:\n{}", .{recv});
+    try stdout.writeAll("recv:\n");
+    try recv.print(stdout);
+    try stdout.writeAll("end recv\n");
 }
 
 pub const std_options: std.Options = .{
