@@ -14,7 +14,7 @@ unoptimized OIR:
 end OIR
 
 extracted OIR:
-%0 = start()
+%0 = start(%3)
 %1 = project(0 %0)
 %2 = project(1 %0)
 %3 = ret(%1, %2)

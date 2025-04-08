@@ -212,6 +212,11 @@ pub const Writer = struct {
         try stream.print("{s}(", .{@tagName(node.tag)});
         switch (node.tag) {
             .ret,
+            .@"and",
+            .sub,
+            .shl,
+            .shr,
+            .mul,
             .add,
             .cmp_gt,
             => try w.printBinOp(node, stream),

@@ -71,6 +71,8 @@ pub const Parser = struct {
     index: u32 = 0,
 
     pub fn parseInternal(comptime parser: *Parser) SExpr {
+        @setEvalBranchQuota(100_000);
+        @setEvalBranchQuota(parser.buffer.len * 1_000);
         while (parser.index < parser.buffer.len) {
             const c = parser.eat();
             switch (c) {

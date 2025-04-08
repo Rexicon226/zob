@@ -1,5 +1,4 @@
 oir: *const Oir,
-allocator: std.mem.Allocator,
 
 /// Describes cycles found in the OIR. EGraphs are allowed to have cycles,
 /// they are not DAGs. However, it's impossible to extract a "best node"
@@ -17,6 +16,9 @@ cycles: std.AutoHashMapUnmanaged(Node.Index, Class.Index),
 /// just barely usable.
 cost_memo: std.AutoHashMapUnmanaged(Class.Index, NodeCost),
 cost_strategy: CostStrategy,
+
+start_class: ?Class.Index,
+exit_list: std.ArrayListUnmanaged(Class.Index),
 
 best_node: std.AutoHashMapUnmanaged(Class.Index, Node.Index),
 map: std.AutoHashMapUnmanaged(Class.Index, Class.Index),
@@ -62,6 +64,18 @@ pub const Recursive = struct {
         r.extra.deinit(allocator);
     }
 
+    pub fn listToSpan(
+        r: *Recursive,
+        list: []const Class.Index,
+        gpa: std.mem.Allocator,
+    ) !Oir.Node.Span {
+        try r.extra.appendSlice(gpa, @ptrCast(list));
+        return .{
+            .start = @intCast(r.extra.items.len - list.len),
+            .end = @intCast(r.extra.items.len),
+        };
+    }
+
     pub fn print(recv: Recursive, writer: anytype) !void {
         try @import("print_oir.zig").print(recv, writer);
     }
@@ -77,12 +91,13 @@ pub const CostStrategy = enum {
 pub fn extract(oir: *const Oir, cost_strategy: CostStrategy) !Recursive {
     var e: Extractor = .{
         .oir = oir,
-        .allocator = oir.allocator,
         .cost_strategy = cost_strategy,
         .cycles = try oir.findCycles(),
         .cost_memo = .empty,
         .best_node = .{},
         .map = .{},
+        .exit_list = .{},
+        .start_class = null,
     };
     defer e.deinit();
 
@@ -92,7 +107,7 @@ pub fn extract(oir: *const Oir, cost_strategy: CostStrategy) !Recursive {
         var iter = oir.classes.valueIterator();
         while (iter.next()) |class| {
             const best_node = try e.getBestNode(class.index);
-            try e.best_node.put(e.allocator, class.index, best_node);
+            try e.best_node.put(oir.allocator, class.index, best_node);
         }
     }
 
@@ -103,12 +118,21 @@ pub fn extract(oir: *const Oir, cost_strategy: CostStrategy) !Recursive {
         _ = try e.extractClass(@enumFromInt(exit), &recv);
     }
 
+    if (e.start_class) |idx| {
+        recv.nodes.items[@intFromEnum(idx)].data = .{
+            .list = try recv.listToSpan(
+                e.exit_list.items,
+                oir.allocator,
+            ),
+        };
+    }
+
     return recv;
 }
 
 fn extractClass(e: *Extractor, class_idx: Class.Index, recv: *Recursive) !Class.Index {
     const oir = e.oir;
-    const gpa = e.allocator;
+    const gpa = oir.allocator;
 
     if (e.map.get(class_idx)) |memo| return memo;
 
@@ -119,6 +143,8 @@ fn extractClass(e: *Extractor, class_idx: Class.Index, recv: *Recursive) !Class.
         .start => {
             const new_node: Node = .{ .tag = .start, .data = .{ .list = .empty } };
             const idx = try recv.addNode(gpa, new_node);
+            if (e.start_class != null) @panic("found two start nodes?");
+            e.start_class = idx;
             try e.map.put(gpa, class_idx, idx);
             return idx;
         },
@@ -148,6 +174,10 @@ fn extractClass(e: *Extractor, class_idx: Class.Index, recv: *Recursive) !Class.
             const new_node: Node = .binOp(best_node.tag, lhs, rhs);
             const new_node_idx = try recv.addNode(gpa, new_node);
             try e.map.put(gpa, class_idx, new_node_idx);
+            switch (best_node.tag) {
+                .ret => try e.exit_list.append(gpa, new_node_idx),
+                else => {},
+            }
             return new_node_idx;
         },
         .constant => {
@@ -222,6 +252,7 @@ pub fn deinit(e: *Extractor) void {
     e.cycles.deinit(allocator);
     e.best_node.deinit(allocator);
     e.map.deinit(allocator);
+    e.exit_list.deinit(allocator);
 }
 
 const std = @import("std");

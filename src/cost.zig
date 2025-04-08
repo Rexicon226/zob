@@ -10,8 +10,7 @@ pub fn getCost(tag: Oir.Node.Tag) u32 {
         .div_exact,
         => 2,
 
-        // On most CPUs, shl will have an identical latency and throughput as add.
-        // We still want to bias it, since it's clearer and has access to more ports.
+        .@"and",
         .shl,
         .shr,
         => 1,

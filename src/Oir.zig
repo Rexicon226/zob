@@ -47,10 +47,6 @@ const UnionFind = struct {
         return id;
     }
 
-    fn parent(f: *const UnionFind, idx: Class.Index) Class.Index {
-        return f.parents.items[@intFromEnum(idx)];
-    }
-
     fn find(f: *const UnionFind, idx: Class.Index) Class.Index {
         var current = idx;
         while (current != f.parent(current)) {
@@ -73,6 +69,10 @@ const UnionFind = struct {
     fn @"union"(f: *UnionFind, a: Class.Index, b: Class.Index) Class.Index {
         f.parents.items[@intFromEnum(b)] = a;
         return a;
+    }
+
+    fn parent(f: *const UnionFind, idx: Class.Index) Class.Index {
+        return f.parents.items[@intFromEnum(idx)];
     }
 
     fn clone(f: *UnionFind, allocator: std.mem.Allocator) !UnionFind {
@@ -152,6 +152,7 @@ pub const Node = struct {
 
         // Integer arthimatics.
         add,
+        @"and",
         sub,
         mul,
         shl,
@@ -202,6 +203,7 @@ pub const Node = struct {
                 .project,
                 => .project,
                 .cmp_gt,
+                .@"and",
                 .add,
                 .sub,
                 .mul,
@@ -228,6 +230,7 @@ pub const Node = struct {
                 .load,
                 .store,
                 .cmp_gt,
+                .@"and",
                 .add,
                 .sub,
                 .mul,
@@ -266,7 +269,7 @@ pub const Node = struct {
     };
 
     /// A span in the Oir "extra" array.
-    const Span = struct {
+    pub const Span = struct {
         start: u32,
         end: u32,
 
@@ -503,7 +506,7 @@ pub fn clone(oir: *Oir) !Oir {
             }
             break :classes cloned;
         },
-        .node_to_class = try oir.node_to_class.cloneContext(gpa, @as(NodeContext, .{ .oir = oir })),
+        .node_to_class = try oir.node_to_class.cloneContext(gpa, NodeContext{ .oir = oir }),
         .clean = oir.clean,
         .pending = try oir.pending.clone(gpa),
         .union_find = try oir.union_find.clone(gpa),
@@ -538,8 +541,8 @@ fn getNodePtr(oir: *const Oir, idx: Node.Index) *Node {
     return &oir.nodes.items[@intFromEnum(idx)];
 }
 
-/// Returns the type of the class. If the class contains a ctrl node, all other
-/// nodes must also be control.
+/// Returns the type of the class.
+/// If the class contains a ctrl node, all other nodes must also be control.
 pub fn getClassType(oir: *const Oir, idx: Class.Index) Node.Tag.Type {
     const class = oir.classes.get(idx).?;
     const first = class.bag.items[0];
