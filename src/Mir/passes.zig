@@ -18,9 +18,6 @@ const LivenessPass = struct {
     /// A map that relates virtual registers to their variable info struct.
     virtinfo: std.AutoHashMapUnmanaged(VirtualRegister.Index, ValueInfo),
 
-    /// The ValueInfo struct describes a couple of different properties about a
-    /// Value. The most important one is that it describes what the instruction
-    /// inside of the current MIR is last to use this Value.
     const ValueInfo = struct {
         last_usage: Mir.Instruction.Index,
     };

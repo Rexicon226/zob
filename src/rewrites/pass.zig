@@ -31,23 +31,62 @@ const RewriteResult = struct {
     }
 };
 
-const rewrites: []const Rewrite = blk: {
-    const table: []const struct {
-        name: []const u8,
-        from: []const u8,
-        to: []const u8,
-    } = @import("table.zon");
-    @setEvalBranchQuota(table.len * 20_000);
-    var list: [table.len]Rewrite = undefined;
-    for (&list, table) |*entry, op| {
-        entry.* = Rewrite{
-            .name = op.name,
-            .from = SExpr.parse(op.from),
-            .to = SExpr.parse(op.to),
-        };
-    }
-    const copy = list;
-    break :blk &copy;
+const rewrites: []const Rewrite = &.{
+    .{
+        .name = "comm-mul",
+        .from = SExpr.parse("(mul ?x ?y)"),
+        .to = SExpr.parse("(mul ?y ?x)"),
+    },
+    .{
+        .name = "comm-add",
+        .from = SExpr.parse("(add ?x ?y)"),
+        .to = SExpr.parse("(add ?y ?x)"),
+    },
+    .{
+        .name = "mul-to-shl",
+        .from = SExpr.parse("(mul ?x @known_pow2(y))"),
+        .to = SExpr.parse("(shl ?x @log2(y))"),
+    },
+    .{
+        .name = "zero-add",
+        .from = SExpr.parse("(add ?x 0)"),
+        .to = SExpr.parse("?x"),
+    },
+    .{
+        .name = "double",
+        .from = SExpr.parse("(add ?x ?x)"),
+        .to = SExpr.parse("(mul ?x 2)"),
+    },
+    .{
+        .name = "zero-mul",
+        .from = SExpr.parse("(mul ?x 0)"),
+        .to = SExpr.parse("0"),
+    },
+    .{
+        .name = "one-mul",
+        .from = SExpr.parse("(mul ?x 1)"),
+        .to = SExpr.parse("?x"),
+    },
+    .{
+        .name = "one-div",
+        .from = SExpr.parse("(div_exact ?x 1)"),
+        .to = SExpr.parse("?x"),
+    },
+    .{
+        .name = "associate-div-mul",
+        .from = SExpr.parse("(div_exact (mul ?x ?y) ?z)"),
+        .to = SExpr.parse("(mul ?x (div_exact ?y ?z))"),
+    },
+    .{
+        .name = "factor",
+        .from = SExpr.parse("(add (mul ?x ?y) (mul ?x ?z))"),
+        .to = SExpr.parse("(mul ?x (add ?y ?z))"),
+    },
+    .{
+        .name = "factor-one",
+        .from = SExpr.parse("(add ?x (mul ?x ?y))"),
+        .to = SExpr.parse("(mul ?x (add 1 ?y))"),
+    },
 };
 
 pub fn run(oir: *Oir) !bool {
@@ -72,12 +111,7 @@ pub fn run(oir: *Oir) !bool {
             "applying {} -> {} to {}",
             .{ item.rw.from, item.rw.to, item.root },
         );
-        if (try applyRewrite(
-            oir,
-            item.root,
-            item.rw.to,
-            &item.bindings,
-        )) {
+        if (try applyRewrite(oir, item.root, item.rw.to, &item.bindings)) {
             log.debug("change happened!", .{});
             return true;
         }

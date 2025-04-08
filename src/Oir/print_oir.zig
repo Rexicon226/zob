@@ -16,7 +16,7 @@ pub fn dumpOirGraph(
         \\  node [shape=box, style=filled];
         \\  rankdir=BT;
         \\  ordering="in";
-        \\  concentrate="true";
+        \\  concentrate=true;
         \\
         \\
     );
@@ -217,6 +217,8 @@ pub const Writer = struct {
             .shl,
             .shr,
             .mul,
+            .div_exact,
+            .div_trunc,
             .add,
             .cmp_gt,
             => try w.printBinOp(node, stream),

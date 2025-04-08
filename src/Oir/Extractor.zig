@@ -161,10 +161,6 @@ fn extractClass(e: *Extractor, class_idx: Class.Index, recv: *Recursive) !Class.
         .ret,
         .branch,
         .cmp_gt,
-        .add,
-        .sub,
-        .shl,
-        .shr,
         => {
             const bin_op = best_node.data.bin_op;
 
@@ -185,6 +181,7 @@ fn extractClass(e: *Extractor, class_idx: Class.Index, recv: *Recursive) !Class.
             try e.map.put(gpa, class_idx, idx);
             return idx;
         },
+        .dead => unreachable,
         else => std.debug.panic("TODO: extractClass {s}\n", .{@tagName(best_node.tag)}),
     }
 }

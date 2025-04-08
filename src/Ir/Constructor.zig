@@ -127,6 +127,7 @@ fn select(e: *Extractor, inst: Inst.Index) !void {
         .add,
         .sub,
         .div_exact,
+        .div_trunc,
         .mul,
         .cmp_gt,
         => {
@@ -135,6 +136,7 @@ fn select(e: *Extractor, inst: Inst.Index) !void {
                     .add => .add,
                     .sub => .sub,
                     .div_exact => .div_exact,
+                    .div_trunc => .div_trunc,
                     .mul => .mul,
                     .cmp_gt => .cmp_gt,
                     else => unreachable,
