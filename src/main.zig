@@ -1,6 +1,7 @@
 const std = @import("std");
 const Ir = @import("Ir.zig");
 const Mir = @import("Mir.zig");
+const Trace = @import("Trace.zig");
 const Oir = @import("Oir.zig");
 const build_options = @import("build_options");
 
@@ -14,6 +15,7 @@ pub fn main() !void {
     var output_graph: bool = false;
     var input_path: ?[]const u8 = null;
     var use_builder: bool = false;
+    var enable_tracing: bool = false;
 
     var iter = try std.process.argsWithAllocator(allocator);
     _ = iter.skip();
@@ -27,6 +29,8 @@ pub fn main() !void {
             output_graph = true;
         } else if (std.mem.eql(u8, arg, "--builder")) {
             use_builder = true;
+        } else if (std.mem.eql(u8, arg, "--trace")) {
+            enable_tracing = true;
         } else {
             if (input_path != null) @panic("two input files");
             input_path = arg;
@@ -82,20 +86,25 @@ pub fn main() !void {
     try ir.dump(stdout);
     try stdout.writeAll("end IR\n");
 
+    var trace: Trace = .init();
+    defer trace.deinit();
+
     // create the Oir from the IR.
-    var oir = try Ir.Constructor.extract(ir, allocator);
+    var oir = try Ir.Constructor.extract(ir, allocator, &trace);
     defer oir.deinit();
 
     try stdout.writeAll("unoptimized OIR:\n");
     try oir.print(stdout);
     try stdout.writeAll("end OIR\n");
 
+    if (enable_tracing) try trace.enable("trace.json");
+
     // run optimization passes on the OIR
     try oir.optimize(.saturate, output_graph);
+
     if (output_graph) {
         try oir.dump("graphs/oir.dot");
     }
-
     var recv = try Oir.Extractor.extract(&oir, .simple_latency);
     defer recv.deinit(allocator);
 

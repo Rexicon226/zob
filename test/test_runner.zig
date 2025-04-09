@@ -2,6 +2,7 @@ const std = @import("std");
 const zob = @import("zob");
 const TestInput = @import("cases.zig").TestInput;
 
+const Trace = zob.Trace;
 const Ir = zob.Ir;
 const Oir = zob.Oir;
 
@@ -25,7 +26,10 @@ pub fn main() !void {
     var ir = try Ir.Parser.parse(gpa, contents);
     defer ir.deinit(gpa);
 
-    var oir = try Ir.Constructor.extract(ir, gpa);
+    var trace: Trace = .init();
+    defer trace.deinit();
+
+    var oir = try Ir.Constructor.extract(ir, gpa, &trace);
     defer oir.deinit();
 
     const stdout = std.io.getStdOut().writer();

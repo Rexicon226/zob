@@ -4,6 +4,7 @@ const Extractor = @This();
 const std = @import("std");
 const Oir = @import("../Oir.zig");
 const Ir = @import("../Ir.zig");
+const Trace = @import("../Trace.zig");
 const Inst = Ir.Inst;
 
 oir: *Oir,
@@ -22,7 +23,11 @@ const BlockInfo = struct {
     branch: Class.Index,
 };
 
-pub fn extract(ir: Ir, allocator: std.mem.Allocator) !Oir {
+pub fn extract(
+    ir: Ir,
+    allocator: std.mem.Allocator,
+    trace: *Trace,
+) !Oir {
     var oir: Oir = .{
         .allocator = allocator,
         .nodes = .{},
@@ -31,6 +36,7 @@ pub fn extract(ir: Ir, allocator: std.mem.Allocator) !Oir {
         .union_find = .{},
         .pending = .{},
         .extra = .{},
+        .trace = trace,
         .clean = true,
     };
 

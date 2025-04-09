@@ -61,12 +61,19 @@ pub fn run(oir: *Oir) !bool {
         matches.deinit();
     }
 
-    for (rewrites) |rewrite| {
-        const from_matches = try search(oir, rewrite);
-        defer gpa.free(from_matches);
-        try matches.appendSlice(from_matches);
+    {
+        const trace = oir.trace.start(@src(), "searching for matches", .{});
+        defer trace.end();
+
+        for (rewrites) |rewrite| {
+            const from_matches = try search(oir, rewrite);
+            defer gpa.free(from_matches);
+            try matches.appendSlice(from_matches);
+        }
     }
 
+    const trace = oir.trace.start(@src(), "applying matches", .{});
+    defer trace.end();
     for (matches.items) |*item| {
         log.debug(
             "applying {} -> {} to {}",
@@ -230,7 +237,7 @@ fn applyRewrite(
                 const new_class_idx = try oir.add(new_node);
                 break :changed try oir.@"union"(root_class, new_class_idx);
             },
-            else => std.debug.panic("TODO: {s}", .{@tagName(to.data)}),
+            .builtin => unreachable,
         }
     };
 

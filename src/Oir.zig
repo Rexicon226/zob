@@ -37,6 +37,7 @@ pending: std.ArrayListUnmanaged(Pair),
 ///
 /// Mutating operations set this to `false`, and `rebuild` will set it back to `true`.
 clean: bool,
+trace: *Trace,
 
 const UnionFind = struct {
     parents: std.ArrayListUnmanaged(Class.Index) = .{},
@@ -464,6 +465,9 @@ pub fn optimize(
                         try oir.dump(name);
                     }
 
+                    const trace = oir.trace.start(@src(), "{s}", .{pass.name});
+                    defer trace.end();
+
                     if (try pass.func(oir)) new_change = true;
                     // TODO: in theory we don't actually need to rebuild after every pass
                     // maybe we should look into rebuilding on-demand?
@@ -496,6 +500,7 @@ pub fn clone(oir: *Oir) !Oir {
     const gpa = oir.allocator;
     return .{
         .allocator = gpa,
+        .trace = oir.trace,
         .nodes = try oir.nodes.clone(gpa),
         .extra = try oir.extra.clone(gpa),
         .classes = classes: {
@@ -668,6 +673,8 @@ pub fn modifyNode(
 /// We can hash based on the class indices themselves, as they don't change during the
 /// rebuild.
 pub fn rebuild(oir: *Oir) !void {
+    const trace = oir.trace.start(@src(), "rebuilding", .{});
+    defer trace.end();
     log.debug("rebuilding", .{});
 
     while (oir.pending.pop()) |pair| {
@@ -870,6 +877,7 @@ const IR = @import("Ir.zig");
 const print_oir = @import("Oir/print_oir.zig");
 const SExpr = @import("rewrites/SExpr.zig");
 pub const Extractor = @import("Oir/Extractor.zig");
+const Trace = @import("Trace.zig");
 
 const log = std.log.scoped(.oir);
 const assert = std.debug.assert;
