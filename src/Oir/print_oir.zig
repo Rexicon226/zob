@@ -16,7 +16,8 @@ pub fn dumpOirGraph(
         \\  node [shape=box, style=filled];
         \\  rankdir=BT;
         \\  ordering="in";
-        \\  concentrate=true;
+        // https://gitlab.com/graphviz/graphviz/-/issues/1949
+        // \\  concentrate=true;
         \\
         \\
     );
