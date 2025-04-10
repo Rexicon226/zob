@@ -12,10 +12,12 @@ const assert = std.debug.assert;
 /// "comptime-known" result is added to that node's class.
 pub fn run(oir: *Oir) !bool {
     // A buffer of constant nodes found in operand classes.
+    // Not a BoundedArray, since there are certain nodes that can have a variable
+    // amount of operands.
     var constants: std.ArrayListUnmanaged(Node.Index) = .{};
     defer constants.deinit(oir.allocator);
 
-    for (oir.nodes.items, 0..) |node, i| {
+    outer: for (oir.nodes.items, 0..) |node, i| {
         const node_idx: Node.Index = @enumFromInt(i);
         const class_idx = oir.findClass(node_idx);
 
@@ -27,16 +29,11 @@ pub fn run(oir: *Oir) !bool {
         assert(node.tag != .constant);
         defer constants.clearRetainingCapacity();
 
-        var all_known: bool = true;
         for (node.operands(oir)) |child_idx| {
             if (oir.classContains(child_idx, .constant)) |constant| {
                 try constants.append(oir.allocator, constant);
-            } else {
-                all_known = false;
-            }
+            } else continue :outer;
         }
-        // We cannot evaluate all children of this node, move on to the next node.
-        if (!all_known) continue;
 
         switch (node.tag) {
             .add,
