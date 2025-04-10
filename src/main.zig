@@ -37,11 +37,6 @@ pub fn main() !void {
         }
     }
 
-    if (build_options.include_zig) {
-        if (input_path == null) @panic("expected input path");
-        return @import("driver.zig").run(input_path.?);
-    }
-
     var ir = if (!use_builder) ir: {
         if (input_path == null) @panic("expected input path");
         const input = try std.fs.cwd().readFileAlloc(allocator, input_path.?, 1 * 1024 * 1024);
