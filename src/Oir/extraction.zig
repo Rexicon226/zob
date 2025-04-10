@@ -1,8 +1,8 @@
 const std = @import("std");
-const z3 = @import("z3");
+const build_options = @import("build_options");
+const z3 = if (build_options.has_z3) @import("z3") else {};
 const Oir = @import("../Oir.zig");
 const cost = @import("../cost.zig");
-const build_options = @import("build_options");
 const SimpleExtractor = @import("SimpleExtractor.zig");
 
 const log = std.log.scoped(.extraction);
@@ -93,7 +93,7 @@ pub fn extract(oir: *const Oir, strat: CostStrategy) !Recursive {
     switch (strat) {
         .simple_latency => return SimpleExtractor.extract(oir),
         .z3 => {
-            std.debug.assert(build_options.has_z3);
+            if (!build_options.has_z3) @panic("need z3 enabled to use z3 extractor");
 
             var arena: std.heap.ArenaAllocator = .init(oir.allocator);
             defer arena.deinit();
@@ -164,8 +164,8 @@ pub fn extract(oir: *const Oir, strat: CostStrategy) !Recursive {
                 z3.Z3_optimize_assert(ctx, opt, equiv);
 
                 for (oir.getClass(id).bag.items, class.nodes) |node, node_active| {
+                    // If there's a cycle through this node, it can never be chosen, so we just de-active it.
                     if (cycles.contains(node)) {
-                        if (true) @panic("confirm");
                         z3.Z3_optimize_assert(ctx, opt, z3.Z3_mk_not(ctx, node_active));
                     }
 
