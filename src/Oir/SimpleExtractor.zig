@@ -1,3 +1,19 @@
+//! Super basic Oir extractor implementation.
+
+const std = @import("std");
+const Oir = @import("../Oir.zig");
+const cost = @import("../cost.zig");
+const extraction = @import("extraction.zig");
+
+const Class = Oir.Class;
+const Node = Oir.Node;
+const SimpleExtractor = @This();
+const CostStrategy = extraction.CostStrategy;
+const Recursive = extraction.Recursive;
+
+const log = std.log.scoped(.simple_extractor);
+const assert = std.debug.assert;
+
 oir: *const Oir,
 
 /// Describes cycles found in the OIR. EGraphs are allowed to have cycles,
@@ -15,7 +31,6 @@ cycles: std.AutoHashMapUnmanaged(Node.Index, Class.Index),
 /// reuse the extraction. This amortization makes our extraction strategy
 /// just barely usable.
 cost_memo: std.AutoHashMapUnmanaged(Class.Index, NodeCost),
-cost_strategy: CostStrategy,
 
 start_class: ?Class.Index,
 exit_list: std.ArrayListUnmanaged(Class.Index),
@@ -23,75 +38,15 @@ exit_list: std.ArrayListUnmanaged(Class.Index),
 best_node: std.AutoHashMapUnmanaged(Class.Index, Node.Index),
 map: std.AutoHashMapUnmanaged(Class.Index, Class.Index),
 
-const UserList = std.AutoHashMapUnmanaged(Class.Index, std.ArrayListUnmanaged(Node.Index));
-
 const NodeCost = struct {
     u32,
     Node.Index,
 };
 
-/// A form of OIR where nodes reference other nodes.
-pub const Recursive = struct {
-    nodes: std.ArrayListUnmanaged(Node) = .{},
-    extra: std.ArrayListUnmanaged(u32) = .{},
-
-    // TODO: Explore making this its own unique type. Currently we can't do that because
-    // the Node data payload types use Class.Index to reference other Classes, which isn't
-    // compatible with this. Maybe we can bitcast safely between them?
-    // pub const Index = enum(u32) {
-    //     start,
-    //     _,
-    // };
-
-    pub fn getNode(r: *const Recursive, idx: Class.Index) Node {
-        return r.nodes.items[@intFromEnum(idx)];
-    }
-
-    fn addNode(r: *Recursive, allocator: std.mem.Allocator, node: Node) !Class.Index {
-        const idx: Class.Index = @enumFromInt(r.nodes.items.len);
-        try r.nodes.append(allocator, node);
-        return idx;
-    }
-
-    pub fn dump(recv: Recursive, name: []const u8) !void {
-        const graphviz_file = try std.fs.cwd().createFile(name, .{});
-        defer graphviz_file.close();
-        try @import("print_oir.zig").dumpRecvGraph(recv, graphviz_file.writer());
-    }
-
-    pub fn deinit(r: *Recursive, allocator: std.mem.Allocator) void {
-        r.nodes.deinit(allocator);
-        r.extra.deinit(allocator);
-    }
-
-    pub fn listToSpan(
-        r: *Recursive,
-        list: []const Class.Index,
-        gpa: std.mem.Allocator,
-    ) !Oir.Node.Span {
-        try r.extra.appendSlice(gpa, @ptrCast(list));
-        return .{
-            .start = @intCast(r.extra.items.len - list.len),
-            .end = @intCast(r.extra.items.len),
-        };
-    }
-
-    pub fn print(recv: Recursive, writer: anytype) !void {
-        try @import("print_oir.zig").print(recv, writer);
-    }
-};
-
-pub const CostStrategy = enum {
-    /// A super basic cost strategy that simply looks at the number of child nodes
-    /// a particular node has to determine its cost.
-    simple_latency,
-};
-
 /// Extracts the best pattern of Oir from the E-Graph given a cost model.
-pub fn extract(oir: *const Oir, cost_strategy: CostStrategy) !Recursive {
-    var e: Extractor = .{
+pub fn extract(oir: *const Oir) !Recursive {
+    var e: SimpleExtractor = .{
         .oir = oir,
-        .cost_strategy = cost_strategy,
         .cycles = try oir.findCycles(),
         .cost_memo = .empty,
         .best_node = .{},
@@ -130,7 +85,7 @@ pub fn extract(oir: *const Oir, cost_strategy: CostStrategy) !Recursive {
     return recv;
 }
 
-fn extractClass(e: *Extractor, class_idx: Class.Index, recv: *Recursive) !Class.Index {
+fn extractClass(e: *SimpleExtractor, class_idx: Class.Index, recv: *Recursive) !Class.Index {
     const oir = e.oir;
     const gpa = oir.allocator;
 
@@ -190,7 +145,7 @@ fn extractClass(e: *Extractor, class_idx: Class.Index, recv: *Recursive) !Class.
     }
 }
 
-fn getBestNode(e: *Extractor, class_idx: Class.Index) !Node.Index {
+fn getBestNode(e: *SimpleExtractor, class_idx: Class.Index) !Node.Index {
     _, const best_node = try e.extractBestNode(class_idx);
 
     log.debug("best node for class {} is {s}", .{
@@ -202,52 +157,48 @@ fn getBestNode(e: *Extractor, class_idx: Class.Index) !Node.Index {
 }
 
 /// Given a class, extract the "best" node from it.
-fn extractBestNode(e: *Extractor, class_idx: Class.Index) !NodeCost {
+fn extractBestNode(e: *SimpleExtractor, class_idx: Class.Index) !NodeCost {
     const oir = e.oir;
     const class = oir.classes.get(class_idx).?;
     assert(class.bag.items.len > 0);
 
     if (e.cost_memo.get(class_idx)) |entry| return entry;
 
-    switch (e.cost_strategy) {
-        .simple_latency => {
-            var best_cost: u32 = std.math.maxInt(u32);
-            var best_node: Node.Index = class.bag.items[0];
+    var best_cost: u32 = std.math.maxInt(u32);
+    var best_node: Node.Index = class.bag.items[0];
 
-            for (class.bag.items) |node_idx| {
-                // the node is known to cycle, we must skip it.
-                if (e.cycles.get(node_idx) != null) continue;
+    for (class.bag.items) |node_idx| {
+        // the node is known to cycle, we must skip it.
+        if (e.cycles.get(node_idx) != null) continue;
 
-                const node = oir.getNode(node_idx);
+        const node = oir.getNode(node_idx);
 
-                const base_cost = cost.getCost(node.tag);
-                var child_cost: u32 = 0;
-                for (node.operands(oir)) |sub_class_idx| {
-                    assert(sub_class_idx != class_idx); // checked for cycles above
+        const base_cost = cost.getCost(node.tag);
+        var child_cost: u32 = 0;
+        for (node.operands(oir)) |sub_class_idx| {
+            assert(sub_class_idx != class_idx); // checked for cycles above
 
-                    const extracted_cost, _ = try e.extractBestNode(sub_class_idx);
-                    child_cost += extracted_cost;
-                }
+            const extracted_cost, _ = try e.extractBestNode(sub_class_idx);
+            child_cost += extracted_cost;
+        }
 
-                const node_cost = base_cost + child_cost;
+        const node_cost = base_cost + child_cost;
 
-                if (node_cost < best_cost) {
-                    best_cost = node_cost;
-                    best_node = node_idx;
-                }
-            }
-            if (best_cost == std.math.maxInt(u32)) {
-                std.debug.panic("extracted cyclic terms, no best node could be found! {}", .{class_idx});
-            }
-
-            const entry: NodeCost = .{ best_cost, best_node };
-            try e.cost_memo.putNoClobber(oir.allocator, class_idx, entry);
-            return entry;
-        },
+        if (node_cost < best_cost) {
+            best_cost = node_cost;
+            best_node = node_idx;
+        }
     }
+    if (best_cost == std.math.maxInt(u32)) {
+        std.debug.panic("extracted cyclic terms, no best node could be found! {}", .{class_idx});
+    }
+
+    const entry: NodeCost = .{ best_cost, best_node };
+    try e.cost_memo.putNoClobber(oir.allocator, class_idx, entry);
+    return entry;
 }
 
-pub fn deinit(e: *Extractor) void {
+pub fn deinit(e: *SimpleExtractor) void {
     const allocator = e.oir.allocator;
     e.cost_memo.deinit(allocator);
     e.cycles.deinit(allocator);
@@ -255,14 +206,3 @@ pub fn deinit(e: *Extractor) void {
     e.map.deinit(allocator);
     e.exit_list.deinit(allocator);
 }
-
-const std = @import("std");
-const Oir = @import("../Oir.zig");
-const cost = @import("../cost.zig");
-
-const Class = Oir.Class;
-const Node = Oir.Node;
-const Extractor = @This();
-
-const log = std.log.scoped(.extractor);
-const assert = std.debug.assert;

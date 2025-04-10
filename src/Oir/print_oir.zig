@@ -2,7 +2,7 @@
 
 const std = @import("std");
 const Oir = @import("../Oir.zig");
-const Extractor = @import("Extractor.zig");
+const Recursive = @import("extraction.zig").Recursive;
 
 pub fn dumpOirGraph(
     oir: *const Oir,
@@ -37,6 +37,7 @@ pub fn dumpOirGraph(
                 const node = oir.getNode(node_idx);
                 try stream.print("    {}.{} [label=\"", .{ class_idx, i });
                 try printNodeLabel(stream, node);
+                try stream.print(" {}", .{@intFromEnum(node_idx)});
                 const color = switch (node.tag.nodeType()) {
                     .ctrl => "orange",
                     .data => "grey",
@@ -126,7 +127,7 @@ fn printEdge(
 }
 
 pub fn dumpRecvGraph(
-    recv: Extractor.Recursive,
+    recv: Recursive,
     stream: anytype,
 ) !void {
     try stream.writeAll(

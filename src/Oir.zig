@@ -48,7 +48,7 @@ const UnionFind = struct {
         return id;
     }
 
-    fn find(f: *const UnionFind, idx: Class.Index) Class.Index {
+    pub fn find(f: *const UnionFind, idx: Class.Index) Class.Index {
         var current = idx;
         while (current != f.parent(current)) {
             current = f.parent(current);
@@ -827,6 +827,10 @@ fn verifyNodes(oir: *Oir) !void {
     }
 }
 
+pub fn extract(oir: *const Oir, strat: extraction.CostStrategy) !extraction.Recursive {
+    return extraction.extract(oir, strat);
+}
+
 pub fn deinit(oir: *Oir) void {
     const allocator = oir.allocator;
 
@@ -876,7 +880,7 @@ const std = @import("std");
 const IR = @import("Ir.zig");
 const print_oir = @import("Oir/print_oir.zig");
 const SExpr = @import("rewrites/SExpr.zig");
-pub const Extractor = @import("Oir/Extractor.zig");
+pub const extraction = @import("Oir/extraction.zig");
 const Trace = @import("Trace.zig");
 
 const log = std.log.scoped(.oir);

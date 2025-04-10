@@ -3,7 +3,6 @@ const Ir = @import("Ir.zig");
 const Mir = @import("Mir.zig");
 const Trace = @import("Trace.zig");
 const Oir = @import("Oir.zig");
-const build_options = @import("build_options");
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{ .stack_trace_frames = 100 }){};
@@ -97,15 +96,12 @@ pub fn main() !void {
     // run optimization passes on the OIR
     try oir.optimize(.saturate, output_graph);
 
-    if (output_graph) {
-        try oir.dump("graphs/oir.dot");
-    }
-    var recv = try Oir.Extractor.extract(&oir, .simple_latency);
+    if (output_graph) try oir.dump("graphs/oir.dot");
+
+    var recv = try oir.extract(.auto);
     defer recv.deinit(allocator);
 
-    if (output_graph) {
-        try recv.dump("graphs/test.dot");
-    }
+    if (output_graph) try recv.dump("graphs/test.dot");
 
     try stdout.writeAll("recv:\n");
     try recv.print(stdout);

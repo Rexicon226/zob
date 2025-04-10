@@ -40,7 +40,7 @@ pub fn main() !void {
 
     try oir.optimize(.saturate, false);
 
-    var recv = try Oir.Extractor.extract(&oir, .simple_latency);
+    var recv = try Oir.extraction.extract(&oir, .simple_latency);
     defer recv.deinit(gpa);
 
     try stdout.writeAll("\nextracted OIR:\n");
