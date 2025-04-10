@@ -229,9 +229,10 @@ pub fn extract(oir: *const Oir, strat: CostStrategy) !Recursive {
                 const string = z3.Z3_model_to_string(ctx, model);
                 log.debug("found solution model:\n{s}\n", .{string});
 
-                var repr: Recursive = .{
-                    .extra = try oir.extra.clone(oir.allocator),
-                };
+                var recv: Recursive = .{};
+
+                var new_exit_list: std.ArrayListUnmanaged(Class.Index) = .{};
+                defer new_exit_list.deinit(gpa);
 
                 var queue: std.ArrayListUnmanaged(Class.Index) = .{};
                 defer queue.deinit(gpa);
@@ -239,6 +240,8 @@ pub fn extract(oir: *const Oir, strat: CostStrategy) !Recursive {
                 for (exit_list) |exit| {
                     try queue.append(gpa, oir.union_find.find(@enumFromInt(exit)));
                 }
+
+                var start_class: ?Class.Index = null;
 
                 var map: std.AutoHashMapUnmanaged(Class.Index, Class.Index) = .{};
                 defer map.deinit(gpa);
@@ -261,7 +264,12 @@ pub fn extract(oir: *const Oir, strat: CostStrategy) !Recursive {
                         if (!map.contains(child)) all = false;
                     }
                     if (all) {
-                        const new_id = try repr.addNode(oir.allocator, try mapNode(oir, node, &map));
+                        const new_id = try recv.addNode(oir.allocator, try mapNode(oir, node, &map));
+                        switch (node.tag) {
+                            .ret => try new_exit_list.append(gpa, new_id),
+                            .start => start_class = new_id,
+                            else => {},
+                        }
                         try map.put(gpa, id, new_id);
                         _ = queue.pop();
                     } else {
@@ -269,7 +277,15 @@ pub fn extract(oir: *const Oir, strat: CostStrategy) !Recursive {
                     }
                 }
 
-                return repr;
+                if (start_class == null) @panic("no start class?");
+                recv.nodes.items[@intFromEnum(start_class.?)].data = .{
+                    .list = try recv.listToSpan(
+                        new_exit_list.items,
+                        oir.allocator,
+                    ),
+                };
+
+                return recv;
             } else {
                 std.debug.panic("no solution found!!!! what??", .{});
             }
