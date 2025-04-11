@@ -62,7 +62,7 @@ pub fn main() !void {
             .{ .value = 0 },
             .{ .value = 1 },
         );
-        for (2..5) |i| {
+        for (2..10) |i| {
             prev_add = try block.addBinOp(
                 .add,
                 .{ .index = prev_add },

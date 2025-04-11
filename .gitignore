@@ -2,3 +2,4 @@
 zig-out/
 out.dot
 graphs/*
+trace.json

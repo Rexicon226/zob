@@ -37,7 +37,6 @@ pub fn dumpOirGraph(
                 const node = oir.getNode(node_idx);
                 try stream.print("    {}.{} [label=\"", .{ class_idx, i });
                 try printNodeLabel(stream, node);
-                try stream.print(" {}", .{@intFromEnum(node_idx)});
                 const color = switch (node.tag.nodeType()) {
                     .ctrl => "orange",
                     .data => "grey",

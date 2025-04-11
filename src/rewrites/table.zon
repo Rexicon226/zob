@@ -1,14 +1,14 @@
 .{
-    .{
-        .name = "comm-mul",
-        .from = "(mul ?x ?y)",
-        .to = "(mul ?y ?x)",
-    },
-    .{
-        .name = "comm-add",
-        .from = "(add ?x ?y)",
-        .to = "(add ?y ?x)",
-    },
+    // .{
+    //     .name = "comm-mul",
+    //     .from = "(mul ?x ?y)",
+    //     .to = "(mul ?y ?x)",
+    // },
+    // .{
+    //     .name = "comm-add",
+    //     .from = "(add ?x ?y)",
+    //     .to = "(add ?y ?x)",
+    // },
     .{
         .name = "mul-to-shl",
         .from = "(mul ?x @known_pow2(y))",

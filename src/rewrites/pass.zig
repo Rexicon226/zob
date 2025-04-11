@@ -7,7 +7,7 @@ const std = @import("std");
 const SExpr = @import("SExpr.zig");
 const Oir = @import("../Oir.zig");
 
-const log = std.log.scoped(.@"pass/rewrite");
+const log = std.log.scoped(.rewrite);
 
 const Node = Oir.Node;
 const Class = Oir.Class;
@@ -74,6 +74,9 @@ pub fn run(oir: *Oir) !bool {
 
     const trace = oir.trace.start(@src(), "applying matches", .{});
     defer trace.end();
+
+    log.debug("num matches: {d}", .{matches.items.len});
+
     for (matches.items) |*item| {
         log.debug(
             "applying {} -> {} to {}",
@@ -89,6 +92,9 @@ pub fn run(oir: *Oir) !bool {
 }
 
 fn search(oir: *Oir, rewrite: Rewrite) RewriteError![]RewriteResult {
+    const trace = oir.trace.start(@src(), "running search ({s})", .{rewrite.name});
+    defer trace.end();
+
     const gpa = oir.allocator;
     var matches = std.ArrayList(RewriteResult).init(gpa);
     for (0..oir.nodes.items.len) |node_idx| {
@@ -110,6 +116,9 @@ fn match(
     from: SExpr,
     bindings: *std.StringHashMapUnmanaged(Node.Index),
 ) RewriteError!bool {
+    const trace = oir.trace.start(@src(), "finding match ({})", .{node_idx});
+    defer trace.end();
+
     const allocator = oir.allocator;
     const root_node = oir.getNode(node_idx);
 
@@ -219,7 +228,7 @@ fn matchClass(
 /// we generate a class that represents the expression and then union it to
 /// the class which the root node index is in.
 ///
-/// Returns whether a union happened, indicated if a change happened.
+/// Returns whether a union happened, indicating a change happened.
 fn applyRewrite(
     oir: *Oir,
     root_node_idx: Node.Index,
@@ -227,28 +236,13 @@ fn applyRewrite(
     bindings: *const std.StringHashMapUnmanaged(Node.Index),
 ) !bool {
     const root_class = oir.findClass(root_node_idx);
-
-    var old = try oir.clone();
-
-    const changed: bool = changed: {
-        switch (to.data) {
-            .list, .atom => {
-                const new_node = try expressionToNode(oir, to, bindings);
-                const new_class_idx = try oir.add(new_node);
-                break :changed try oir.@"union"(root_class, new_class_idx);
-            },
-            .builtin => unreachable,
-        }
-    };
-
-    if (changed) {
-        old.deinit();
-        return true;
-    } else {
-        // revert the oir back to its state before
-        oir.deinit();
-        oir.* = old;
-        return false;
+    switch (to.data) {
+        .list, .atom => {
+            const new_node = try expressionToNode(oir, to, bindings);
+            const new_class_idx = try oir.add(new_node);
+            return try oir.@"union"(root_class, new_class_idx);
+        },
+        .builtin => unreachable,
     }
 }
 
