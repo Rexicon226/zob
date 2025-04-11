@@ -1,6 +1,5 @@
 const std = @import("std");
 const Ir = @import("Ir.zig");
-const Mir = @import("Mir.zig");
 const Trace = @import("Trace.zig");
 const Oir = @import("Oir.zig");
 

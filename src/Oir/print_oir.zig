@@ -1,6 +1,5 @@
 //! Prints OIR to graphviz
 
-const std = @import("std");
 const Oir = @import("../Oir.zig");
 const Recursive = @import("extraction.zig").Recursive;
 

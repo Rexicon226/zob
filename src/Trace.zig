@@ -61,7 +61,12 @@ const Event = struct {
     }
 };
 
-pub fn start(t: *Trace, src: std.builtin.SourceLocation, comptime fmt: []const u8, args: anytype) Event {
+pub fn start(
+    t: *Trace,
+    src: std.builtin.SourceLocation,
+    comptime fmt: []const u8,
+    args: anytype,
+) Event {
     if (!t.enabled) return .disabled;
     const now = std.time.Instant.now() catch @panic("failed to now()");
     const writer = t.buffered.writer();

@@ -64,8 +64,13 @@ fn parseBlock(
 
         const data: Inst.Data = switch (tag) {
             .cond_br => data: {
-                const predicate_index = std.mem.indexOfScalar(u8, expression, ',') orelse expression.len;
-                const predicate = try parseNodeNumber(expression[left_paren + 1 .. predicate_index]);
+                const predicate_index = std.mem.indexOfScalar(
+                    u8,
+                    expression,
+                    ',',
+                ) orelse expression.len;
+                const predicate_slice = expression[left_paren + 1 .. predicate_index];
+                const predicate = try parseNodeNumber(predicate_slice);
 
                 var then_block = blk: {
                     var case: std.ArrayListUnmanaged(u8) = .empty;
@@ -163,7 +168,9 @@ fn parseBlock(
         errdefer data.deinit(allocator);
 
         _ = try block.addInst(.{ .tag = tag, .data = data });
-        if (try parseNodeNumber(result_node) != next_index.*) @panic("nodes must be declared in order");
+        if (try parseNodeNumber(result_node) != next_index.*) {
+            @panic("nodes must be declared in order");
+        }
         next_index.* += 1;
     }
 

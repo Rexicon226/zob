@@ -153,7 +153,8 @@ pub const Parser = struct {
                         .int => {}, // all good!
                         // we don't support this yet, floats are a complicated rabbit hole
                         .float => @compileError("TODO: float Constants"),
-                        .big_int => @compileError("integer constant too large"), // TODO: we should support this, just not yet!
+                        // TODO: we should support this, just not yet!
+                        .big_int => @compileError("integer constant too large"),
                         .failure => |err| @compileError("invalid constant " ++ @errorName(err)),
                     }
                     return .{ .tag = .constant, .data = .{ .atom = constant } };

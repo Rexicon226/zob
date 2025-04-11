@@ -8,7 +8,6 @@ const extraction = @import("extraction.zig");
 const Class = Oir.Class;
 const Node = Oir.Node;
 const SimpleExtractor = @This();
-const CostStrategy = extraction.CostStrategy;
 const Recursive = extraction.Recursive;
 
 const log = std.log.scoped(.simple_extractor);

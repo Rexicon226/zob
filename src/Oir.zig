@@ -880,7 +880,6 @@ pub fn listToSpan(oir: *Oir, list: []const Class.Index) !Node.Span {
 
 const Oir = @This();
 const std = @import("std");
-const IR = @import("Ir.zig");
 const print_oir = @import("Oir/print_oir.zig");
 pub const extraction = @import("Oir/extraction.zig");
 const Trace = @import("Trace.zig");
