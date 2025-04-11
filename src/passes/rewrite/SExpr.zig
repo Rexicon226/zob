@@ -315,7 +315,7 @@ test "builtin function" {
 }
 
 const SExpr = @This();
-const NodeTag = @import("../Oir.zig").Node.Tag;
+const NodeTag = @import("../../Oir.zig").Node.Tag;
 const std = @import("std");
 const expect = std.testing.expect;
 const assert = std.debug.assert;

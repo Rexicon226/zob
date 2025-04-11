@@ -4,7 +4,7 @@
 //! find more advanced patterns.
 
 const std = @import("std");
-const SExpr = @import("SExpr.zig");
+const SExpr = @import("rewrite/SExpr.zig");
 const Oir = @import("../Oir.zig");
 
 const log = std.log.scoped(.rewrite);
@@ -36,7 +36,7 @@ const rewrites: []const Rewrite = blk: {
         name: []const u8,
         from: []const u8,
         to: []const u8,
-    } = @import("table.zon");
+    } = @import("rewrite/table.zon");
     @setEvalBranchQuota(table.len * 20_000);
     var list: [table.len]Rewrite = undefined;
     for (&list, table) |*entry, op| {

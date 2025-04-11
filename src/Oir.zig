@@ -432,7 +432,7 @@ const passes: []const Pass = &.{
     },
     .{
         .name = "common-rewrites",
-        .func = @import("rewrites/pass.zig").run,
+        .func = @import("passes/rewrite.zig").run,
     },
 };
 
@@ -879,7 +879,6 @@ const Oir = @This();
 const std = @import("std");
 const IR = @import("Ir.zig");
 const print_oir = @import("Oir/print_oir.zig");
-const SExpr = @import("rewrites/SExpr.zig");
 pub const extraction = @import("Oir/extraction.zig");
 const Trace = @import("Trace.zig");
 
