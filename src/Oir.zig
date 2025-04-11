@@ -131,6 +131,11 @@ pub const Node = struct {
         _,
     };
 
+    const Type = enum {
+        ctrl,
+        data,
+    };
+
     pub const Tag = enum(u8) {
         /// Constant integer.
         constant,
@@ -168,23 +173,6 @@ pub const Node = struct {
         store,
 
         dead,
-
-        const Type = enum {
-            ctrl,
-            data,
-        };
-
-        pub fn isVolatile(tag: Tag) bool {
-            // TODO: this isn't necessarily true, but just to be safe for now.
-            if (tag.nodeType() == .ctrl) return true;
-            return switch (tag) {
-                .start,
-                .ret,
-                .branch,
-                => true,
-                else => false,
-            };
-        }
 
         pub fn isAbsorbing(tag: Tag) bool {
             return switch (tag) {
@@ -224,31 +212,6 @@ pub const Node = struct {
             };
         }
 
-        pub fn nodeType(tag: Tag) Type {
-            return switch (tag) {
-                .constant,
-                .project,
-                .load,
-                .store,
-                .cmp_gt,
-                .@"and",
-                .add,
-                .sub,
-                .mul,
-                .shl,
-                .shr,
-                .div_trunc,
-                .div_exact,
-                => .data,
-                .start,
-                .ret,
-                .branch,
-                .region,
-                => .ctrl,
-                .dead => unreachable,
-            };
-        }
-
         pub fn exitTag(tag: Tag) bool {
             return switch (tag) {
                 .ret => true,
@@ -284,7 +247,7 @@ pub const Node = struct {
     const Project = struct {
         tuple: Class.Index,
         index: u32,
-        type: Tag.Type,
+        type: Type,
     };
 
     pub fn init(tag: Tag, payload: anytype) Node {
@@ -319,11 +282,49 @@ pub const Node = struct {
         };
     }
 
+    pub fn nodeType(node: Node) Type {
+        return switch (node.tag) {
+            .constant,
+            .load,
+            .store,
+            .cmp_gt,
+            .@"and",
+            .add,
+            .sub,
+            .mul,
+            .shl,
+            .shr,
+            .div_trunc,
+            .div_exact,
+            => .data,
+            .start,
+            .ret,
+            .branch,
+            .region,
+            => .ctrl,
+            .project => node.data.project.type,
+            .dead => unreachable,
+        };
+    }
+
+    pub fn isVolatile(node: Node) bool {
+        // TODO: this isn't necessarily true, but just to be safe for now.
+        if (node.nodeType() == .ctrl) return true;
+        return switch (node.tag) {
+            .start,
+            .ret,
+            .branch,
+            => true,
+            else => false,
+        };
+    }
+
     // Helper functions
     pub fn branch(ctrl: Class.Index, pred: Class.Index) Node {
         return binOp(.branch, ctrl, pred);
     }
-    pub fn project(index: u32, tuple: Class.Index, ty: Tag.Type) Node {
+
+    pub fn project(index: u32, tuple: Class.Index, ty: Type) Node {
         return .{
             .tag = .project,
             .data = .{ .project = .{
@@ -333,12 +334,14 @@ pub const Node = struct {
             } },
         };
     }
+
     pub fn region(span: Span) Node {
         return .{
             .tag = .region,
             .data = .{ .list = span },
         };
     }
+
     pub fn binOp(tag: Tag, lhs: Class.Index, rhs: Class.Index) Node {
         assert(tag.dataType() == .bin_op);
         return .{
@@ -548,10 +551,10 @@ fn getNodePtr(oir: *const Oir, idx: Node.Index) *Node {
 
 /// Returns the type of the class.
 /// If the class contains a ctrl node, all other nodes must also be control.
-pub fn getClassType(oir: *const Oir, idx: Class.Index) Node.Tag.Type {
+pub fn getClassType(oir: *const Oir, idx: Class.Index) Node.Type {
     const class = oir.classes.get(idx).?;
     const first = class.bag.items[0];
-    return oir.getNode(first).tag.nodeType();
+    return oir.getNode(first).nodeType();
 }
 
 /// Adds an ENode to the EGraph, giving the node its own class.

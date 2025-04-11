@@ -101,7 +101,7 @@ pub fn main() !void {
     var recv = try oir.extract(.auto);
     defer recv.deinit(allocator);
 
-    if (output_graph) try recv.dump("graphs/test.dot");
+    if (output_graph) try recv.dump("graphs/recv.dot");
 
     try stdout.writeAll("recv:\n");
     try recv.print(stdout);

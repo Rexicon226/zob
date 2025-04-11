@@ -37,7 +37,7 @@ pub fn dumpOirGraph(
                 const node = oir.getNode(node_idx);
                 try stream.print("    {}.{} [label=\"", .{ class_idx, i });
                 try printNodeLabel(stream, node);
-                const color = switch (node.tag.nodeType()) {
+                const color = switch (node.nodeType()) {
                     .ctrl => "orange",
                     .data => "grey",
                 };
@@ -118,7 +118,7 @@ fn printEdge(
     child: Oir.Class.Index,
     color: enum { black, red },
 ) !void {
-    try stream.print("    {d} -> {d} [color=\"{s}\"];\n", .{
+    try stream.print("  {d} -> {d} [color=\"{s}\"];\n", .{
         i,
         @intFromEnum(child),
         @tagName(color),
@@ -143,9 +143,9 @@ pub fn dumpRecvGraph(
     );
 
     for (recv.nodes.items, 0..) |node, i| {
-        try stream.print("    {} [label=\"", .{i});
+        try stream.print("  {} [label=\"", .{i});
         try printNodeLabel(stream, node);
-        const color = switch (node.tag.nodeType()) {
+        const color = switch (node.nodeType()) {
             .ctrl => "orange",
             .data => "grey",
         };
@@ -159,7 +159,7 @@ pub fn dumpRecvGraph(
             .branch,
             => {
                 const ctrl, const data = node.data.bin_op;
-                try printEdge(stream, i, ctrl, .black);
+                try printEdge(stream, i, ctrl, .red);
                 try printEdge(stream, i, data, .black);
             },
             .project,

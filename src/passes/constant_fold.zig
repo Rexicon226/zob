@@ -22,7 +22,7 @@ pub fn run(oir: *Oir) !bool {
         const class_idx = oir.findClass(node_idx);
 
         // If this node is volatile, we cannot fold it away.
-        if (node.tag.isVolatile()) continue;
+        if (node.isVolatile()) continue;
 
         // the class has already been solved for a constant, no need to do anything else!
         if (oir.classContains(class_idx, .constant) != null) continue;
