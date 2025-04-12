@@ -24,6 +24,7 @@ nodes: []const Entry,
 
 pub const Entry = union(enum) {
     atom: []const u8,
+    constant: i64,
     node: Node,
 
     pub const Node = struct {
@@ -36,6 +37,22 @@ pub const Entry = union(enum) {
         expr: SExpr,
     };
 
+    pub fn operands(e: Entry) []const Index {
+        return switch (e) {
+            .atom => unreachable,
+            .constant => &.{},
+            .node => |n| n.list,
+        };
+    }
+
+    pub fn tag(e: Entry) NodeTag {
+        return switch (e) {
+            .atom => unreachable,
+            .constant => .constant,
+            .node => |n| n.tag,
+        };
+    }
+
     pub fn format2(
         ctx: FormatCtx,
         comptime _: []const u8,
@@ -44,6 +61,7 @@ pub const Entry = union(enum) {
     ) !void {
         switch (ctx.entry) {
             .atom => |atom| try writer.writeAll(atom),
+            .constant => |constant| try writer.print("{}", .{constant}),
             .node => |node| {
                 try writer.print("({s}", .{@tagName(node.tag)});
                 for (node.list) |index| {
@@ -200,17 +218,8 @@ pub const Parser = struct {
                     const constant_end = parser.index;
                     const constant = parser.buffer[constant_start..constant_end];
 
-                    // make sure it parses correctly!
-                    switch (std.zig.parseNumberLiteral(constant)) {
-                        .int => {}, // all good!
-                        // we don't support this yet, floats are a complicated rabbit hole
-                        .float => @compileError("TODO: float Constants"),
-                        // TODO: we should support this, just not yet!
-                        .big_int => @compileError("integer constant too large"),
-                        .failure => |err| @compileError("invalid constant " ++ @errorName(err)),
-                    }
-
-                    return parser.addEntry(.{ .atom = constant });
+                    const value: i64 = try std.fmt.parseInt(i64, constant, 0);
+                    return parser.addEntry(.{ .constant = value });
                 },
                 // the start of a builtin function
                 '@' => {

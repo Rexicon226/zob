@@ -24,9 +24,9 @@ pub const Rewrite = struct {
 pub const RewriteError = error{ OutOfMemory, InvalidCharacter, Overflow };
 
 pub const RewriteResult = struct {
-    root: Node.Index,
-    rw: Rewrite,
-    bindings: std.StringHashMapUnmanaged(Node.Index),
+    bindings: std.StringHashMapUnmanaged(Class.Index),
+    class: Class.Index,
+    pattern: SExpr,
 
     fn deinit(result: *RewriteResult, gpa: std.mem.Allocator) void {
         result.bindings.deinit(gpa);
@@ -70,23 +70,7 @@ pub fn run(oir: *Oir) !bool {
         }
     }
 
-    var changed: bool = false;
-    {
-        const trace = oir.trace.start(@src(), "applying matches", .{});
-        defer trace.end();
-
-        for (matches.items) |*item| {
-            log.debug(
-                "applying {} -> {} to {}",
-                .{ item.rw.from, item.rw.to, item.root },
-            );
-            if (try applyRewrite(oir, item.root, item.rw.to, &item.bindings)) {
-                log.debug("change happened!", .{});
-                changed = true;
-            }
-        }
-    }
-    return changed;
+    @panic("TODO");
 }
 
 fn search(
@@ -307,7 +291,38 @@ fn expressionToNode(
     }
 }
 
+fn applyMatches(oir: *Oir, matches: []const RewriteResult) !void {
+    for (matches) |m| {
+        // TODO: conver to buffer
+        var ids: std.ArrayListUnmanaged(Class.Index) = .{};
+        defer ids.deinit(oir.allocator);
+        for (m.pattern.nodes) |entry| {
+            const id = switch (entry) {
+                .atom => |v| m.bindings.get(v).?,
+                .node => |n| b: {
+                    // currently mutableOperands and operands are UB if the node data is undefined
+                    // for ones that use the list tag.
+                    if (n.tag.dataType() == .list) @panic("TODO: apply list node");
+
+                    var new = switch (n.tag) {
+                        inline else => |t| Node.init(t, undefined),
+                    };
+                    for (new.mutableOperands(oir), n.list) |*op, child| {
+                        op.* = ids.items[@intFromEnum(child)];
+                    }
+                    break :b try oir.add(new);
+                },
+            };
+            try ids.append(oir.allocator, id);
+        }
+
+        const last = ids.getLast();
+        _ = try oir.@"union"(m.class, last);
+    }
+}
+
 const expectEqual = std.testing.expectEqual;
+const expect = std.testing.expect;
 
 fn testSearch(oir: *const Oir, comptime buffer: []const u8, num_matches: u64) !void {
     std.debug.assert(oir.clean); // must be clean before searching
@@ -357,19 +372,19 @@ test "vm ematch" {
     var oir: Oir = .init(allocator, &trace);
     defer oir.deinit();
 
-    // (add (add 10 20) 30)
+    // (add (add 10 20) 0)
     _ = try oir.add(.init(.start, {}));
     const a = try oir.add(.init(.constant, 10));
     const b = try oir.add(.init(.constant, 20));
     const add = try oir.add(.binOp(.add, a, b));
-    const c = try oir.add(.init(.constant, 30));
+    const c = try oir.add(.init(.constant, 0));
     _ = try oir.add(.binOp(.add, add, c));
     try oir.rebuild();
 
-    const dummy = SExpr.parse("?x");
+    const apply = SExpr.parse("(mul ?x ?y)");
     const pattern = SExpr.parse("(add ?x ?y)");
 
-    std.debug.print("dummy: {}\n", .{pattern});
+    std.debug.print("apply: {} -> {}\n", .{ pattern, apply });
 
     var matches: std.ArrayListUnmanaged(RewriteResult) = .{};
     defer {
@@ -378,11 +393,14 @@ test "vm ematch" {
     }
     try machine.search(&oir, &matches, .{
         .from = pattern,
-        .to = dummy,
+        .to = apply,
         .name = "test",
     });
 
     std.debug.print("num matches: {}\n", .{matches.items.len});
+
+    // try applyMatches(&oir, matches.items);
+    // try oir.rebuild();
 
     try oir.dump("test.dot");
 }
