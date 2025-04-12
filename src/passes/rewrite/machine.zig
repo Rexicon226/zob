@@ -27,28 +27,26 @@ const Compiler = struct {
         try c.loadPattern(allocator, pattern);
         const root = pattern.root();
 
-        var next_out = c.next_reg;
-        next_out.add(1);
-
         if (c.instructions.items.len != 0) {
-            @panic("TODO");
+            @panic("TODO: add scan");
         }
         try c.addTodo(allocator, pattern, root, c.next_reg);
+        c.next_reg.add(1);
 
         while (c.next()) |entry| {
             const todo, const node = entry;
             const id, const reg = todo;
 
             if (c.isGrounded(id) and node.operands().len != 0) {
-                @panic("TODO");
+                @panic("TODO: add lookup");
             }
 
             try c.instructions.append(allocator, .{ .bind = .{
                 .i = reg,
-                .out = next_out,
+                .out = c.next_reg,
                 .node = node,
             } });
-            next_out.add(@intCast(node.operands().len));
+            c.next_reg.add(@intCast(node.operands().len));
 
             for (node.operands(), 0..) |child, i| {
                 try c.addTodo(
@@ -59,7 +57,6 @@ const Compiler = struct {
                 );
             }
         }
-        c.next_reg = next_out;
     }
 
     fn isGrounded(c: *Compiler, id: SExpr.Index) bool {
