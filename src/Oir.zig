@@ -250,10 +250,8 @@ pub const Node = struct {
         type: Type,
     };
 
-    pub fn init(tag: Tag, payload: anytype) Node {
-        const data = switch (tag) {
-            inline else => |t| @unionInit(Data, @tagName(t.dataType()), payload),
-        };
+    pub fn init(comptime tag: Tag, payload: anytype) Node {
+        const data = @unionInit(Data, @tagName(tag.dataType()), payload);
         return .{
             .tag = tag,
             .data = data,
@@ -482,6 +480,20 @@ pub fn optimize(
             }
         },
     }
+}
+
+pub fn init(allocator: std.mem.Allocator, trace: *Trace) Oir {
+    return .{
+        .allocator = allocator,
+        .nodes = .{},
+        .node_to_class = .{},
+        .classes = .{},
+        .extra = .{},
+        .union_find = .{},
+        .pending = .{},
+        .trace = trace,
+        .clean = true,
+    };
 }
 
 pub fn dump(oir: *Oir, name: []const u8) !void {
@@ -855,7 +867,7 @@ pub fn deinit(oir: *Oir) void {
 /// Otherwise returns `null`.
 ///
 /// Can only return absorbing element types such as `constant`.
-pub fn classContains(oir: *Oir, idx: Class.Index, comptime tag: Node.Tag) ?Node.Index {
+pub fn classContains(oir: *const Oir, idx: Class.Index, comptime tag: Node.Tag) ?Node.Index {
     comptime assert(tag.isAbsorbing());
     assert(oir.clean);
 
@@ -868,6 +880,18 @@ pub fn classContains(oir: *Oir, idx: Class.Index, comptime tag: Node.Tag) ?Node.
     }
 
     return null;
+}
+
+/// Similar to `classContains` but instead of returning a specific node that matches
+/// the tag, it just tells us whether the class in general contains a node of that tag.
+pub fn classContainsAny(oir: *const Oir, idx: Class.Index, tag: Node.Tag) bool {
+    assert(oir.clean);
+    const class = oir.classes.get(idx).?;
+    for (class.bag.items) |node_idx| {
+        const node = oir.getNode(node_idx);
+        if (node.tag == tag) return true;
+    }
+    return false;
 }
 
 pub fn listToSpan(oir: *Oir, list: []const Class.Index) !Node.Span {

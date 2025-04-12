@@ -61,7 +61,7 @@ pub fn main() !void {
             .{ .value = 0 },
             .{ .value = 1 },
         );
-        for (2..10) |i| {
+        for (2..100) |i| {
             prev_add = try block.addBinOp(
                 .add,
                 .{ .index = prev_add },
@@ -92,12 +92,17 @@ pub fn main() !void {
 
     if (enable_tracing) try trace.enable("trace.json");
 
+    var start = try std.time.Timer.start();
+
     // run optimization passes on the OIR
     try oir.optimize(.saturate, output_graph);
 
+    const end = start.lap();
+    std.debug.print("took: {}\n", .{std.fmt.fmtDuration(end)});
+
     if (output_graph) try oir.dump("graphs/oir.dot");
 
-    var recv = try oir.extract(.auto);
+    var recv = try oir.extract(.simple_latency);
     defer recv.deinit(allocator);
 
     if (output_graph) try recv.dump("graphs/recv.dot");

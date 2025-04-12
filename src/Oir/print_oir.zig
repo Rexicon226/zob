@@ -36,6 +36,7 @@ pub fn dumpOirGraph(
                 const node = oir.getNode(node_idx);
                 try stream.print("    {}.{} [label=\"", .{ class_idx, i });
                 try printNodeLabel(stream, node);
+                try stream.print(" {}", .{class_idx});
                 const color = switch (node.nodeType()) {
                     .ctrl => "orange",
                     .data => "grey",

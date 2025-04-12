@@ -6,6 +6,7 @@ pub fn build(b: *std.Build) !void {
     const optimize = b.standardOptimizeOption(.{});
 
     const use_z3 = b.option(bool, "use_z3", "Use Z3 as the MILP solver for Oir extraction") orelse false;
+    const filters = b.option([]const []const u8, "filter", "Filter test cases");
 
     const compiler = b.addExecutable(.{
         .name = "compiler",
@@ -35,6 +36,7 @@ pub fn build(b: *std.Build) !void {
         .root_source_file = b.path("src/lib.zig"),
         .target = target,
         .optimize = optimize,
+        .filters = filters orelse &.{},
     });
     test_lib.root_module.addOptions("build_options", options);
 
@@ -72,6 +74,7 @@ pub fn build(b: *std.Build) !void {
         const test_case = b.step("test-cases", "Runs IR case tests");
         try cases.addCases(b, test_case, "rewrite", test_runner);
         try cases.addCases(b, test_case, "oir", test_runner);
-        test_step.dependOn(test_case);
+        // Don't run the extra testing stuff if we added a filter.
+        if (filters == null) test_step.dependOn(test_case);
     }
 }

@@ -7,6 +7,6 @@ pub const options: std.Options = .{
     .log_level = .err,
 };
 
-comptime {
+test {
     std.testing.refAllDeclsRecursive(@This());
 }

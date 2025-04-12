@@ -20,13 +20,62 @@
 //! - Other S-Expressions. S-expressions are intended to be nested, and matching will consider
 //!   the absolute structure of the expression when pairing.
 
-tag: NodeTag,
-data: Data,
+nodes: []const Entry,
 
-const Data = union(enum) {
+pub const Entry = union(enum) {
     atom: []const u8,
-    builtin: BuiltinFn,
-    list: []const SExpr,
+    node: Node,
+
+    pub const Node = struct {
+        tag: NodeTag,
+        list: []const Index,
+    };
+
+    const FormatCtx = struct {
+        entry: Entry,
+        expr: SExpr,
+    };
+
+    pub fn format2(
+        ctx: FormatCtx,
+        comptime _: []const u8,
+        _: std.fmt.FormatOptions,
+        writer: anytype,
+    ) !void {
+        switch (ctx.entry) {
+            .atom => |atom| try writer.writeAll(atom),
+            .node => |node| {
+                try writer.print("({s}", .{@tagName(node.tag)});
+                for (node.list) |index| {
+                    try writer.print(
+                        " {}",
+                        .{ctx.expr.nodes[@intFromEnum(index)].fmt(ctx.expr)},
+                    );
+                }
+                try writer.writeAll(")");
+            },
+        }
+    }
+
+    pub fn fmt(entry: Entry, expr: SExpr) std.fmt.Formatter(format2) {
+        return .{ .data = .{
+            .expr = expr,
+            .entry = entry,
+        } };
+    }
+
+    pub fn format(
+        _: Entry,
+        comptime _: []const u8,
+        _: std.fmt.FormatOptions,
+        _: anytype,
+    ) !void {
+        @compileError("use .fmt(expr) to format s-expr entries");
+    }
+};
+
+pub const Index = enum(u32) {
+    _,
 };
 
 const BuiltinFn = struct {
@@ -67,10 +116,11 @@ const BuiltinFn = struct {
 
 /// TODO: better error reporting!
 pub const Parser = struct {
+    nodes: []Entry = &.{},
     buffer: []const u8,
     index: u32 = 0,
 
-    pub fn parseInternal(comptime parser: *Parser) SExpr {
+    pub fn parseInternal(comptime parser: *Parser) Index {
         @setEvalBranchQuota(parser.buffer.len * 1_000);
         while (parser.index < parser.buffer.len) {
             const c = parser.eat();
@@ -88,7 +138,7 @@ pub const Parser = struct {
                     // now there will be a list of parameters to this expression
                     // i.e (mul ?x ?y), where ?x and ?y are the parameters.
                     // these are delimited by the right paren.
-                    var list: []const SExpr = &.{};
+                    var list: []const Index = &.{};
                     while (parser.peak() != ')') {
                         if (parser.index == parser.buffer.len) {
                             @compileError("no closing paren");
@@ -111,7 +161,8 @@ pub const Parser = struct {
                     if (list.len == 0) {
                         @compileLog("no expression arguments");
                     }
-                    return .{ .tag = tag, .data = .{ .list = list } };
+
+                    return parser.addEntry(.{ .node = .{ .tag = tag, .list = list } });
                 },
                 // the start of an identifier
                 '?' => {
@@ -135,7 +186,8 @@ pub const Parser = struct {
                         // identifiers should be a single character, including the ? that's 2 length
                         @compileLog("ident too long");
                     }
-                    return .{ .tag = .constant, .data = .{ .atom = ident } };
+
+                    return parser.addEntry(.{ .atom = ident });
                 },
                 '0'...'9' => {
                     // this -1 is to include the first number
@@ -157,10 +209,13 @@ pub const Parser = struct {
                         .big_int => @compileError("integer constant too large"),
                         .failure => |err| @compileError("invalid constant " ++ @errorName(err)),
                     }
-                    return .{ .tag = .constant, .data = .{ .atom = constant } };
+
+                    return parser.addEntry(.{ .atom = constant });
                 },
                 // the start of a builtin function
                 '@' => {
+                    if (true) @compileError("TODO: update builtins");
+
                     const builtin_start = parser.index;
                     try parser.eatUntilDelimiter('(');
                     const builtin_end = parser.index;
@@ -190,6 +245,13 @@ pub const Parser = struct {
         @compileError("unexpected end of expression");
     }
 
+    fn addEntry(parser: *Parser, entry: Entry) Index {
+        const index: Index = @enumFromInt(parser.nodes.len);
+        var copy = (parser.nodes ++ (&entry)[0..1])[0..].*;
+        parser.nodes = &copy;
+        return index;
+    }
+
     fn eat(parser: *Parser) u8 {
         const char = parser.peak();
         parser.index += 1;
@@ -213,8 +275,14 @@ pub const Parser = struct {
 pub inline fn parse(comptime buffer: []const u8) SExpr {
     comptime {
         var parser: Parser = .{ .buffer = buffer };
-        return parser.parseInternal();
+        _ = parser.parseInternal();
+        const copy = parser.nodes[0..].*;
+        return .{ .nodes = &copy };
     }
+}
+
+pub fn root(expr: SExpr) Index {
+    return @enumFromInt(expr.nodes.len - 1);
 }
 
 pub fn format(
@@ -225,21 +293,8 @@ pub fn format(
 ) !void {
     comptime assert(fmt.len == 0);
 
-    switch (expr.data) {
-        .atom => |atom| try writer.writeAll(atom),
-        .list => |list| {
-            try writer.print("({s}", .{@tagName(expr.tag)});
-            for (list) |sub_expr| {
-                try writer.print(" {}", .{sub_expr});
-            }
-            try writer.writeAll(")");
-        },
-        .builtin => |builtin| {
-            const tag = builtin.tag;
-            const param = builtin.expr;
-            try writer.print("@{s}({s})", .{ @tagName(tag), param });
-        },
-    }
+    const r: Entry = expr.nodes[@intFromEnum(expr.root())];
+    try writer.print("{}", .{r.fmt(expr)});
 }
 
 pub fn isIdent(expr: *const SExpr) bool {
