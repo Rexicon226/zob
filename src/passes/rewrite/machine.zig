@@ -11,6 +11,7 @@ const Node = Oir.Node;
 const Class = Oir.Class;
 const Result = rewrite.Result;
 const Rewrite = rewrite.Rewrite;
+const MultiRewrite = rewrite.MultiRewrite;
 
 const Compiler = struct {
     next_reg: Reg,
@@ -22,15 +23,27 @@ const Compiler = struct {
 
     const Todo = struct { SExpr.Index, Reg };
 
-    fn compile(c: *Compiler, allocator: std.mem.Allocator, pattern: SExpr) !void {
+    fn compile(
+        c: *Compiler,
+        allocator: std.mem.Allocator,
+        bind: ?[]const u8,
+        pattern: SExpr,
+    ) !void {
         try c.loadPattern(allocator, pattern);
         const root = pattern.root();
 
-        if (c.instructions.items.len != 0) {
-            @panic("TODO: add scan");
+        if (bind) |v| {
+            if (c.v2r.get(v)) |i| {
+                try c.addTodo(allocator, pattern, root, i);
+            } else {
+                try c.addPattern(allocator, pattern, root);
+                try c.v2r.put(allocator, v, c.next_reg);
+                c.next_reg.add(1);
+            }
+        } else {
+            try c.addPattern(allocator, pattern, root);
+            c.next_reg.add(1);
         }
-        try c.addTodo(allocator, pattern, root, c.next_reg);
-        c.next_reg.add(1);
 
         while (c.next()) |entry| {
             const todo, const node = entry;
@@ -64,6 +77,18 @@ const Compiler = struct {
         }
     }
 
+    fn addPattern(
+        c: *Compiler,
+        allocator: std.mem.Allocator,
+        pattern: SExpr,
+        root: SExpr.Index,
+    ) !void {
+        if (c.instructions.items.len != 0) {
+            try c.instructions.append(allocator, .{ .scan = c.next_reg });
+        }
+        try c.addTodo(allocator, pattern, root, c.next_reg);
+    }
+
     fn isGrounded(c: *Compiler, id: SExpr.Index) bool {
         for (c.free_vars.items[@intFromEnum(id)].keys()) |v| {
             if (!c.v2r.contains(v)) return false;
@@ -83,8 +108,8 @@ const Compiler = struct {
 
     fn loadPattern(c: *Compiler, allocator: std.mem.Allocator, pattern: SExpr) !void {
         const len = pattern.nodes.len;
-        c.free_vars = try .initCapacity(allocator, len);
-        c.subtree_size = try .initCapacity(allocator, len);
+        try c.free_vars.ensureTotalCapacityPrecise(allocator, len);
+        try c.subtree_size.ensureTotalCapacityPrecise(allocator, len);
 
         for (pattern.nodes) |node| {
             var free: std.StringArrayHashMapUnmanaged(void) = .{};
@@ -101,6 +126,7 @@ const Compiler = struct {
                     }
                 },
                 .constant => size = 1,
+                .builtin => |b| try free.put(allocator, b.expr, {}),
                 .atom => |v| try free.put(allocator, v, {}),
             }
             try c.free_vars.append(allocator, free);
@@ -127,7 +153,10 @@ const Compiler = struct {
                     try c.v2r.put(allocator, v, reg);
                 }
             },
-            .node, .constant => try c.todo_nodes.put(allocator, .{ id, reg }, node),
+            .builtin,
+            .node,
+            .constant,
+            => try c.todo_nodes.put(allocator, .{ id, reg }, node),
         }
     }
 
@@ -227,6 +256,7 @@ pub fn newRoot(
         }
 
         const node = expr.nodes[@intFromEnum(id)];
+
         var resolved: bool = true;
         for (node.operands()) |child| {
             if (!map.contains(child)) {
@@ -278,7 +308,19 @@ const Program = struct {
                     try p.searchClass(oir, class.index, rw.to, matches);
                 },
                 .atom => @panic("TODO: non-node root"),
+                .builtin => @panic("can't have root be a builtin function"),
             }
+        }
+    }
+
+    fn searchMulti(
+        p: *Program,
+        oir: *const Oir,
+        matches: *std.ArrayListUnmanaged(Result),
+    ) !void {
+        var iter = oir.classes.valueIterator();
+        while (iter.next()) |class| {
+            try p.searchClass(oir, class.index, SExpr.parse("10"), matches);
         }
     }
 
@@ -340,12 +382,7 @@ const Machine = struct {
                     const class = oir.getClass(m.registers.items[@intFromEnum(bind.i)]);
                     for (class.bag.items) |node_idx| {
                         const node = oir.getNode(node_idx);
-                        if (node.tag == bind.node.tag() and
-                            node.operands(oir).len == bind.node.operands().len)
-                        {
-                            // Check for constants also.
-                            if (node.tag == .constant and node.data.constant != bind.node.constant) return;
-
+                        if (bind.node.matches(node, oir)) {
                             m.registers.shrinkRetainingCapacity(@intFromEnum(bind.out));
                             for (node.operands(oir)) |id| {
                                 try m.registers.append(oir.allocator, id);
@@ -372,6 +409,19 @@ const Machine = struct {
                                 const found_idx = oir.findNode(.constant(c)) orelse return; // can't match
                                 const class_id = oir.findClass(found_idx);
                                 try m.lookup.append(oir.allocator, class_id);
+                            },
+                            .builtin => |b| {
+                                if (b.tag.location() != .src) @panic("can't have non-src builtin in source pattern");
+
+                                switch (b.tag) {
+                                    .known_pow2 => {
+                                        const reg = m.v2r.get(b.expr).?;
+                                        _ = reg;
+
+                                        @panic("TODO");
+                                    },
+                                    else => unreachable,
+                                }
                             },
                             .node => |n| {
                                 var new_node = switch (n.tag) {
@@ -400,6 +450,15 @@ const Machine = struct {
                         return; // no match
                     }
                 },
+                .scan => |scan| {
+                    var iter = oir.classes.valueIterator();
+                    while (iter.next()) |class| {
+                        m.registers.shrinkRetainingCapacity(@intFromEnum(scan));
+                        try m.registers.append(oir.allocator, class.index);
+                        try m.run(oir, insts[i..], map, matches);
+                    }
+                    return;
+                },
             }
         }
 
@@ -424,6 +483,7 @@ const Instruction = union(enum) {
     bind: struct { node: SExpr.Entry, i: Reg, out: Reg },
     lookup: struct { term: SExpr, i: Reg },
     compare: struct { i: Reg, j: Reg },
+    scan: Reg,
 
     pub fn format(
         inst: Instruction,
@@ -445,6 +505,7 @@ const Instruction = union(enum) {
                 @intFromEnum(c.i),
                 @intFromEnum(c.j),
             }),
+            .scan => |s| try writer.print("scan(${})", .{@intFromEnum(s)}),
         }
     }
 
@@ -477,7 +538,7 @@ pub fn search(oir: *const Oir, rw: Rewrite) Result.Error![]const Result {
     };
     defer compiler.deinit(allocator);
 
-    try compiler.compile(allocator, rw.from);
+    try compiler.compile(allocator, null, rw.from);
 
     var program = try compiler.extract(allocator);
     defer program.deinit(allocator);
@@ -486,3 +547,31 @@ pub fn search(oir: *const Oir, rw: Rewrite) Result.Error![]const Result {
     try program.search(rw, oir, &matches);
     return matches.toOwnedSlice(allocator);
 }
+
+// pub fn multiSearch(oir: *const Oir, mrw: MultiRewrite) Result.Error!void {
+//     const allocator = oir.allocator;
+
+//     var compiler: Compiler = .{
+//         .next_reg = @enumFromInt(0),
+//         .instructions = .{},
+//         .todo_nodes = .{},
+//         .v2r = .{},
+//         .free_vars = .{},
+//         .subtree_size = .{},
+//     };
+//     defer compiler.deinit(allocator);
+
+//     for (mrw.from) |rw| {
+//         try compiler.compile(allocator, rw.atom, rw.pattern);
+//     }
+
+//     var program = try compiler.extract(allocator);
+//     defer program.deinit(allocator);
+
+//     std.debug.print("program: {any}\n", .{program.instructions});
+
+//     var matches: std.ArrayListUnmanaged(Result) = .{};
+//     try program.searchMulti(oir, &matches);
+
+//     std.debug.print("num: {}\n", .{matches.items.len});
+// }

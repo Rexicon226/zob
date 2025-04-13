@@ -21,6 +21,16 @@ pub const Rewrite = struct {
     to: SExpr,
 };
 
+pub const MultiRewrite = struct {
+    name: []const u8,
+    from: []const MultiPattern,
+};
+
+pub const MultiPattern = struct {
+    atom: []const u8,
+    pattern: SExpr,
+};
+
 pub const Result = struct {
     bindings: Bindings,
     class: Class.Index,
@@ -349,18 +359,71 @@ test "basic match" {
     var oir: Oir = .init(allocator, &trace);
     defer oir.deinit();
 
-    // (add (add 10 20) 30)
+    // (add (mul 10 20) 30)
     _ = try oir.add(try .create(.start, &oir, &.{}));
     const a = try oir.add(.init(.constant, 10));
     const b = try oir.add(.init(.constant, 20));
-    const add = try oir.add(.binOp(.add, a, b));
+    const mul = try oir.add(.binOp(.mul, a, b));
     const c = try oir.add(.init(.constant, 30));
-    _ = try oir.add(.binOp(.add, add, c));
+    _ = try oir.add(.binOp(.add, mul, c));
     try oir.rebuild();
 
-    try testSearch(&oir, "(add 10 20)", 1);
+    try testSearch(&oir, "(mul 10 20)", 1);
     try testSearch(&oir, "(add ?x ?x)", 0);
-    try testSearch(&oir, "(mul 10 20)", 0);
-    try testSearch(&oir, "(add ?x ?y)", 2);
-    try testSearch(&oir, "(add (add 10 20) 30)", 1);
+    try testSearch(&oir, "(add 10 20)", 0);
+    try testSearch(&oir, "(add ?x ?y)", 1);
+    try testSearch(&oir, "(add (mul 10 20) 30)", 1);
 }
+
+test "builtin function match" {
+    const allocator = std.testing.allocator;
+    var trace: Trace = .init();
+    var oir: Oir = .init(allocator, &trace);
+    defer oir.deinit();
+
+    // (add (mul 37 16) 9)
+    _ = try oir.add(try .create(.start, &oir, &.{}));
+    const a = try oir.add(.init(.constant, 37));
+    const b = try oir.add(.init(.constant, 16));
+    _ = try oir.add(.binOp(.mul, a, b));
+    try oir.rebuild();
+
+    try testSearch(&oir, "(mul ?x @known_pow2(?y))", 1);
+    try testSearch(&oir, "(add ?x @known_pow2(?y))", 0);
+}
+
+// test "basic multi-pattern match" {
+//     const allocator = std.testing.allocator;
+//     var trace: Trace = .init();
+//     var oir: Oir = .init(allocator, &trace);
+//     defer oir.deinit();
+
+//     // (add (mul 10 20) 30)
+//     _ = try oir.add(try .create(.start, &oir, &.{}));
+//     const a = try oir.add(.init(.constant, 10));
+//     const b = try oir.add(.init(.constant, 20));
+//     const add = try oir.add(.binOp(.mul, a, b));
+//     const c = try oir.add(.init(.constant, 30));
+//     _ = try oir.add(.binOp(.add, add, c));
+//     try oir.rebuild();
+
+//     try machine.multiSearch(&oir, .{
+//         .from = &.{
+//             .{
+//                 .atom = "?x",
+//                 .pattern = SExpr.parse("(mul 10 20)"),
+//             },
+//             .{
+//                 .atom = "?y",
+//                 .pattern = SExpr.parse("(add ?a 30)"),
+//             },
+//         },
+//         .name = "test",
+//     });
+//     // defer {
+//     //     for (matches) |*m| m.deinit(oir.allocator);
+//     //     oir.allocator.free(matches);
+//     // }
+
+//     // std.debug.print("n matches: {}\n", .{matches.len});
+// }
