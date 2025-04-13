@@ -43,19 +43,21 @@ const Compiler = struct {
                     .term = new_node,
                 } });
             } else {
-                try c.instructions.append(allocator, .{ .bind = .{
-                    .i = reg,
-                    .out = c.next_reg,
-                    .node = node,
-                } });
+                const out = c.next_reg;
                 c.next_reg.add(@intCast(node.operands().len));
+
+                try c.instructions.append(allocator, .{ .bind = .{
+                    .node = node,
+                    .i = reg,
+                    .out = out,
+                } });
 
                 for (node.operands(), 0..) |child, i| {
                     try c.addTodo(
                         allocator,
                         pattern,
                         child,
-                        @enumFromInt(@intFromEnum(reg) + i),
+                        @enumFromInt(@intFromEnum(out) + i),
                     );
                 }
             }
@@ -117,8 +119,10 @@ const Compiler = struct {
         switch (node) {
             .atom => |v| {
                 if (c.v2r.get(v)) |j| {
-                    _ = j;
-                    @panic("TODO");
+                    try c.instructions.append(allocator, .{ .compare = .{
+                        .i = reg,
+                        .j = j,
+                    } });
                 } else {
                     try c.v2r.put(allocator, v, reg);
                 }
@@ -339,7 +343,10 @@ const Machine = struct {
                         if (node.tag == bind.node.tag() and
                             node.operands(oir).len == bind.node.operands().len)
                         {
-                            m.registers.shrinkRetainingCapacity(m.registers.items.len - @intFromEnum(bind.out));
+                            // Check for constants also.
+                            if (node.tag == .constant and node.data.constant != bind.node.constant) return;
+
+                            m.registers.shrinkRetainingCapacity(@intFromEnum(bind.out));
                             for (node.operands(oir)) |id| {
                                 try m.registers.append(oir.allocator, id);
                             }
@@ -362,10 +369,7 @@ const Machine = struct {
                                 );
                             },
                             .constant => |c| {
-                                const found_idx = oir.findNode(.{
-                                    .tag = .constant,
-                                    .data = .{ .constant = c },
-                                }) orelse return; // can't match
+                                const found_idx = oir.findNode(.constant(c)) orelse return; // can't match
                                 const class_id = oir.findClass(found_idx);
                                 try m.lookup.append(oir.allocator, class_id);
                             },
@@ -386,6 +390,13 @@ const Machine = struct {
 
                     const id = oir.union_find.find(m.registers.items[@intFromEnum(lookup.i)]);
                     if (m.lookup.getLastOrNull() != id) {
+                        return; // no match
+                    }
+                },
+                .compare => |compare| {
+                    const a = m.registers.items[@intFromEnum(compare.i)];
+                    const b = m.registers.items[@intFromEnum(compare.j)];
+                    if (oir.union_find.find(a) != oir.union_find.find(b)) {
                         return; // no match
                     }
                 },
@@ -412,6 +423,30 @@ const Machine = struct {
 const Instruction = union(enum) {
     bind: struct { node: SExpr.Entry, i: Reg, out: Reg },
     lookup: struct { term: SExpr, i: Reg },
+    compare: struct { i: Reg, j: Reg },
+
+    pub fn format(
+        inst: Instruction,
+        comptime _: []const u8,
+        _: std.fmt.FormatOptions,
+        writer: anytype,
+    ) !void {
+        switch (inst) {
+            .bind => |b| try writer.print("bind({}, ${}, ${})", .{
+                b.node,
+                @intFromEnum(b.i),
+                @intFromEnum(b.out),
+            }),
+            .lookup => |l| try writer.print("lookup({}, ${})", .{
+                l.term,
+                @intFromEnum(l.i),
+            }),
+            .compare => |c| try writer.print("compare(${} vs ${})", .{
+                @intFromEnum(c.i),
+                @intFromEnum(c.j),
+            }),
+        }
+    }
 
     fn deinit(inst: Instruction, allocator: std.mem.Allocator) void {
         switch (inst) {
@@ -429,11 +464,7 @@ const Reg = enum(u32) {
     }
 };
 
-pub fn search(
-    oir: *const Oir,
-    matches: *std.ArrayListUnmanaged(Result),
-    rw: Rewrite,
-) Result.Error!void {
+pub fn search(oir: *const Oir, rw: Rewrite) Result.Error![]const Result {
     const allocator = oir.allocator;
 
     var compiler: Compiler = .{
@@ -451,5 +482,7 @@ pub fn search(
     var program = try compiler.extract(allocator);
     defer program.deinit(allocator);
 
-    try program.search(rw, oir, matches);
+    var matches: std.ArrayListUnmanaged(Result) = .{};
+    try program.search(rw, oir, &matches);
+    return matches.toOwnedSlice(allocator);
 }

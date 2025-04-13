@@ -29,8 +29,9 @@ pub const Result = struct {
     pub const Bindings = std.StringHashMapUnmanaged(Class.Index);
     pub const Error = error{ OutOfMemory, InvalidCharacter, Overflow };
 
-    fn deinit(result: *Result, gpa: std.mem.Allocator) void {
-        result.bindings.deinit(gpa);
+    fn deinit(result: *const Result, gpa: std.mem.Allocator) void {
+        var copy = result.*;
+        copy.bindings.deinit(gpa);
     }
 };
 
@@ -294,7 +295,7 @@ fn expressionToNode(
 
 fn applyMatches(oir: *Oir, matches: []const Result) !void {
     for (matches) |m| {
-        // TODO: conver to buffer
+        // TODO: convert to buffer
         var ids: std.ArrayListUnmanaged(Class.Index) = .{};
         defer ids.deinit(oir.allocator);
         for (m.pattern.nodes) |entry| {
@@ -326,53 +327,30 @@ const expect = std.testing.expect;
 fn testSearch(oir: *const Oir, comptime buffer: []const u8, num_matches: u64) !void {
     std.debug.assert(oir.clean); // must be clean before searching
 
-    const dummy = SExpr.parse("?x");
+    const apply = SExpr.parse("?x");
     const pattern = SExpr.parse(buffer);
 
-    var matches: std.ArrayListUnmanaged(Result) = .{};
-    defer {
-        for (matches.items) |*m| m.deinit(oir.allocator);
-        matches.deinit(oir.allocator);
-    }
-    try search(oir, &matches, .{
+    const matches = try machine.search(oir, .{
         .from = pattern,
-        .to = dummy,
+        .to = apply,
         .name = "test",
     });
+    defer {
+        for (matches) |*m| m.deinit(oir.allocator);
+        oir.allocator.free(matches);
+    }
 
-    try expectEqual(num_matches, matches.items.len);
+    try expectEqual(num_matches, matches.len);
 }
 
-// test "basic ematch" {
-//     const allocator = std.testing.allocator;
-//     var trace: Trace = .init();
-//     var oir: Oir = .init(allocator, &trace);
-//     defer oir.deinit();
-
-//     // (add (add 10 20) 30)
-//     _ = try oir.add(.init(.start, {}));
-//     const a = try oir.add(.init(.constant, 10));
-//     const b = try oir.add(.init(.constant, 20));
-//     const add = try oir.add(.binOp(.add, a, b));
-//     const c = try oir.add(.init(.constant, 30));
-//     _ = try oir.add(.binOp(.add, add, c));
-//     try oir.rebuild();
-
-//     try testSearch(&oir, "(add 10 20)", 1);
-//     try testSearch(&oir, "(add ?x ?x)", 0);
-//     try testSearch(&oir, "(mul 10 20)", 0);
-//     try testSearch(&oir, "(add ?x ?y)", 2);
-//     try testSearch(&oir, "(add (add 10 20) 30)", 1);
-// }
-
-test "vm ematch" {
+test "basic match" {
     const allocator = std.testing.allocator;
     var trace: Trace = .init();
     var oir: Oir = .init(allocator, &trace);
     defer oir.deinit();
 
-    // (add (add 10 20) 0)
-    _ = try oir.add(.init(.start, {}));
+    // (add (add 10 20) 30)
+    _ = try oir.add(try .create(.start, &oir, &.{}));
     const a = try oir.add(.init(.constant, 10));
     const b = try oir.add(.init(.constant, 20));
     const add = try oir.add(.binOp(.add, a, b));
@@ -380,26 +358,9 @@ test "vm ematch" {
     _ = try oir.add(.binOp(.add, add, c));
     try oir.rebuild();
 
-    const apply = SExpr.parse("(mul 40 50)");
-    const pattern = SExpr.parse("(add 10 20)");
-
-    std.debug.print("apply: {} -> {}\n", .{ pattern, apply });
-
-    var matches: std.ArrayListUnmanaged(Result) = .{};
-    defer {
-        for (matches.items) |*m| m.deinit(oir.allocator);
-        matches.deinit(oir.allocator);
-    }
-    try machine.search(&oir, &matches, .{
-        .from = pattern,
-        .to = apply,
-        .name = "test",
-    });
-
-    std.debug.print("num matches: {}\n", .{matches.items.len});
-
-    try applyMatches(&oir, matches.items);
-    try oir.rebuild();
-
-    try oir.dump("test.dot");
+    try testSearch(&oir, "(add 10 20)", 1);
+    try testSearch(&oir, "(add ?x ?x)", 0);
+    try testSearch(&oir, "(mul 10 20)", 0);
+    try testSearch(&oir, "(add ?x ?y)", 2);
+    try testSearch(&oir, "(add (add 10 20) 30)", 1);
 }

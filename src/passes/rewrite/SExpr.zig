@@ -98,6 +98,26 @@ pub const Entry = union(enum) {
             .entry = entry,
         } };
     }
+
+    pub fn format(
+        entry: Entry,
+        comptime _: []const u8,
+        _: std.fmt.FormatOptions,
+        writer: anytype,
+    ) !void {
+        switch (entry) {
+            .atom => |v| try writer.writeAll(v),
+            .constant => |c| try writer.print("{}", .{c}),
+            .node => |list| {
+                try writer.print("({s} ", .{@tagName(list.tag)});
+                for (list.list, 0..) |child, i| {
+                    try writer.print("%{d}", .{@intFromEnum(child)});
+                    if (i != list.list.len - 1) try writer.writeAll(", ");
+                }
+                try writer.writeByte(')');
+            },
+        }
+    }
 };
 
 pub const Index = enum(u32) {

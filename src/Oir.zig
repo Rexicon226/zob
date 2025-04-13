@@ -188,7 +188,8 @@ pub const Node = struct {
                 .constant,
                 => .constant,
                 .region,
-                => @panic("TODO: shouldn't need to know?"),
+                .start,
+                => .list,
                 .project,
                 => .project,
                 .cmp_gt,
@@ -206,7 +207,6 @@ pub const Node = struct {
                 => .bin_op,
                 .load,
                 => .un_op,
-                .start,
                 .dead,
                 => .none,
             };
@@ -249,6 +249,17 @@ pub const Node = struct {
             .tag = tag,
             .data = data,
         };
+    }
+
+    /// Same as `init`, but for nodes that need to allocate to be initialized.
+    pub fn create(comptime tag: Tag, oir: *Oir, payload: []const Class.Index) !Node {
+        switch (tag) {
+            .start => {
+                const data = try oir.listToSpan(payload);
+                return .{ .tag = .start, .data = .{ .list = data } };
+            },
+            else => unreachable,
+        }
     }
 
     pub fn operands(node: *const Node, repr: anytype) []const Class.Index {
@@ -586,13 +597,18 @@ pub fn getClassType(oir: *const Oir, idx: Class.Index) Node.Type {
 /// Adds an ENode to the EGraph, giving the node its own class.
 /// Returns the EClass index the ENode was placed in.
 pub fn add(oir: *Oir, node: Node) !Class.Index {
-    const node_idx: Node.Index = @enumFromInt(oir.nodes.count());
-    try oir.nodes.put(oir.allocator, node, {});
+    const gop = try oir.nodes.getOrPut(oir.allocator, node);
+    if (gop.found_existing) {
+        const class_idx = oir.findClass(@enumFromInt(gop.index));
+        return oir.union_find.find(class_idx);
+    } else {
+        const node_idx: Node.Index = @enumFromInt(gop.index);
 
-    log.debug("adding node {} {}", .{ node.fmt(oir), node_idx });
+        log.debug("adding node {} {}\n", .{ node.fmt(oir), node_idx });
 
-    const class_idx = try oir.addInternal(node_idx);
-    return oir.union_find.find(class_idx);
+        const class_idx = try oir.addInternal(node_idx);
+        return oir.union_find.find(class_idx);
+    }
 }
 
 /// An internal function to simplify adding nodes to the Oir.
