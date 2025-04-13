@@ -37,7 +37,7 @@ pending: std.ArrayListUnmanaged(Pair),
 ///
 /// Mutating operations set this to `false`, and `rebuild` will set it back to `true`.
 clean: bool,
-trace: *Trace,
+trace: Trace,
 
 const UnionFind = struct {
     parents: std.ArrayListUnmanaged(Class.Index) = .{},
@@ -74,10 +74,6 @@ const UnionFind = struct {
 
     fn parent(f: *const UnionFind, idx: Class.Index) Class.Index {
         return f.parents.items[@intFromEnum(idx)];
-    }
-
-    fn clone(f: *UnionFind, allocator: std.mem.Allocator) !UnionFind {
-        return .{ .parents = try f.parents.clone(allocator) };
     }
 
     fn deinit(f: *UnionFind, gpa: std.mem.Allocator) void {
@@ -425,14 +421,6 @@ pub const Class = struct {
         }
     };
 
-    fn clone(class: *Class, allocator: std.mem.Allocator) !Class {
-        return .{
-            .index = class.index,
-            .bag = try class.bag.clone(allocator),
-            .parents = try class.parents.clone(allocator),
-        };
-    }
-
     pub fn deinit(class: *Class, allocator: std.mem.Allocator) void {
         class.bag.deinit(allocator);
         class.parents.deinit(allocator);
@@ -502,7 +490,7 @@ pub fn optimize(
     }
 }
 
-pub fn init(allocator: std.mem.Allocator, trace: *Trace) Oir {
+pub fn init(allocator: std.mem.Allocator) Oir {
     return .{
         .allocator = allocator,
         .nodes = .{},
@@ -511,7 +499,7 @@ pub fn init(allocator: std.mem.Allocator, trace: *Trace) Oir {
         .extra = .{},
         .union_find = .{},
         .pending = .{},
-        .trace = trace,
+        .trace = .init(),
         .clean = true,
     };
 }
@@ -524,33 +512,6 @@ pub fn dump(oir: *Oir, name: []const u8) !void {
 
 pub fn print(oir: *Oir, stream: anytype) !void {
     try print_oir.print(oir, stream);
-}
-
-/// TODO: I don't really like the idea of cloning everything. Differentials maybe?
-/// We do need some way of mutating the graph to check if something will happen, and reverting
-/// back if it didn't. Some things are just too hard to predict, like how a union will affect
-/// the graph. However, cloning everything is slow, and bug-prone, so I'd like to figure out
-/// a way to not do it.
-pub fn clone(oir: *Oir) !Oir {
-    const gpa = oir.allocator;
-    return .{
-        .allocator = gpa,
-        .trace = oir.trace,
-        .nodes = try oir.nodes.clone(gpa),
-        .extra = try oir.extra.clone(gpa),
-        .classes = classes: {
-            const cloned = try oir.classes.clone(gpa);
-            var iter = cloned.valueIterator();
-            while (iter.next()) |value| {
-                value.* = try value.clone(gpa);
-            }
-            break :classes cloned;
-        },
-        .node_to_class = try oir.node_to_class.cloneContext(gpa, NodeContext{ .oir = oir }),
-        .clean = oir.clean,
-        .pending = try oir.pending.clone(gpa),
-        .union_find = try oir.union_find.clone(gpa),
-    };
 }
 
 /// Reference becomes invalid when new classes are added to the graph.
@@ -876,12 +837,14 @@ fn verifyNodes(oir: *Oir) !void {
     }
 }
 
-pub fn extract(oir: *const Oir, strat: extraction.CostStrategy) !extraction.Recursive {
+pub fn extract(oir: *Oir, strat: extraction.CostStrategy) !extraction.Recursive {
     return extraction.extract(oir, strat);
 }
 
 pub fn deinit(oir: *Oir) void {
     const allocator = oir.allocator;
+
+    oir.trace.deinit();
 
     {
         var iter = oir.classes.valueIterator();

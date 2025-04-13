@@ -26,19 +26,8 @@ const BlockInfo = struct {
 pub fn extract(
     ir: Ir,
     allocator: std.mem.Allocator,
-    trace: *Trace,
 ) !Oir {
-    var oir: Oir = .{
-        .allocator = allocator,
-        .nodes = .{},
-        .classes = .{},
-        .node_to_class = .{},
-        .union_find = .{},
-        .pending = .{},
-        .extra = .{},
-        .trace = trace,
-        .clean = true,
-    };
+    var oir: Oir = .init(allocator);
 
     const start_class = try oir.add(.{
         .tag = .start,

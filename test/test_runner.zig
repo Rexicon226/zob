@@ -26,10 +26,7 @@ pub fn main() !void {
     var ir = try Ir.Parser.parse(gpa, contents);
     defer ir.deinit(gpa);
 
-    var trace: Trace = .init();
-    defer trace.deinit();
-
-    var oir = try Ir.Constructor.extract(ir, gpa, &trace);
+    var oir = try Ir.Constructor.extract(ir, gpa);
     defer oir.deinit();
 
     const stdout = std.io.getStdOut().writer();

@@ -175,8 +175,7 @@ fn testSearch(oir: *const Oir, comptime buffer: []const u8, num_matches: u64) !v
 
 test "basic match" {
     const allocator = std.testing.allocator;
-    var trace: Trace = .init();
-    var oir: Oir = .init(allocator, &trace);
+    var oir: Oir = .init(allocator);
     defer oir.deinit();
 
     // (add (mul 10 20) 30)
@@ -197,8 +196,7 @@ test "basic match" {
 
 test "builtin function match" {
     const allocator = std.testing.allocator;
-    var trace: Trace = .init();
-    var oir: Oir = .init(allocator, &trace);
+    var oir: Oir = .init(allocator);
     defer oir.deinit();
 
     // (add (mul 37 16) 9)

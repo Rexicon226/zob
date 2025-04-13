@@ -74,7 +74,7 @@ pub const CostStrategy = enum {
     pub const auto: CostStrategy = if (build_options.has_z3) .z3 else .simple_latency;
 };
 
-pub fn extract(oir: *const Oir, strat: CostStrategy) !Recursive {
+pub fn extract(oir: *Oir, strat: CostStrategy) !Recursive {
     const trace = oir.trace.start(@src(), "extracting", .{});
     defer trace.end();
 

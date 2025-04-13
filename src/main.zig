@@ -84,18 +84,15 @@ pub fn main() !void {
     try ir.dump(stdout);
     try stdout.writeAll("end IR\n");
 
-    var trace: Trace = .init();
-    defer trace.deinit();
-
     // create the Oir from the IR.
-    var oir = try Ir.Constructor.extract(ir, allocator, &trace);
+    var oir = try Ir.Constructor.extract(ir, allocator);
     defer oir.deinit();
 
     try stdout.writeAll("unoptimized OIR:\n");
     try oir.print(stdout);
     try stdout.writeAll("end OIR\n");
 
-    if (enable_tracing) try trace.enable("trace.json");
+    if (enable_tracing) try oir.trace.enable("trace.json");
 
     var start = try std.time.Timer.start();
 
