@@ -9,9 +9,8 @@ const SExpr = @import("SExpr.zig");
 
 const Node = Oir.Node;
 const Class = Oir.Class;
-const RewriteResult = rewrite.RewriteResult;
+const Result = rewrite.Result;
 const Rewrite = rewrite.Rewrite;
-const RewriteError = rewrite.RewriteError;
 
 const Compiler = struct {
     next_reg: Reg,
@@ -38,23 +37,27 @@ const Compiler = struct {
             const id, const reg = todo;
 
             if (c.isGrounded(id) and node.operands().len != 0) {
-                @panic("TODO: add lookup");
-            }
+                const new_node = try newRoot(pattern, allocator, id);
+                try c.instructions.append(allocator, .{ .lookup = .{
+                    .i = reg,
+                    .term = new_node,
+                } });
+            } else {
+                try c.instructions.append(allocator, .{ .bind = .{
+                    .i = reg,
+                    .out = c.next_reg,
+                    .node = node,
+                } });
+                c.next_reg.add(@intCast(node.operands().len));
 
-            try c.instructions.append(allocator, .{ .bind = .{
-                .i = reg,
-                .out = c.next_reg,
-                .node = node,
-            } });
-            c.next_reg.add(@intCast(node.operands().len));
-
-            for (node.operands(), 0..) |child, i| {
-                try c.addTodo(
-                    allocator,
-                    pattern,
-                    child,
-                    @enumFromInt(@intFromEnum(reg) + i),
-                );
+                for (node.operands(), 0..) |child, i| {
+                    try c.addTodo(
+                        allocator,
+                        pattern,
+                        child,
+                        @enumFromInt(@intFromEnum(reg) + i),
+                    );
+                }
             }
         }
     }
@@ -84,8 +87,6 @@ const Compiler = struct {
         for (pattern.nodes) |node| {
             var free: std.StringArrayHashMapUnmanaged(void) = .{};
             var size: usize = 0;
-
-            std.debug.print("node: {}\n", .{node.fmt(pattern)});
 
             switch (node) {
                 .node => |n| {
@@ -192,6 +193,58 @@ const Compiler = struct {
     }
 };
 
+/// Extracts an S-expression that starts from new_root and contains its children.
+///
+/// Caller must free the expr.
+pub fn newRoot(
+    expr: SExpr,
+    allocator: std.mem.Allocator,
+    new_root_idx: SExpr.Index,
+) !SExpr {
+    var list: std.ArrayListUnmanaged(SExpr.Entry) = .{};
+    defer list.deinit(allocator);
+
+    var queue: std.ArrayListUnmanaged(SExpr.Index) = .{};
+    defer queue.deinit(allocator);
+    var map: std.AutoHashMapUnmanaged(SExpr.Index, SExpr.Index) = .{};
+    defer map.deinit(allocator);
+
+    const new_root = expr.nodes[@intFromEnum(new_root_idx)];
+
+    try queue.appendSlice(
+        allocator,
+        new_root.operands(),
+    );
+
+    while (queue.getLastOrNull()) |id| {
+        if (map.contains(id)) {
+            _ = queue.pop();
+            continue;
+        }
+
+        const node = expr.nodes[@intFromEnum(id)];
+        var resolved: bool = true;
+        for (node.operands()) |child| {
+            if (!map.contains(child)) {
+                resolved = false;
+                try queue.append(allocator, child);
+            }
+        }
+
+        if (resolved) {
+            const new_node = try node.map(allocator, &map);
+            const new_id: SExpr.Index = @enumFromInt(list.items.len);
+            try list.append(allocator, new_node);
+            try map.put(allocator, id, new_id);
+            _ = queue.pop();
+        }
+    }
+
+    const new_root_node = try new_root.map(allocator, &map);
+    try list.append(allocator, new_root_node);
+    return .{ .nodes = try list.toOwnedSlice(allocator) };
+}
+
 const Program = struct {
     instructions: []const Instruction,
     map: std.StringHashMapUnmanaged(Reg),
@@ -200,7 +253,7 @@ const Program = struct {
         p: *Program,
         rw: Rewrite,
         oir: *const Oir,
-        matches: *std.ArrayListUnmanaged(RewriteResult),
+        matches: *std.ArrayListUnmanaged(Result),
     ) !void {
         const pattern = rw.from;
         var iter = oir.classes.valueIterator();
@@ -230,28 +283,27 @@ const Program = struct {
         oir: *const Oir,
         class: Class.Index,
         pattern: SExpr,
-        matches: *std.ArrayListUnmanaged(RewriteResult),
+        matches: *std.ArrayListUnmanaged(Result),
     ) !void {
         std.debug.assert(oir.clean); // must be clean to search
-
         const allocator = oir.allocator;
 
-        var machine: Machine = .{ .registers = .{} };
+        var machine: Machine = .{
+            .registers = .{},
+            .v2r = &p.map,
+            .lookup = .{},
+        };
         defer machine.deinit(allocator);
         try machine.registers.append(allocator, class);
 
-        var results: std.StringHashMapUnmanaged(Class.Index) = .{};
+        var results: std.ArrayListUnmanaged(Result.Bindings) = .{};
+        defer results.deinit(allocator);
+
         try machine.run(oir, p.instructions, p.map, &results);
 
-        if (results.count() > 0) {
-            var result_iter = results.iterator();
-            while (result_iter.next()) |entry| {
-                std.debug.print("({s} in {}) ", .{ entry.key_ptr.*, entry.value_ptr.* });
-            }
-            std.debug.print("\n", .{});
-
+        for (results.items) |result| {
             try matches.append(allocator, .{
-                .bindings = results,
+                .bindings = result,
                 .class = class,
                 .pattern = pattern,
             });
@@ -259,6 +311,7 @@ const Program = struct {
     }
 
     fn deinit(p: *Program, allocator: std.mem.Allocator) void {
+        for (p.instructions) |inst| inst.deinit(allocator);
         allocator.free(p.instructions);
         p.map.deinit(allocator);
     }
@@ -266,13 +319,16 @@ const Program = struct {
 
 const Machine = struct {
     registers: std.ArrayListUnmanaged(Class.Index),
+    /// Owned by the overhead Program
+    v2r: *const std.StringHashMapUnmanaged(Reg),
+    lookup: std.ArrayListUnmanaged(Class.Index),
 
     fn run(
         m: *Machine,
         oir: *const Oir,
         insts: []const Instruction,
         map: std.StringHashMapUnmanaged(Reg),
-        result: *std.StringHashMapUnmanaged(Class.Index),
+        matches: *std.ArrayListUnmanaged(Result.Bindings),
     ) !void {
         for (insts, 1..) |inst, i| {
             switch (inst) {
@@ -288,28 +344,81 @@ const Machine = struct {
                                 try m.registers.append(oir.allocator, id);
                             }
                             // run for remaining instructions
-                            try m.run(oir, insts[i..], map, result);
+                            try m.run(oir, insts[i..], map, matches);
                         }
                         return;
+                    }
+                },
+                .lookup => |lookup| {
+                    m.lookup.clearRetainingCapacity();
+
+                    for (lookup.term.nodes) |node| {
+                        switch (node) {
+                            .atom => |v| {
+                                const reg = m.v2r.get(v).?;
+                                try m.lookup.append(
+                                    oir.allocator,
+                                    oir.union_find.find(m.registers.items[@intFromEnum(reg)]),
+                                );
+                            },
+                            .constant => |c| {
+                                const found_idx = oir.findNode(.{
+                                    .tag = .constant,
+                                    .data = .{ .constant = c },
+                                }) orelse return; // can't match
+                                const class_id = oir.findClass(found_idx);
+                                try m.lookup.append(oir.allocator, class_id);
+                            },
+                            .node => |n| {
+                                var new_node = switch (n.tag) {
+                                    .region => unreachable,
+                                    inline else => |t| Node.init(t, undefined),
+                                };
+                                for (new_node.mutableOperands(oir), n.list) |*op, l| {
+                                    op.* = m.lookup.items[@intFromEnum(l)];
+                                }
+                                const found_idx = oir.findNode(new_node) orelse return; // can't match
+                                const class_id = oir.findClass(found_idx);
+                                try m.lookup.append(oir.allocator, class_id);
+                            },
+                        }
+                    }
+
+                    const id = oir.union_find.find(m.registers.items[@intFromEnum(lookup.i)]);
+                    if (m.lookup.getLastOrNull() != id) {
+                        return; // no match
                     }
                 },
             }
         }
 
+        // matched!
+
+        var result: std.StringHashMapUnmanaged(Class.Index) = .{};
         var iter = map.iterator();
         while (iter.next()) |entry| {
             const class_id = m.registers.items[@intFromEnum(entry.value_ptr.*)];
             try result.put(oir.allocator, entry.key_ptr.*, class_id);
         }
+        try matches.append(oir.allocator, result);
     }
 
     fn deinit(m: *Machine, allocator: std.mem.Allocator) void {
         m.registers.deinit(allocator);
+        m.lookup.deinit(allocator);
     }
 };
 
 const Instruction = union(enum) {
     bind: struct { node: SExpr.Entry, i: Reg, out: Reg },
+    lookup: struct { term: SExpr, i: Reg },
+
+    fn deinit(inst: Instruction, allocator: std.mem.Allocator) void {
+        switch (inst) {
+            .lookup => |l| l.term.deinit(allocator),
+            else => {},
+        }
+    }
 };
 
 const Reg = enum(u32) {
@@ -322,9 +431,9 @@ const Reg = enum(u32) {
 
 pub fn search(
     oir: *const Oir,
-    matches: *std.ArrayListUnmanaged(RewriteResult),
+    matches: *std.ArrayListUnmanaged(Result),
     rw: Rewrite,
-) RewriteError!void {
+) Result.Error!void {
     const allocator = oir.allocator;
 
     var compiler: Compiler = .{

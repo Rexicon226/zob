@@ -40,7 +40,7 @@ pub fn extract(oir: *const Oir) !Recursive {
         const active = model.constant(.bool, null);
         const order = model.constant(.int, null);
 
-        const max_order = model.int(@intCast(oir.nodes.items.len * 10));
+        const max_order = model.int(@intCast(oir.nodes.count() * 10));
         model.assert(model.le(order, max_order));
 
         const nodes = try gpa.alloc(z3.Bool, class.bag.items.len);
@@ -154,7 +154,7 @@ pub fn extract(oir: *const Oir) !Recursive {
                 if (!map.contains(child)) all = false;
             }
             if (all) {
-                const new_id = try recv.addNode(oir.allocator, try mapNode(oir, node, &map));
+                const new_id = try recv.addNode(oir.allocator, try node.mapNode(oir, &map));
                 switch (node.tag) {
                     .ret => try new_exit_list.append(gpa, new_id),
                     .start => start_class = new_id,
@@ -179,16 +179,4 @@ pub fn extract(oir: *const Oir) !Recursive {
     } else {
         std.debug.panic("no solution found!!!! what??", .{});
     }
-}
-
-fn mapNode(
-    oir: *const Oir,
-    old: Node,
-    map: *std.AutoHashMapUnmanaged(Class.Index, Class.Index),
-) !Node {
-    var copy = old;
-    for (copy.mutableOperands(oir)) |*op| {
-        op.* = map.get(oir.union_find.find(op.*)).?;
-    }
-    return copy;
 }

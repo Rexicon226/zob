@@ -17,7 +17,7 @@ pub fn run(oir: *Oir) !bool {
     var constants: std.ArrayListUnmanaged(Node.Index) = .{};
     defer constants.deinit(oir.allocator);
 
-    outer: for (oir.nodes.items, 0..) |node, i| {
+    outer: for (oir.nodes.keys(), 0..) |node, i| {
         const node_idx: Node.Index = @enumFromInt(i);
         const class_idx = oir.findClass(node_idx);
 

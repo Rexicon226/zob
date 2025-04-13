@@ -5,7 +5,7 @@ allocator: std.mem.Allocator,
 /// The list of all E-Nodes in the graph. Each E-Node represents a potential state of the E-Class
 /// they are in. After all optimizations we want have completed, the extractor will be used to
 /// iterate through all E-Classes and extract the best node within.
-nodes: std.ArrayListUnmanaged(Node),
+nodes: std.AutoArrayHashMapUnmanaged(Node, void),
 
 /// Used for storing dynamic and temporary data. Things like the Node `list` payload are stored
 /// on this array. We can assume that it'll live as long as the OIR does.
@@ -188,7 +188,7 @@ pub const Node = struct {
                 .constant,
                 => .constant,
                 .region,
-                => .list,
+                => @panic("TODO: shouldn't need to know?"),
                 .project,
                 => .project,
                 .cmp_gt,
@@ -209,13 +209,6 @@ pub const Node = struct {
                 .start,
                 .dead,
                 => .none,
-            };
-        }
-
-        pub fn exitTag(tag: Tag) bool {
-            return switch (tag) {
-                .ret => true,
-                else => false,
             };
         }
     };
@@ -317,6 +310,18 @@ pub const Node = struct {
         };
     }
 
+    pub fn mapNode(
+        old: Node,
+        oir: *const Oir,
+        map: *std.AutoHashMapUnmanaged(Class.Index, Class.Index),
+    ) !Node {
+        var copy = old;
+        for (copy.mutableOperands(oir)) |*op| {
+            op.* = map.get(oir.union_find.find(op.*)).?;
+        }
+        return copy;
+    }
+
     // Helper functions
     pub fn branch(ctrl: Class.Index, pred: Class.Index) Node {
         return binOp(.branch, ctrl, pred);
@@ -348,6 +353,10 @@ pub const Node = struct {
         };
     }
 
+    pub fn constant(value: i64) Node {
+        return .{ .tag = .constant, .data = .{ .constant = value } };
+    }
+
     pub fn format(
         _: Node,
         comptime _: []const u8,
@@ -376,7 +385,7 @@ pub const Node = struct {
         stream: anytype,
     ) !void {
         const node = ctx.node;
-        var writer: print_oir.Writer = .{ .nodes = ctx.oir.nodes.items };
+        var writer: print_oir.Writer = .{ .nodes = ctx.oir.nodes.keys() };
         try writer.printNode(node, ctx.oir, stream);
     }
 };
@@ -552,13 +561,18 @@ pub fn findClass(oir: *const Oir, node_idx: Node.Index) Class.Index {
     return oir.union_find.find(memo_idx);
 }
 
+pub fn findNode(oir: *const Oir, node: Node) ?Node.Index {
+    const idx = oir.nodes.getIndex(node) orelse return null;
+    return @enumFromInt(idx);
+}
+
 pub fn getNode(oir: *const Oir, idx: Node.Index) Node {
-    return oir.nodes.items[@intFromEnum(idx)];
+    return oir.nodes.keys()[@intFromEnum(idx)];
 }
 
 /// Reference becomes invalid when new nodes are added to the graph.
 fn getNodePtr(oir: *const Oir, idx: Node.Index) *Node {
-    return &oir.nodes.items[@intFromEnum(idx)];
+    return &oir.nodes.keys()[@intFromEnum(idx)];
 }
 
 /// Returns the type of the class.
@@ -572,8 +586,8 @@ pub fn getClassType(oir: *const Oir, idx: Class.Index) Node.Type {
 /// Adds an ENode to the EGraph, giving the node its own class.
 /// Returns the EClass index the ENode was placed in.
 pub fn add(oir: *Oir, node: Node) !Class.Index {
-    const node_idx: Node.Index = @enumFromInt(oir.nodes.items.len);
-    try oir.nodes.append(oir.allocator, node);
+    const node_idx: Node.Index = @enumFromInt(oir.nodes.count());
+    try oir.nodes.put(oir.allocator, node, {});
 
     log.debug("adding node {} {}", .{ node.fmt(oir), node_idx });
 
@@ -670,7 +684,7 @@ pub fn modifyNode(
     new_node: Node,
 ) !void {
     assert(oir.clean);
-    const node_ptr = &oir.nodes.items[@intFromEnum(node_idx)];
+    const node_ptr = &oir.nodes.keys()[@intFromEnum(node_idx)];
     const entry = oir.node_to_class.fetchRemoveContext(node_idx, .{ .oir = oir }).?;
     const class_idx = entry.value;
     node_ptr.* = new_node;

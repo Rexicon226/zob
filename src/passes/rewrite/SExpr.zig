@@ -53,6 +53,23 @@ pub const Entry = union(enum) {
         };
     }
 
+    pub fn map(
+        e: Entry,
+        allocator: std.mem.Allocator,
+        m: *const std.AutoHashMapUnmanaged(Index, Index),
+    ) !Entry {
+        return switch (e) {
+            .atom,
+            .constant,
+            => e,
+            .node => |n| n: {
+                const new_operands = try allocator.dupe(Index, n.list);
+                for (new_operands) |*op| op.* = m.get(op.*).?;
+                break :n .{ .node = .{ .tag = n.tag, .list = new_operands } };
+            },
+        };
+    }
+
     pub fn format2(
         ctx: FormatCtx,
         comptime _: []const u8,
@@ -80,15 +97,6 @@ pub const Entry = union(enum) {
             .expr = expr,
             .entry = entry,
         } };
-    }
-
-    pub fn format(
-        _: Entry,
-        comptime _: []const u8,
-        _: std.fmt.FormatOptions,
-        _: anytype,
-    ) !void {
-        @compileError("use .fmt(expr) to format s-expr entries");
     }
 };
 
@@ -294,6 +302,16 @@ pub fn root(expr: SExpr) Index {
     return @enumFromInt(expr.nodes.len - 1);
 }
 
+pub fn deinit(expr: SExpr, allocator: std.mem.Allocator) void {
+    for (expr.nodes) |node| {
+        switch (node) {
+            .node => |n| allocator.free(n.list),
+            else => {},
+        }
+    }
+    allocator.free(expr.nodes);
+}
+
 pub fn format(
     expr: SExpr,
     comptime fmt: []const u8,
@@ -380,7 +398,8 @@ test "builtin function" {
 }
 
 const SExpr = @This();
-const NodeTag = @import("../../Oir.zig").Node.Tag;
+const Oir = @import("../../Oir.zig");
+const NodeTag = Oir.Node.Tag;
 const std = @import("std");
 const expect = std.testing.expect;
 const assert = std.debug.assert;
