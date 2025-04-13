@@ -71,18 +71,28 @@ pub fn run(oir: *Oir) !bool {
         matches.deinit(oir.allocator);
     }
 
-    for (rewrites) |rewrite| {
-        try machine.search(oir, .{
-            .from = rewrite.from,
-            .to = rewrite.to,
-            .name = rewrite.name,
-        }, &matches);
+    {
+        const trace = oir.trace.start(@src(), "searching", .{});
+        defer trace.end();
+
+        for (rewrites) |rewrite| {
+            try machine.search(oir, .{
+                .from = rewrite.from,
+                .to = rewrite.to,
+                .name = rewrite.name,
+            }, &matches);
+        }
     }
 
-    return applyMatches(
-        oir,
-        matches.items,
-    );
+    {
+        const trace = oir.trace.start(@src(), "applying matches", .{});
+        defer trace.end();
+
+        return try applyMatches(
+            oir,
+            matches.items,
+        );
+    }
 }
 
 fn applyMatches(oir: *Oir, matches: []const Result) !bool {

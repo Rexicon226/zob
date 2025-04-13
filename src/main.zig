@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const Ir = @import("Ir.zig");
 const Trace = @import("Trace.zig");
 const Oir = @import("Oir.zig");
@@ -6,7 +7,11 @@ const Oir = @import("Oir.zig");
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{ .stack_trace_frames = 100 }){};
     defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+
+    const allocator = switch (builtin.mode) {
+        .Debug => gpa.allocator(),
+        else => std.heap.smp_allocator,
+    };
     defer log_scopes.deinit(allocator);
 
     const stdout = std.io.getStdOut().writer();
@@ -61,7 +66,7 @@ pub fn main() !void {
             .{ .value = 0 },
             .{ .value = 1 },
         );
-        for (2..100) |i| {
+        for (2..500) |i| {
             prev_add = try block.addBinOp(
                 .add,
                 .{ .index = prev_add },
