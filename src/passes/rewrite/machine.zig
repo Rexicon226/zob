@@ -141,9 +141,14 @@ const Compiler = struct {
         id: SExpr.Index,
         reg: Reg,
     ) !void {
-        const node = pattern.nodes[@intFromEnum(id)];
+        const node = pattern.get(id);
         switch (node) {
-            .atom => |v| {
+            inline .builtin, .atom => |sub, t| {
+                const v = switch (t) {
+                    .builtin => sub.expr,
+                    .atom => sub,
+                    else => unreachable,
+                };
                 if (c.v2r.get(v)) |j| {
                     try c.instructions.append(allocator, .{ .compare = .{
                         .i = reg,
@@ -153,7 +158,6 @@ const Compiler = struct {
                     try c.v2r.put(allocator, v, reg);
                 }
             },
-            .builtin,
             .node,
             .constant,
             => try c.todo_nodes.put(allocator, .{ id, reg }, node),
@@ -242,7 +246,7 @@ pub fn newRoot(
     var map: std.AutoHashMapUnmanaged(SExpr.Index, SExpr.Index) = .{};
     defer map.deinit(allocator);
 
-    const new_root = expr.nodes[@intFromEnum(new_root_idx)];
+    const new_root = expr.get(new_root_idx);
 
     try queue.appendSlice(
         allocator,
@@ -255,7 +259,7 @@ pub fn newRoot(
             continue;
         }
 
-        const node = expr.nodes[@intFromEnum(id)];
+        const node = expr.get(id);
 
         var resolved: bool = true;
         for (node.operands()) |child| {
@@ -291,7 +295,7 @@ const Program = struct {
     ) !void {
         const pattern = rw.from;
         var iter = oir.classes.valueIterator();
-        const root: SExpr.Entry = pattern.nodes[@intFromEnum(pattern.root())];
+        const root = pattern.get(pattern.root());
         while (iter.next()) |class| {
             switch (root) {
                 .constant => |value| if (oir.classContains(class.index, .constant)) |idx| {
@@ -313,16 +317,16 @@ const Program = struct {
         }
     }
 
-    fn searchMulti(
-        p: *Program,
-        oir: *const Oir,
-        matches: *std.ArrayListUnmanaged(Result),
-    ) !void {
-        var iter = oir.classes.valueIterator();
-        while (iter.next()) |class| {
-            try p.searchClass(oir, class.index, SExpr.parse("10"), matches);
-        }
-    }
+    // fn searchMulti(
+    //     p: *Program,
+    //     oir: *const Oir,
+    //     matches: *std.ArrayListUnmanaged(Result),
+    // ) !void {
+    //     var iter = oir.classes.valueIterator();
+    //     while (iter.next()) |class| {
+    //         try p.searchClass(oir, class.index, SExpr.parse("10"), matches);
+    //     }
+    // }
 
     fn searchClass(
         p: *Program,
@@ -410,19 +414,7 @@ const Machine = struct {
                                 const class_id = oir.findClass(found_idx);
                                 try m.lookup.append(oir.allocator, class_id);
                             },
-                            .builtin => |b| {
-                                if (b.tag.location() != .src) @panic("can't have non-src builtin in source pattern");
-
-                                switch (b.tag) {
-                                    .known_pow2 => {
-                                        const reg = m.v2r.get(b.expr).?;
-                                        _ = reg;
-
-                                        @panic("TODO");
-                                    },
-                                    else => unreachable,
-                                }
-                            },
+                            .builtin => unreachable, // NOTE: not really unreachable i think, dunno
                             .node => |n| {
                                 var new_node = switch (n.tag) {
                                     .region => unreachable,
@@ -525,7 +517,11 @@ const Reg = enum(u32) {
     }
 };
 
-pub fn search(oir: *const Oir, rw: Rewrite) Result.Error![]const Result {
+pub fn search(
+    oir: *const Oir,
+    rw: Rewrite,
+    matches: *std.ArrayListUnmanaged(Result),
+) Result.Error!void {
     const allocator = oir.allocator;
 
     var compiler: Compiler = .{
@@ -543,9 +539,7 @@ pub fn search(oir: *const Oir, rw: Rewrite) Result.Error![]const Result {
     var program = try compiler.extract(allocator);
     defer program.deinit(allocator);
 
-    var matches: std.ArrayListUnmanaged(Result) = .{};
-    try program.search(rw, oir, &matches);
-    return matches.toOwnedSlice(allocator);
+    try program.search(rw, oir, matches);
 }
 
 // pub fn multiSearch(oir: *const Oir, mrw: MultiRewrite) Result.Error!void {

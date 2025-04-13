@@ -581,6 +581,10 @@ pub fn getNode(oir: *const Oir, idx: Node.Index) Node {
     return oir.nodes.keys()[@intFromEnum(idx)];
 }
 
+pub fn getNodes(oir: *const Oir) []const Node {
+    return oir.nodes.keys();
+}
+
 /// Reference becomes invalid when new nodes are added to the graph.
 fn getNodePtr(oir: *const Oir, idx: Node.Index) *Node {
     return &oir.nodes.keys()[@intFromEnum(idx)];
@@ -664,7 +668,7 @@ pub fn @"union"(oir: *Oir, a_idx: Class.Index, b_idx: Class.Index) !bool {
 
     log.debug("union on {} -> {}", .{ b, a });
 
-    assert(oir.getClassType(a_idx) == oir.getClassType(b_idx));
+    assert(oir.getClassType(a) == oir.getClassType(b));
 
     const a_parents = oir.classes.get(a).?.parents.items.len;
     const b_parents = oir.classes.get(b).?.parents.items.len;

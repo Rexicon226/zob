@@ -337,6 +337,10 @@ pub fn root(expr: SExpr) Index {
     return @enumFromInt(expr.nodes.len - 1);
 }
 
+pub fn get(expr: SExpr, idx: Index) Entry {
+    return expr.nodes[@intFromEnum(idx)];
+}
+
 pub fn deinit(expr: SExpr, allocator: std.mem.Allocator) void {
     for (expr.nodes) |node| {
         switch (node) {
@@ -355,7 +359,7 @@ pub fn format(
 ) !void {
     comptime assert(fmt.len == 0);
 
-    const r: Entry = expr.nodes[@intFromEnum(expr.root())];
+    const r: Entry = expr.get(expr.root());
     try writer.print("{}", .{r.fmt(expr)});
 }
 
@@ -363,74 +367,84 @@ pub fn isIdent(expr: *const SExpr) bool {
     return expr.data == .atom and expr.data.atom[0] == '?';
 }
 
-// test "single-layer, multi-variable" {
-//     const expr = comptime SExpr.parse("(mul ?x ?y)");
+test "single-layer, multi-variable" {
+    const expr = comptime SExpr.parse("(mul ?x ?y)");
 
-//     try expect(expr.tag == .mul and expr.data == .list);
+    const root_node = expr.get(expr.root());
 
-//     const lhs = expr.data.list[0];
-//     const rhs = expr.data.list[1];
+    try expect(root_node == .node and root_node.node.tag == .mul);
 
-//     try expect(lhs.tag == .constant and lhs.data == .atom);
-//     try expect(rhs.tag == .constant and rhs.data == .atom);
+    const lhs = expr.nodes[0];
+    const rhs = expr.nodes[1];
 
-//     try expect(std.mem.eql(u8, "?x", lhs.data.atom));
-//     try expect(std.mem.eql(u8, "?y", rhs.data.atom));
-// }
+    try expect(lhs == .atom);
+    try expect(std.mem.eql(u8, lhs.atom, "?x"));
 
-// test "single-layer, single variable single constant" {
-//     const expr = comptime SExpr.parse("(mul 10 ?y)");
+    try expect(rhs == .atom);
+    try expect(std.mem.eql(u8, rhs.atom, "?y"));
+}
 
-//     try expect(expr.tag == .mul and expr.data == .list);
+test "single-layer, single variable single constant" {
+    const expr = comptime SExpr.parse("(mul 10 ?y)");
 
-//     const lhs = expr.data.list[0];
-//     const rhs = expr.data.list[1];
+    const root_node = expr.get(expr.root());
 
-//     try expect(lhs.tag == .constant and lhs.data == .atom);
-//     try expect(rhs.tag == .constant and rhs.data == .atom);
+    try expect(root_node == .node and root_node.node.tag == .mul);
 
-//     try expect(std.mem.eql(u8, "10", lhs.data.atom));
-//     try expect(std.mem.eql(u8, "?y", rhs.data.atom));
-// }
+    const lhs = expr.nodes[0];
+    const rhs = expr.nodes[1];
 
-// test "multi-layer, multi-variable" {
-//     @setEvalBranchQuota(20_000);
-//     const expr = comptime SExpr.parse("(div_exact ?z (mul ?x ?y))");
+    try expect(lhs == .constant);
+    try expect(lhs.constant == 10);
 
-//     try expect(expr.tag == .div_exact and expr.data == .list);
+    try expect(rhs == .atom);
+    try expect(std.mem.eql(u8, rhs.atom, "?y"));
+}
 
-//     const lhs = expr.data.list[0];
-//     const rhs = expr.data.list[1];
+test "multi-layer, multi-variable" {
+    @setEvalBranchQuota(20_000);
+    const expr = comptime SExpr.parse("(div_exact ?z (mul ?x ?y))");
 
-//     try expect(lhs.tag == .constant and lhs.data == .atom);
-//     try expect(rhs.tag == .mul and rhs.data == .list);
+    const root_node = expr.get(expr.root());
 
-//     const mul_lhs = rhs.data.list[0];
-//     const mul_rhs = rhs.data.list[1];
+    try expect(root_node == .node and root_node.node.tag == .div_exact);
 
-//     try expect(mul_lhs.tag == .constant and mul_lhs.data == .atom);
-//     try expect(mul_rhs.tag == .constant and mul_rhs.data == .atom);
+    const lhs = expr.get(root_node.node.list[0]);
+    const rhs = expr.get(root_node.node.list[1]);
 
-//     try expect(std.mem.eql(u8, "?z", lhs.data.atom));
-//     try expect(std.mem.eql(u8, "?x", mul_lhs.data.atom));
-//     try expect(std.mem.eql(u8, "?y", mul_rhs.data.atom));
-// }
+    try expect(lhs == .atom);
+    try expect(std.mem.eql(u8, lhs.atom, "?z"));
 
-// test "builtin function" {
-//     const expr = comptime SExpr.parse("(mul ?x @known_pow2(y))");
+    try expect(rhs == .node);
+    try expect(rhs.node.tag == .mul);
 
-//     try expect(expr.tag == .mul and expr.data == .list);
+    const mul_lhs = expr.get(rhs.node.list[0]);
+    const mul_rhs = expr.get(rhs.node.list[1]);
 
-//     const lhs = expr.data.list[0];
-//     const rhs = expr.data.list[1];
+    try expect(mul_lhs == .atom);
+    try expect(std.mem.eql(u8, mul_lhs.atom, "?x"));
 
-//     try expect(lhs.tag == .constant and lhs.data == .atom);
-//     try expect(rhs.tag == .constant and rhs.data == .builtin);
+    try expect(mul_rhs == .atom);
+    try expect(std.mem.eql(u8, mul_rhs.atom, "?y"));
+}
 
-//     try expect(std.mem.eql(u8, "?x", lhs.data.atom));
-//     try expect(rhs.data.builtin.tag == .known_pow2);
-//     try expect(std.mem.eql(u8, "y", rhs.data.builtin.expr));
-// }
+test "builtin function" {
+    const expr = comptime SExpr.parse("(mul ?x @known_pow2(y))");
+
+    const root_node = expr.get(expr.root());
+
+    try expect(root_node == .node and root_node.node.tag == .mul);
+
+    const lhs = expr.get(root_node.node.list[0]);
+    const rhs = expr.get(root_node.node.list[1]);
+
+    try expect(lhs == .atom);
+    try expect(std.mem.eql(u8, lhs.atom, "?x"));
+
+    try expect(rhs == .builtin);
+    try expect(rhs.builtin.tag == .known_pow2);
+    try expect(std.mem.eql(u8, "y", rhs.builtin.expr));
+}
 
 const SExpr = @This();
 const Oir = @import("../../Oir.zig");

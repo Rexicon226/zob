@@ -65,24 +65,24 @@ const rewrites: []const Rewrite = blk: {
 };
 
 pub fn run(oir: *Oir) !bool {
-    const gpa = oir.allocator;
-
     var matches: std.ArrayListUnmanaged(Result) = .{};
     defer {
-        for (matches.items) |*item| item.deinit(gpa);
-        matches.deinit(gpa);
+        for (matches.items) |*m| m.deinit(oir.allocator);
+        matches.deinit(oir.allocator);
     }
 
-    {
-        const trace = oir.trace.start(@src(), "searching for matches", .{});
-        defer trace.end();
-
-        for (rewrites) |rewrite| {
-            try search(oir, &matches, rewrite);
-        }
+    for (rewrites) |rewrite| {
+        try machine.search(oir, .{
+            .from = rewrite.from,
+            .to = rewrite.to,
+            .name = rewrite.name,
+        }, &matches);
     }
 
-    @panic("TODO");
+    return applyMatches(
+        oir,
+        matches.items,
+    );
 }
 
 fn search(
@@ -303,7 +303,8 @@ fn expressionToNode(
     }
 }
 
-fn applyMatches(oir: *Oir, matches: []const Result) !void {
+fn applyMatches(oir: *Oir, matches: []const Result) !bool {
+    var changed: bool = false;
     for (matches) |m| {
         // TODO: convert to buffer
         var ids: std.ArrayListUnmanaged(Class.Index) = .{};
@@ -322,13 +323,39 @@ fn applyMatches(oir: *Oir, matches: []const Result) !void {
                     }
                     break :b try oir.add(new);
                 },
+                .builtin => |b| b: {
+                    if (b.tag.location() != .dst) @panic("have non-dst builtin in destination pattern");
+
+                    switch (b.tag) {
+                        .log2 => {
+                            // TODO: I'd like to figure out a way to safely access `classContains`
+                            // for constants without having to rebuild the graph. In theory it should
+                            // be possible, but my concern right now is that if the class index gets
+                            // merged into a larger class, it will cause issues. Maybe union find
+                            // makes up for that? Need to do more testing.
+                            try oir.rebuild();
+
+                            const idx = m.bindings.get(b.expr).?;
+                            const node_idx = oir.classContains(idx, .constant) orelse
+                                @panic("@log2 binding isn't a power of two?");
+                            const node = oir.getNode(node_idx);
+                            const value = node.data.constant;
+                            if (value < 1) @panic("how do we handle @log2 of a negative?");
+                            const log_value = std.math.log2_int(u64, @intCast(value));
+                            break :b try oir.add(.constant(log_value));
+                        },
+                        else => unreachable,
+                    }
+                },
             };
+
             try ids.append(oir.allocator, id);
         }
 
         const last = ids.getLast();
-        _ = try oir.@"union"(m.class, last);
+        if (try oir.@"union"(m.class, last)) changed = true;
     }
+    return changed;
 }
 
 const expectEqual = std.testing.expectEqual;
@@ -340,17 +367,18 @@ fn testSearch(oir: *const Oir, comptime buffer: []const u8, num_matches: u64) !v
     const apply = SExpr.parse("?x");
     const pattern = SExpr.parse(buffer);
 
-    const matches = try machine.search(oir, .{
+    var matches: std.ArrayListUnmanaged(Result) = .{};
+    try machine.search(oir, .{
         .from = pattern,
         .to = apply,
         .name = "test",
-    });
+    }, &matches);
     defer {
-        for (matches) |*m| m.deinit(oir.allocator);
-        oir.allocator.free(matches);
+        for (matches.items) |*m| m.deinit(oir.allocator);
+        matches.deinit(oir.allocator);
     }
 
-    try expectEqual(num_matches, matches.len);
+    try expectEqual(num_matches, matches.items.len);
 }
 
 test "basic match" {

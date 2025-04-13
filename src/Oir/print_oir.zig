@@ -193,7 +193,7 @@ pub fn print(
     repr: anytype,
     stream: anytype,
 ) !void {
-    var writer: Writer = .{ .nodes = repr.nodes.items };
+    var writer: Writer = .{ .nodes = repr.getNodes() };
     try writer.printBody(repr, stream);
 }
 

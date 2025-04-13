@@ -26,6 +26,10 @@ pub const Recursive = struct {
         return r.nodes.items[@intFromEnum(idx)];
     }
 
+    pub fn getNodes(r: *const Recursive) []const Node {
+        return r.nodes.items;
+    }
+
     pub fn addNode(r: *Recursive, allocator: std.mem.Allocator, node: Node) !Class.Index {
         const idx: Class.Index = @enumFromInt(r.nodes.items.len);
         try r.nodes.append(allocator, node);
