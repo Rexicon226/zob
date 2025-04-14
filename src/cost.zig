@@ -20,7 +20,8 @@ pub fn getCost(tag: Oir.Node.Tag) u32 {
         .store,
         => 1,
 
-        // Branching
+        // Compare
+        .cmp_eq,
         .cmp_gt,
         .project,
         => 1,

@@ -40,7 +40,10 @@ pub fn run(oir: *Oir) !bool {
             .sub,
             .mul,
             .div_exact,
+            .div_trunc,
             .shl,
+            .cmp_eq,
+            .cmp_gt,
             => {
                 const lhs, const rhs = constants.items[0..2].*;
                 const lhs_value = oir.getNode(lhs).data.constant;
@@ -51,7 +54,10 @@ pub fn run(oir: *Oir) !bool {
                     .sub => lhs_value - rhs_value,
                     .mul => lhs_value * rhs_value,
                     .div_exact => @divExact(lhs_value, rhs_value),
+                    .div_trunc => @divTrunc(lhs_value, rhs_value),
                     .shl => lhs_value << @intCast(rhs_value),
+                    .cmp_eq => @intFromBool(lhs_value == rhs_value),
+                    .cmp_gt => @intFromBool(lhs_value > rhs_value),
                     else => unreachable,
                 };
 

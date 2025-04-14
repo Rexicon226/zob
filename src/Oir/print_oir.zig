@@ -222,6 +222,7 @@ pub const Writer = struct {
             .div_trunc,
             .add,
             .cmp_gt,
+            .cmp_eq,
             => try w.printBinOp(node, stream),
             .project => try w.printProject(node, stream),
             .constant => try w.printConstant(node, stream),

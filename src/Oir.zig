@@ -162,7 +162,8 @@ pub const Node = struct {
         div_trunc,
         div_exact,
 
-        // Branching
+        // Compare
+        cmp_eq,
         cmp_gt,
 
         load,
@@ -189,6 +190,7 @@ pub const Node = struct {
                 .project,
                 => .project,
                 .cmp_gt,
+                .cmp_eq,
                 .@"and",
                 .add,
                 .sub,
@@ -286,6 +288,7 @@ pub const Node = struct {
             .load,
             .store,
             .cmp_gt,
+            .cmp_eq,
             .@"and",
             .add,
             .sub,
@@ -569,7 +572,7 @@ pub fn add(oir: *Oir, node: Node) !Class.Index {
     } else {
         const node_idx: Node.Index = @enumFromInt(gop.index);
 
-        log.debug("adding node {} {}\n", .{ node.fmt(oir), node_idx });
+        log.debug("adding node {} {}", .{ node.fmt(oir), node_idx });
 
         const class_idx = try oir.addInternal(node_idx);
         return oir.union_find.find(class_idx);
