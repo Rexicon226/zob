@@ -39,6 +39,11 @@ pending: std.ArrayListUnmanaged(Pair),
 clean: bool,
 trace: Trace,
 
+/// A list of classes/nodes which act as exits from the function. This will usually
+/// be `ret` nodes. We use it later in the extraction to understand where to start
+/// looking for the best path.
+exit_list: std.ArrayListUnmanaged(Class.Index),
+
 const UnionFind = struct {
     parents: std.ArrayListUnmanaged(Class.Index) = .{},
 
@@ -310,11 +315,9 @@ pub const Node = struct {
 
     pub fn isVolatile(node: Node) bool {
         // TODO: this isn't necessarily true, but just to be safe for now.
-        if (node.nodeType() == .ctrl) return true;
         return switch (node.tag) {
             .start,
             .ret,
-            .branch,
             => true,
             else => false,
         };
@@ -503,6 +506,7 @@ pub fn init(allocator: std.mem.Allocator) Oir {
         .union_find = .{},
         .pending = .{},
         .trace = .init(),
+        .exit_list = .{},
         .clean = true,
     };
 }
@@ -657,29 +661,6 @@ pub fn @"union"(oir: *Oir, a_idx: Class.Index, b_idx: Class.Index) !bool {
     return true;
 }
 
-/// **NOTE: DOES NOT PERFORM AN UPDATE ON THE OPERANDS.**
-///
-/// This function should be rarely used. It performs an incremental rebuild
-/// in order to not break the E-Graph, however it could still have unforseen side
-/// effects.
-pub fn modifyNode(
-    oir: *Oir,
-    node_idx: Node.Index,
-    new_node: Node,
-) !void {
-    assert(oir.clean);
-    const node_ptr = &oir.nodes.keys()[@intFromEnum(node_idx)];
-    const entry = oir.node_to_class.fetchRemoveContext(node_idx, .{ .oir = oir }).?;
-    const class_idx = entry.value;
-    node_ptr.* = new_node;
-    try oir.node_to_class.putNoClobberContext(
-        oir.allocator,
-        node_idx,
-        class_idx,
-        .{ .oir = oir },
-    );
-}
-
 /// Performs a rebuild of the E-Graph to ensure that invariances are met.
 ///
 /// This looks over hashes of the nodes and merges duplicate nodes.
@@ -699,8 +680,7 @@ pub fn rebuild(oir: *Oir) !void {
 
         const node = oir.getNodePtr(node_idx);
         for (node.mutableOperands(oir)) |*id| {
-            const found_idx = oir.union_find.findMutable(id.*);
-            id.* = found_idx;
+            id.* = oir.union_find.findMutable(id.*);
         }
 
         if (try oir.node_to_class.fetchPutContext(
@@ -847,20 +827,20 @@ pub fn extract(oir: *Oir, strat: extraction.CostStrategy) !extraction.Recursive 
 pub fn deinit(oir: *Oir) void {
     const allocator = oir.allocator;
 
-    oir.trace.deinit();
-
     {
         var iter = oir.classes.valueIterator();
         while (iter.next()) |class| class.deinit(allocator);
         oir.classes.deinit(allocator);
     }
 
+    oir.trace.deinit();
     oir.node_to_class.deinit(allocator);
     oir.nodes.deinit(allocator);
 
     oir.union_find.deinit(allocator);
     oir.pending.deinit(allocator);
     oir.extra.deinit(allocator);
+    oir.exit_list.deinit(allocator);
 }
 
 /// Checks if a class contains a constant equivalence node, and returns it.

@@ -1,6 +1,6 @@
 //! Constructs OIR from IR.
 
-const Extractor = @This();
+const Constructor = @This();
 const std = @import("std");
 const Oir = @import("../Oir.zig");
 const Ir = @import("../Ir.zig");
@@ -11,17 +11,12 @@ oir: *Oir,
 ir: *const Ir,
 start_class: Class.Index,
 ctrl_class: ?Class.Index,
-ir_to_class: std.AutoHashMapUnmanaged(Inst.Index, Class.Index) = .{},
-block_info: std.AutoHashMapUnmanaged(Inst.Index, BlockInfo) = .{},
-exits: std.ArrayListUnmanaged(Class.Index) = .{},
-scratch: std.ArrayListUnmanaged(Class.Index) = .{},
+ir_to_class: std.AutoHashMapUnmanaged(Inst.Index, Class.Index),
+exits: *std.ArrayListUnmanaged(Class.Index),
+scratch: std.ArrayListUnmanaged(Class.Index),
 
 const Class = Oir.Class;
 const Node = Oir.Node;
-
-const BlockInfo = struct {
-    branch: Class.Index,
-};
 
 pub fn extract(
     ir: Ir,
@@ -38,36 +33,30 @@ pub fn extract(
     // since the `start` node is absorbant.
     const ctrl_class = try oir.add(.project(0, start_class, .ctrl));
 
-    var extractor: Extractor = .{
+    var constructor: Constructor = .{
         .oir = &oir,
         .ir = &ir,
         .start_class = start_class,
         .ctrl_class = ctrl_class,
         .ir_to_class = .{},
+        .exits = &oir.exit_list,
+        .scratch = .{},
     };
-    defer extractor.deinit();
+    defer constructor.deinit();
 
-    try extractor.extractBody(ir.main_body);
-
+    try constructor.extractBody(ir.main_body);
     try oir.rebuild();
-
-    // Update the `start` node, now that we've generated all exits.
-    const exit_list = try oir.listToSpan(extractor.exits.items);
-    try oir.modifyNode(.start, .{
-        .tag = .start,
-        .data = .{ .list = exit_list },
-    });
 
     return oir;
 }
 
-fn extractBody(e: *Extractor, insts: []const Inst.Index) error{OutOfMemory}!void {
+fn extractBody(e: *Constructor, insts: []const Inst.Index) error{OutOfMemory}!void {
     for (insts) |inst| {
         try e.select(inst);
     }
 }
 
-fn select(e: *Extractor, inst: Inst.Index) !void {
+fn select(e: *Constructor, inst: Inst.Index) !void {
     const oir = e.oir;
     const ir = e.ir;
     const allocator = oir.allocator;
@@ -189,7 +178,7 @@ fn select(e: *Extractor, inst: Inst.Index) !void {
     }
 }
 
-fn matOrGet(e: *Extractor, op: Inst.Operand) !Class.Index {
+fn matOrGet(e: *Constructor, op: Inst.Operand) !Class.Index {
     switch (op) {
         .index => |idx| return e.ir_to_class.get(idx).?,
         .value => |val| {
@@ -202,10 +191,8 @@ fn matOrGet(e: *Extractor, op: Inst.Operand) !Class.Index {
     }
 }
 
-fn deinit(e: *Extractor) void {
+fn deinit(e: *Constructor) void {
     const allocator = e.oir.allocator;
     e.ir_to_class.deinit(allocator);
-    e.block_info.deinit(allocator);
-    e.exits.deinit(allocator);
     e.scratch.deinit(allocator);
 }

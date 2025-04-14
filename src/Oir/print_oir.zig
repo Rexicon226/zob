@@ -155,15 +155,12 @@ pub fn dumpRecvGraph(
 
     for (recv.nodes.items, 0..) |node, i| {
         switch (node.tag) {
-            .ret,
-            .branch,
-            => {
+            .ret, .branch => {
                 const ctrl, const data = node.data.bin_op;
                 try printEdge(stream, i, ctrl, .red);
                 try printEdge(stream, i, data, .black);
             },
-            .project,
-            => {
+            .project => {
                 const project = node.data.project;
                 const target = project.tuple;
                 try printEdge(stream, i, target, switch (project.type) {
@@ -227,7 +224,8 @@ pub const Writer = struct {
             .project => try w.printProject(node, stream),
             .constant => try w.printConstant(node, stream),
             .branch => try w.printCtrlDataOp(node, stream),
-            .region, .start => try w.printCtrlList(node, repr, stream),
+            .start => try w.printStart(node, repr, stream),
+            .region => try w.printCtrlList(node, repr, stream),
             else => try stream.print("TODO: {s}", .{@tagName(node.tag)}),
         }
         try stream.writeAll(")");
@@ -256,6 +254,13 @@ pub const Writer = struct {
     fn printCtrlDataOp(_: *Writer, node: Oir.Node, stream: anytype) !void {
         const bin_op = node.data.bin_op;
         try stream.print("{}, {}", .{ bin_op[0], bin_op[1] });
+    }
+
+    fn printStart(_: *Writer, _: Oir.Node, repr: anytype, stream: anytype) !void {
+        for (repr.exit_list.items, 0..) |exit, i| {
+            try stream.writeAll(if (i == 0) "" else ", ");
+            try stream.print("{}", .{exit});
+        }
     }
 
     fn printCtrlList(_: *Writer, node: Oir.Node, repr: anytype, stream: anytype) !void {

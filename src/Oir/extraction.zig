@@ -12,6 +12,7 @@ const Class = Oir.Class;
 /// A form of OIR where nodes reference other nodes.
 pub const Recursive = struct {
     nodes: std.ArrayListUnmanaged(Node) = .{},
+    exit_list: std.ArrayListUnmanaged(Class.Index) = .{},
     extra: std.ArrayListUnmanaged(u32) = .{},
 
     // TODO: Explore making this its own unique type. Currently we can't do that because
@@ -45,6 +46,7 @@ pub const Recursive = struct {
     pub fn deinit(r: *Recursive, allocator: std.mem.Allocator) void {
         r.nodes.deinit(allocator);
         r.extra.deinit(allocator);
+        r.exit_list.deinit(allocator);
     }
 
     pub fn listToSpan(

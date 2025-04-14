@@ -23,17 +23,17 @@ pub fn getCost(tag: Oir.Node.Tag) u32 {
         // Compare
         .cmp_eq,
         .cmp_gt,
-        .project,
+        .branch,
         => 1,
 
         .start,
         .ret,
-        .branch,
         .dead,
         .region,
         // constants have zero latency so that we bias towards
         // selecting the "free" absorbing element.
         .constant,
+        .project,
         => 0,
     };
 }

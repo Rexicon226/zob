@@ -32,10 +32,11 @@ cycles: std.AutoHashMapUnmanaged(Node.Index, Class.Index),
 cost_memo: std.AutoHashMapUnmanaged(Class.Index, NodeCost),
 
 start_class: ?Class.Index,
-exit_list: std.ArrayListUnmanaged(Class.Index),
 
 best_node: std.AutoHashMapUnmanaged(Class.Index, Node.Index),
 map: std.AutoHashMapUnmanaged(Class.Index, Class.Index),
+
+exit_list: std.ArrayListUnmanaged(Class.Index),
 
 const NodeCost = struct {
     u32,
@@ -66,20 +67,10 @@ pub fn extract(oir: *const Oir) !Recursive {
     }
 
     var recv: Recursive = .{};
-
-    const exit_list = oir.getNode(.start).data.list.toSlice(oir);
-    for (exit_list) |exit| {
-        _ = try e.extractClass(@enumFromInt(exit), &recv);
+    for (oir.exit_list.items) |exit| {
+        _ = try e.extractClass(exit, &recv);
     }
-
-    if (e.start_class) |idx| {
-        recv.nodes.items[@intFromEnum(idx)].data = .{
-            .list = try recv.listToSpan(
-                e.exit_list.items,
-                oir.allocator,
-            ),
-        };
-    }
+    recv.exit_list = try e.exit_list.clone(oir.allocator);
 
     return recv;
 }
