@@ -128,6 +128,7 @@ fn applyMatches(oir: *Oir, matches: []const Result) !bool {
                             try oir.rebuild();
 
                             const idx = m.bindings.get(b.expr).?;
+
                             const node_idx = oir.classContains(idx, .constant) orelse
                                 @panic("@log2 binding isn't a power of two?");
                             const node = oir.getNode(node_idx);
@@ -199,7 +200,7 @@ test "builtin function match" {
     var oir: Oir = .init(allocator);
     defer oir.deinit();
 
-    // (add (mul 37 16) 9)
+    // (mul 37 16)
     _ = try oir.add(try .create(.start, &oir, &.{}));
     const a = try oir.add(.init(.constant, 37));
     const b = try oir.add(.init(.constant, 16));
@@ -208,6 +209,21 @@ test "builtin function match" {
 
     try testSearch(&oir, "(mul ?x @known_pow2(?y))", 1);
     try testSearch(&oir, "(add ?x @known_pow2(?y))", 0);
+}
+
+test "negative known_pow2" {
+    const allocator = std.testing.allocator;
+    var oir: Oir = .init(allocator);
+    defer oir.deinit();
+
+    // (mul 5 -2)
+    _ = try oir.add(try .create(.start, &oir, &.{}));
+    const a = try oir.add(.init(.constant, 5));
+    const b = try oir.add(.init(.constant, -2));
+    _ = try oir.add(.binOp(.mul, a, b));
+    try oir.rebuild();
+
+    try testSearch(&oir, "(mul ?x @known_pow2(?y))", 0);
 }
 
 // test "basic multi-pattern match" {

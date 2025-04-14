@@ -99,6 +99,7 @@ pub const Entry = union(enum) {
         switch (ctx.entry) {
             .atom => |atom| try writer.writeAll(atom),
             .constant => |constant| try writer.print("{}", .{constant}),
+            .builtin => |b| try writer.print("@{s}({s})", .{ @tagName(b.tag), b.expr }),
             .node => |node| {
                 try writer.print("({s}", .{@tagName(node.tag)});
                 for (node.list) |index| {
@@ -128,6 +129,7 @@ pub const Entry = union(enum) {
         switch (entry) {
             .atom => |v| try writer.writeAll(v),
             .constant => |c| try writer.print("{}", .{c}),
+            .builtin => |b| try writer.print("@{s}({s})", .{ @tagName(b.tag), b.expr }),
             .node => |list| {
                 try writer.print("({s} ", .{@tagName(list.tag)});
                 for (list.list, 0..) |child, i| {

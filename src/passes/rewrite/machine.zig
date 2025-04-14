@@ -156,6 +156,10 @@ const Compiler = struct {
                     } });
                 } else {
                     try c.v2r.put(allocator, v, reg);
+                    switch (t) {
+                        .builtin => try c.todo_nodes.put(allocator, .{ id, reg }, node),
+                        else => {},
+                    }
                 }
             },
             .node,
