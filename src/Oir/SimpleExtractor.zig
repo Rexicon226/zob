@@ -81,7 +81,7 @@ fn extractClass(e: *SimpleExtractor, class_idx: Class.Index, recv: *Recursive) !
 
     if (e.map.get(class_idx)) |memo| return memo;
 
-    const best_node_idx = e.best_node.get(class_idx).?;
+    const best_node_idx = e.best_node.get(e.oir.union_find.find(class_idx)).?;
     const best_node = oir.getNode(best_node_idx);
 
     switch (best_node.tag) {

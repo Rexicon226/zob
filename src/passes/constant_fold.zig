@@ -80,43 +80,45 @@ pub fn run(oir: *Oir) !bool {
                 // We can fold away branches if we know what the predicate is.
                 const predicate = node.data.bin_op[1];
                 if (oir.classContains(predicate, .constant)) |idx| {
-                    const value = oir.getNode(idx).data.constant;
-                    assert(value == 0 or value == 1);
+                    _ = idx;
+                    // TODO: no clear way to extract this in a valid way yet
+                    // const value = oir.getNode(idx).data.constant;
+                    // assert(value == 0 or value == 1);
 
-                    var true_project: ?Oir.Class.Index = null;
-                    for (oir.nodes.keys(), 0..) |sub_node, j| {
-                        if (sub_node.tag == .project) {
-                            const project = sub_node.data.project;
+                    // var true_project: ?Oir.Class.Index = null;
+                    // for (oir.nodes.keys(), 0..) |sub_node, j| {
+                    //     if (sub_node.tag == .project) {
+                    //         const project = sub_node.data.project;
 
-                            if (project.tuple == class_idx and
-                                // NOTE: project(0, ...) is the then case, and 1 is "true",
-                                // so we are comparing inverse.
-                                project.index != value)
-                            {
-                                true_project = oir.findClass(@enumFromInt(j));
-                            }
-                        }
-                    }
+                    //         if (project.tuple == class_idx and
+                    //             // NOTE: project(0, ...) is the then case, and 1 is "true",
+                    //             // so we are comparing inverse.
+                    //             project.index != value)
+                    //         {
+                    //             true_project = oir.findClass(@enumFromInt(j));
+                    //         }
+                    //     }
+                    // }
 
-                    if (true_project) |prt| {
-                        for (oir.nodes.keys()) |sub_node| {
-                            switch (sub_node.tag) {
-                                .ret => {
-                                    if (sub_node.data.bin_op[0] == prt) {
-                                        const new_ret = try oir.add(.binOp(
-                                            .ret,
-                                            node.data.bin_op[0],
-                                            sub_node.data.bin_op[1],
-                                        ));
-                                        try oir.exit_list.append(oir.allocator, new_ret);
-                                        return false;
-                                    }
-                                },
-                                else => {},
-                            }
-                        }
-                        return false;
-                    } else return false;
+                    // if (true_project) |prt| {
+                    //     for (oir.nodes.keys()) |sub_node| {
+                    //         switch (sub_node.tag) {
+                    //             .ret => {
+                    //                 if (sub_node.data.bin_op[0] == prt) {
+                    //                     const new_ret = try oir.add(.binOp(
+                    //                         .ret,
+                    //                         node.data.bin_op[0],
+                    //                         sub_node.data.bin_op[1],
+                    //                     ));
+                    //                     try oir.exit_list.insert(oir.allocator, 0, new_ret);
+                    //                     return false;
+                    //                 }
+                    //             },
+                    //             else => {},
+                    //         }
+                    //     }
+                    //     return false;
+                    // } else return false;
                 }
             },
             else => std.debug.panic("TODO: constant fold {s}", .{@tagName(node.tag)}),
