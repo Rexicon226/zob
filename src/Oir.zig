@@ -176,7 +176,7 @@ pub const Node = struct {
 
         dead,
 
-        pub fn isAbsorbing(tag: Tag) bool {
+        pub fn isCanonical(tag: Tag) bool {
             return switch (tag) {
                 .constant,
                 .start,
@@ -412,7 +412,7 @@ pub const Class = struct {
     parents: std.ArrayListUnmanaged(Pair) = .{},
 
     pub const Index = enum(u32) {
-        /// The start node is always in the first class, and alone as it's absorbing.
+        /// The start node is always in the first class, and alone as it's canonical.
         start,
         _,
 
@@ -846,9 +846,9 @@ pub fn deinit(oir: *Oir) void {
 /// Checks if a class contains a constant equivalence node, and returns it.
 /// Otherwise returns `null`.
 ///
-/// Can only return absorbing element types such as `constant`.
+/// Can only return canonical element types such as `constant`.
 pub fn classContains(oir: *const Oir, idx: Class.Index, comptime tag: Node.Tag) ?Node.Index {
-    comptime assert(tag.isAbsorbing());
+    comptime assert(tag.isCanonical());
     assert(oir.clean);
 
     const class = oir.classes.get(idx) orelse return null;

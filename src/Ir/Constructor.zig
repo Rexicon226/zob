@@ -30,7 +30,7 @@ pub fn extract(
     });
 
     // We can guarntee that the start node will never move,
-    // since the `start` node is absorbant.
+    // since the `start` node is canonical.
     const ctrl_class = try oir.add(.project(0, start_class, .ctrl));
 
     var constructor: Constructor = .{

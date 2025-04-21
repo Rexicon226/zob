@@ -31,7 +31,7 @@ pub fn getCost(tag: Oir.Node.Tag) u32 {
         .dead,
         .region,
         // constants have zero latency so that we bias towards
-        // selecting the "free" absorbing element.
+        // selecting the "free" canonical element.
         .constant,
         .project,
         => 0,
