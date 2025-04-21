@@ -27,9 +27,9 @@ pub fn build(b: *std.Build) !void {
     });
     zob_mod.addOptions("build_options", options);
 
-    const run = b.step("run", "Run the compiler");
+    const run_compiler = b.step("run", "Run the compiler");
     const run_artifact = b.addRunArtifact(compiler);
-    run.dependOn(&run_artifact.step);
+    run_compiler.dependOn(&run_artifact.step);
     if (b.args) |args| run_artifact.addArgs(args);
 
     const test_lib = b.addTest(.{
@@ -55,8 +55,8 @@ pub fn build(b: *std.Build) !void {
     if (use_z3) {
         const z3 = b.lazyDependency("z3", .{ .target = target, .optimize = optimize }) orelse return;
         const z3_mod = z3.module("z3_bindings");
-        compiler.root_module.addImport("z3", z3_mod);
         zob_mod.addImport("z3", z3_mod);
+        compiler.root_module.addImport("z3", z3_mod);
         test_lib.root_module.addImport("z3", z3_mod);
         test_runner.root_module.addImport("z3", z3_mod);
     }
@@ -77,4 +77,35 @@ pub fn build(b: *std.Build) !void {
         // Don't run the extra testing stuff if we added a filter.
         if (filters == null) test_step.dependOn(test_case);
     }
+
+    const test_frontends = b.step("test-frontends", "Runs frontend tests");
+    if (filters == null) test_step.dependOn(test_frontends);
+
+    inline for (frontends) |frontend| {
+        const name, const lang = frontend;
+
+        const step = b.step(name, lang ++ " language compiler");
+        const dep = b.dependency(name, .{
+            .target = target,
+            .optimize = optimize,
+        });
+
+        const artifact = dep.artifact(name);
+        artifact.root_module.addImport("zob", zob_mod);
+        b.installArtifact(artifact);
+
+        const run = b.addRunArtifact(artifact);
+        if (b.args) |args| run.addArgs(args);
+        step.dependOn(&run.step);
+
+        const test_exe = b.addTest(.{
+            .name = name,
+            .root_module = dep.module(name),
+        });
+        test_frontends.dependOn(&b.addRunArtifact(test_exe).step);
+    }
 }
+
+const frontends = .{
+    .{ "scc", "C" },
+};

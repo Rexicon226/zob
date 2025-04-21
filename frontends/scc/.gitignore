@@ -1,0 +1,9 @@
+.zig-cache
+zig-out
+
+traces/*
+!traces/.keep
+
+.vscode
+test.dot
+out.png

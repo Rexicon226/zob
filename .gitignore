@@ -3,3 +3,6 @@ zig-out/
 out.dot
 graphs/*
 trace.json
+input.ir
+test.dot
+input.ir
