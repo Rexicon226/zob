@@ -96,11 +96,13 @@ pub fn run(oir: *Oir) !bool {
 }
 
 fn applyMatches(oir: *Oir, matches: []const Result) !bool {
+    var ids: std.ArrayListUnmanaged(Class.Index) = .{};
+    defer ids.deinit(oir.allocator);
+
     var changed: bool = false;
     for (matches) |m| {
-        // TODO: convert to buffer
-        var ids: std.ArrayListUnmanaged(Class.Index) = .{};
-        defer ids.deinit(oir.allocator);
+        ids.clearRetainingCapacity();
+
         for (m.pattern.nodes) |entry| {
             const id = switch (entry) {
                 .atom => |v| m.bindings.get(v).?,
@@ -189,6 +191,7 @@ test "basic match" {
     try oir.rebuild();
 
     try testSearch(&oir, "(mul 10 20)", 1);
+    try testSearch(&oir, "(mul ?x 20)", 1);
     try testSearch(&oir, "(add ?x ?x)", 0);
     try testSearch(&oir, "(add 10 20)", 0);
     try testSearch(&oir, "(add ?x ?y)", 1);

@@ -169,7 +169,6 @@ const Compiler = struct {
     }
 
     fn next(c: *Compiler) ?struct { Todo, SExpr.Entry } {
-        var iter = c.todo_nodes.keyIterator();
         if (c.todo_nodes.count() == 0) return null;
 
         const Fill = struct {
@@ -196,6 +195,7 @@ const Compiler = struct {
             .node = null,
         };
 
+        var iter = c.todo_nodes.keyIterator();
         while (iter.next()) |node| {
             const id = node.@"0";
             const vars = c.free_vars.items[@intFromEnum(id)];

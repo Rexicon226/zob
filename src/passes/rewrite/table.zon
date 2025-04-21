@@ -54,4 +54,14 @@
         .from = "(add ?x (mul ?x ?y))",
         .to = "(mul ?x (add 1 ?y))",
     },
+    .{
+        .name = "cmp_eq_same",
+        .from = "(cmp_eq ?x ?x)",
+        .to = "1",
+    },
+    .{
+        .name = "cmp_gt_same",
+        .from = "(cmp_gt ?x ?x)",
+        .to = "0",
+    },
 }
