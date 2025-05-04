@@ -6,8 +6,8 @@
     .dependencies = .{
         .z3 = .{
             .lazy = true,
-            .url = "git+https://github.com/Rexicon226/zig-z3#c18979a5942e861d5f59cd6f8537359e1909128a",
-            .hash = "z3-0.1.0-bVhhr1MuCwDf83OdDQaPSQje0tpZ5KIeRcfpAbJlI6_q",
+            .url = "git+https://github.com/Rexicon226/zig-z3#a6fb0a632359337b8ba8fac4a930592f165cfd47",
+            .hash = "z3-0.1.0-bVhhr3MvCwBUA8HCUnwtShnz2WCzyo01QjTngY1khrdk",
         },
         .scc = .{ .path = "frontends/scc" },
     },
