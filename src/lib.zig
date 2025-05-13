@@ -1,5 +1,4 @@
 const std = @import("std");
-pub const Ir = @import("Ir.zig");
 pub const Oir = @import("Oir.zig");
 pub const Trace = @import("Trace.zig");
 
