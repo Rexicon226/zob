@@ -4,6 +4,8 @@ pub const Trace = @import("Trace.zig");
 
 pub const Recursive = Oir.extraction.Recursive;
 
+pub const p2 = @import("codegen/p2.zig");
+
 pub const options: std.Options = .{
     .log_level = .err,
 };
