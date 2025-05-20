@@ -221,6 +221,8 @@ pub const Writer = struct {
             .cmp_gt,
             .cmp_eq,
             => try w.printBinOp(node, stream),
+            .load,
+            => try w.printUnOp(node, stream),
             .project => try w.printProject(node, stream),
             .constant => try w.printConstant(node, stream),
             .branch => try w.printCtrlDataOp(node, stream),

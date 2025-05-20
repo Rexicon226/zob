@@ -65,7 +65,9 @@ pub fn build(cg: *CodeGen) !Recursive {
     try cg.oir.print(stdout);
     try stdout.writeAll("end OIR\n");
 
-    return .{};
+    try cg.oir.optimize(.saturate, false);
+
+    return cg.oir.extract(.auto);
 }
 
 fn buildFn(cg: *CodeGen, decl: Tree.Node.Index) !void {
@@ -73,10 +75,16 @@ fn buildFn(cg: *CodeGen, decl: Tree.Node.Index) !void {
     const node_tags = tree.nodes.items(.tag);
 
     switch (decl.get(tree)) {
+        // TODO: Oir should only represent one function - currently all functions
+        // are put into the same Oir, which would easily create an invalid graph.
         .fn_def => |def| {
             const func_ty = def.qt.base(tree.comp).type.func;
-            for (func_ty.params) |param| {
-                std.debug.print("TODO: param: {}\n", .{param});
+            for (func_ty.params, 0..) |param, i| {
+                const name = cg.tree.tokSlice(param.name_tok);
+                const node = try cg.oir.add(.project(@intCast(i + 1), .start, .data));
+
+                const latest = &cg.symbol_table.items[cg.symbol_table.items.len - 1];
+                try latest.put(cg.gpa, name, node);
             }
             try cg.buildStmt(def.body);
         },
@@ -159,10 +167,59 @@ fn buildExpr(cg: *CodeGen, expr: Tree.Node.Index) !Oir.Class.Index {
         return cg.buildConstant(expr, val);
     }
 
-    switch (expr.get(tree)) {
+    const class = switch (expr.get(tree)) {
+        .add_expr => |bin| bin: {
+            const lhs = try cg.buildExpr(bin.lhs);
+            const rhs = try cg.buildExpr(bin.rhs);
+            break :bin try cg.oir.add(.binOp(
+                .add,
+                lhs,
+                rhs,
+            ));
+        },
         .int_literal => unreachable, // handled in the value_map above
+        .cast => |cast| switch (cast.kind) {
+            .lval_to_rval => c: {
+                const operand = try cg.buildLval(cast.operand);
+                break :c try cg.oir.add(.init(.load, operand));
+            },
+            else => std.debug.panic("TODO: cast {s}", .{@tagName(cast.kind)}),
+        },
         else => std.debug.panic("TODO: {s}", .{@tagName(node_tags[@intFromEnum(expr)])}),
+    };
+
+    try cg.node_to_class.put(cg.gpa, expr, class);
+    return class;
+}
+
+fn buildLval(cg: *CodeGen, idx: Tree.Node.Index) !Oir.Class.Index {
+    const tree = cg.tree;
+    const node_tags = tree.nodes.items(.tag);
+
+    if (cg.node_to_class.get(idx)) |c| return c;
+
+    const class = switch (idx.get(tree)) {
+        .decl_ref_expr => |decl_ref| ref: {
+            const name = tree.tokSlice(decl_ref.name_tok);
+            if (cg.findIdentifier(name)) |ref_idx| {
+                break :ref ref_idx.*;
+            } else {
+                @panic("TODO");
+            }
+        },
+        else => std.debug.panic("TODO: {s}", .{@tagName(node_tags[@intFromEnum(idx)])}),
+    };
+
+    try cg.node_to_class.put(cg.gpa, idx, class);
+    return class;
+}
+
+fn findIdentifier(cg: *CodeGen, ident: []const u8) ?*Oir.Class.Index {
+    for (0..cg.symbol_table.items.len) |i| {
+        const rev = cg.symbol_table.items.len - i - 1;
+        if (cg.symbol_table.items[rev].getPtr(ident)) |class| return class;
     }
+    return null;
 }
 
 fn buildConstant(cg: *CodeGen, idx: Tree.Node.Index, val: aro.Value) !Oir.Class.Index {

@@ -76,6 +76,8 @@ pub fn run(oir: *Oir) !bool {
             },
             .constant => {}, // already folded!
             .project => {}, // TODO
+            .load => {}, // TODO: GVN load elision
+            .store => {}, // ^
             .branch => {
                 // We can fold away branches if we know what the predicate is.
                 const predicate = node.data.bin_op[1];

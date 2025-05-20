@@ -103,6 +103,19 @@ fn extractClass(e: *SimpleExtractor, class_idx: Class.Index, recv: *Recursive) !
             try e.map.put(gpa, class_idx, new_node_idx);
             return new_node_idx;
         },
+        .load => {
+            const un_op = best_node.data.un_op;
+
+            const operand = try e.extractClass(un_op, recv);
+
+            const new_node: Node = .{
+                .tag = best_node.tag,
+                .data = .{ .un_op = operand },
+            };
+            const new_node_idx = try recv.addNode(gpa, new_node);
+            try e.map.put(gpa, class_idx, new_node_idx);
+            return new_node_idx;
+        },
         .ret,
         .branch,
         .cmp_gt,
