@@ -1,5 +1,10 @@
 const std = @import("std");
 
+const frontends = .{
+    .{ "scc", "C" },
+    .{ "arocc", "C-aro" },
+};
+
 pub fn build(b: *std.Build) !void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
@@ -62,7 +67,3 @@ pub fn build(b: *std.Build) !void {
         test_frontends.dependOn(&b.addRunArtifact(test_exe).step);
     }
 }
-
-const frontends = .{
-    .{ "scc", "C" },
-};

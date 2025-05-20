@@ -65,7 +65,6 @@ pub fn deinit(ast: *Ast, allocator: std.mem.Allocator) void {
     ast.nodes.deinit(allocator);
     allocator.free(ast.errors);
     allocator.free(ast.extra_data);
-    allocator.free(ast.source);
 }
 
 pub fn getNode(ast: Ast, idx: Node.Index) Node {

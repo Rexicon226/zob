@@ -3,12 +3,14 @@
     .version = "0.0.0",
     .paths = .{""},
     .fingerprint = 0xe7fe43888bef583b,
+    .minimum_zig_version = "0.15.0-dev.460+f4e9846bc",
     .dependencies = .{
         .z3 = .{
             .lazy = true,
             .url = "git+https://github.com/Rexicon226/zig-z3#e1e2037479923c2519adf48217356ec98819e656",
             .hash = "z3-0.1.0-bVhhr3MvCwDuxOJJNOkyUm9dU_SnEomjMFFcTlQjwJHy",
         },
+        .arocc = .{ .path = "frontends/arocc" },
         .scc = .{ .path = "frontends/scc" },
     },
 }

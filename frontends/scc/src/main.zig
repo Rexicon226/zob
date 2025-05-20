@@ -30,9 +30,10 @@ pub fn main() !void {
         input_path.?,
         10 * 1024 * 1024,
         null,
-        @alignOf(u8),
+        .@"1",
         0,
     );
+    defer allocator.free(source);
 
     var ast = try Ast.parse(allocator, source, input_path.?);
     defer ast.deinit(allocator);

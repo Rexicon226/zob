@@ -1,8 +1,7 @@
-{
-    int x = 10;
+int foo() {
     if (1) {
-        return 20;
+        return 10;
     } else {
-        return 30;
+        return 20;
     }
 }
