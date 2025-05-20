@@ -78,10 +78,10 @@ pub fn extract(oir: *const Oir) !Recursive {
         }
     }
 
-    // // Each node in the graph is a term in the objective. Each term has a
-    // // weight, which is 0 if it isn't active, or 1 * cost(tag) if it is.
-    // // The goal of the optimizer is to reduce this number to the smallest possible
-    // // cost of the total graph, while keeping the root nodes alive.
+    // Each node in the graph is a term in the objective. Each term has a
+    // weight, which is 0 if it isn't active, or 1 * cost(tag) if it is.
+    // The goal of the optimizer is to reduce this number to the smallest possible
+    // cost of the total graph, while keeping the root nodes alive.
     var terms: std.ArrayListUnmanaged(z3.Int) = .{};
     defer terms.deinit(gpa);
 
