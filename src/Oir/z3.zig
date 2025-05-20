@@ -9,7 +9,6 @@ const Recursive = @import("extraction.zig").Recursive;
 
 const log = std.log.scoped(.z3_extractor);
 
-const Node = Oir.Node;
 const Class = Oir.Class;
 
 const ClassVars = struct {

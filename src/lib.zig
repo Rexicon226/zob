@@ -1,6 +1,6 @@
 const std = @import("std");
 pub const Oir = @import("Oir.zig");
-pub const Trace = @import("Trace.zig");
+pub const Trace = @import("trace.zig").Trace;
 
 pub const Recursive = Oir.extraction.Recursive;
 

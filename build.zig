@@ -11,9 +11,11 @@ pub fn build(b: *std.Build) !void {
 
     const use_z3 = b.option(bool, "use_z3", "Use Z3 as the MILP solver for Oir extraction") orelse false;
     const filters = b.option([]const []const u8, "filter", "Filter test cases");
+    const trace = b.option(bool, "trace", "Enable tracing output to trace.json") orelse false;
 
     var options = b.addOptions();
     options.addOption(bool, "has_z3", use_z3);
+    options.addOption(bool, "enable_trace", trace);
 
     const zob_mod = b.addModule("zob", .{
         .target = target,

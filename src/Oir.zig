@@ -886,7 +886,7 @@ const Oir = @This();
 const std = @import("std");
 const print_oir = @import("Oir/print_oir.zig");
 pub const extraction = @import("Oir/extraction.zig");
-const Trace = @import("Trace.zig");
+const Trace = @import("trace.zig").Trace;
 
 const log = std.log.scoped(.oir);
 const assert = std.debug.assert;

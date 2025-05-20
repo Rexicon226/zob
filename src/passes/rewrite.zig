@@ -6,14 +6,12 @@
 const std = @import("std");
 const SExpr = @import("rewrite/SExpr.zig");
 const Oir = @import("../Oir.zig");
-const Trace = @import("../Trace.zig");
 const machine = @import("rewrite/machine.zig");
 
 const log = std.log.scoped(.rewrite);
 
 const Node = Oir.Node;
 const Class = Oir.Class;
-const assert = std.debug.assert;
 
 pub const Rewrite = struct {
     name: []const u8,
@@ -118,7 +116,8 @@ fn applyMatches(oir: *Oir, matches: []const Result) !bool {
                     break :b try oir.add(new);
                 },
                 .builtin => |b| b: {
-                    if (b.tag.location() != .dst) @panic("have non-dst builtin in destination pattern");
+                    if (b.tag.location() != .dst)
+                        @panic("have non-dst builtin in destination pattern");
 
                     switch (b.tag) {
                         .log2 => {
@@ -154,7 +153,6 @@ fn applyMatches(oir: *Oir, matches: []const Result) !bool {
 }
 
 const expectEqual = std.testing.expectEqual;
-const expect = std.testing.expect;
 
 fn testSearch(oir: *const Oir, comptime buffer: []const u8, num_matches: u64) !void {
     std.debug.assert(oir.clean); // must be clean before searching
@@ -231,7 +229,6 @@ test "negative known_pow2" {
 
 // test "basic multi-pattern match" {
 //     const allocator = std.testing.allocator;
-//     var trace: Trace = .init();
 //     var oir: Oir = .init(allocator, &trace);
 //     defer oir.deinit();
 
