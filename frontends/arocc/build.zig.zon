@@ -5,8 +5,8 @@
     .minimum_zig_version = "0.14.0",
     .dependencies = .{
         .aro = .{
-            .url = "git+https://github.com/Vexu/arocc#348624998092bf4173f365c21fc8c0f43851ce97",
-            .hash = "aro-0.0.0-JSD1QtGvJgCLKX4yRsgVVtmQu3tgoC6a-byQhxAA6011",
+            .url = "git+https://github.com/Rexicon226/arocc#353294a32e9fd1e3b7444cd139bea1b181b4be0f",
+            .hash = "aro-0.0.0-JSD1QogCJwC-M_bd9hemlhBiJs8lbAJsfDLYen23IF3i",
         },
     },
     .paths = .{

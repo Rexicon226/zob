@@ -72,13 +72,12 @@ pub fn build(cg: *CodeGen) !Recursive {
 
 fn buildFn(cg: *CodeGen, decl: Tree.Node.Index) !void {
     const tree = cg.tree;
-    const node_tags = tree.nodes.items(.tag);
 
     switch (decl.get(tree)) {
         // TODO: Oir should only represent one function - currently all functions
         // are put into the same Oir, which would easily create an invalid graph.
-        .fn_def => |def| {
-            const func_ty = def.qt.base(tree.comp).type.func;
+        .function => |func| {
+            const func_ty = func.qt.base(tree.comp).type.func;
             for (func_ty.params, 0..) |param, i| {
                 const name = cg.tree.tokSlice(param.name_tok);
                 const node = try cg.oir.add(.project(@intCast(i + 1), .start, .data));
@@ -86,10 +85,10 @@ fn buildFn(cg: *CodeGen, decl: Tree.Node.Index) !void {
                 const latest = &cg.symbol_table.items[cg.symbol_table.items.len - 1];
                 try latest.put(cg.gpa, name, node);
             }
-            try cg.buildStmt(def.body);
+            try cg.buildStmt(func.body.?);
         },
         .typedef => {},
-        else => std.debug.panic("TODO: {s}", .{@tagName(node_tags[@intFromEnum(decl)])}),
+        else => |t| std.debug.panic("TODO: {s}", .{@tagName(t)}),
     }
 }
 

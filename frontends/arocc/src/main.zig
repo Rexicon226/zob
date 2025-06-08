@@ -43,7 +43,7 @@ pub fn main() !void {
     std.debug.assert(driver.inputs.items.len == 1);
     const source = driver.inputs.items[0];
 
-    const builtin_macros = try comp.generateBuiltinMacros(.include_system_defines, null);
+    const builtin_macros = try comp.generateBuiltinMacros(.include_system_defines);
     const user_macros = try comp.addSourceFromBuffer("<command line>", macro_buf.items);
 
     var pp = try aro.Preprocessor.initDefault(&comp);
