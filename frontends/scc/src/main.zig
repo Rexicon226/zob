@@ -30,7 +30,7 @@ pub fn main() !void {
         input_path.?,
         10 * 1024 * 1024,
         null,
-        .@"1",
+        @alignOf(u8),
         0,
     );
     defer allocator.free(source);
