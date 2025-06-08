@@ -63,7 +63,8 @@ pub fn main() !void {
     var recv = try cg.build();
     defer recv.deinit(gpa);
 
-    try zob.p2.generate(&recv);
+    // try zob.p2.generate(&recv);
+    try zob.rv64.generate(&recv);
 }
 
 fn fail(comptime fmt: []const u8, args: anytype) noreturn {

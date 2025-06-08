@@ -714,7 +714,7 @@ pub fn rebuild(oir: *Oir) !void {
         }
     }
 
-    try oir.verifyNodes();
+    if (builtin.mode == .Debug) try oir.verifyNodes();
     assert(oir.pending.items.len == 0);
     oir.clean = true;
 }
@@ -884,6 +884,7 @@ pub fn listToSpan(oir: *Oir, list: []const Class.Index) !Node.Span {
 
 const Oir = @This();
 const std = @import("std");
+const builtin = @import("builtin");
 const print_oir = @import("Oir/print_oir.zig");
 pub const extraction = @import("Oir/extraction.zig");
 const Trace = @import("trace.zig").Trace;

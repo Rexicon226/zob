@@ -6,10 +6,9 @@ const z3 = if (build_options.has_z3) @import("z3") else {};
 const Oir = @import("../Oir.zig");
 const cost = @import("../cost.zig");
 const Recursive = @import("extraction.zig").Recursive;
+const Class = Oir.Class;
 
 const log = std.log.scoped(.z3_extractor);
-
-const Class = Oir.Class;
 
 const ClassVars = struct {
     active: z3.Bool,
@@ -20,9 +19,9 @@ const ClassVars = struct {
 pub fn extract(oir: *const Oir) !Recursive {
     if (!build_options.has_z3) @panic("need z3 enabled to use z3 extractor");
 
-    var arena: std.heap.ArenaAllocator = .init(oir.allocator);
-    defer arena.deinit();
-    const gpa = arena.allocator();
+    var arena_state: std.heap.ArenaAllocator = .init(oir.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
 
     var cycles = try oir.findCycles();
     defer cycles.deinit(oir.allocator);
@@ -31,7 +30,7 @@ pub fn extract(oir: *const Oir) !Recursive {
     defer model.deinit();
 
     var vars: std.AutoHashMapUnmanaged(Class.Index, ClassVars) = .{};
-    defer vars.deinit(gpa);
+    defer vars.deinit(arena);
 
     var iter = oir.classes.iterator();
     while (iter.next()) |entry| {
@@ -42,10 +41,10 @@ pub fn extract(oir: *const Oir) !Recursive {
         const max_order = model.int(@intCast(oir.nodes.count() * 10));
         model.assert(model.le(order, max_order));
 
-        const nodes = try gpa.alloc(z3.Bool, class.bag.items.len);
+        const nodes = try arena.alloc(z3.Bool, class.bag.items.len);
         for (nodes) |*node| node.* = model.constant(.bool, null);
 
-        try vars.put(gpa, class.index, .{
+        try vars.put(arena, class.index, .{
             .active = active,
             .order = order,
             .nodes = nodes,
@@ -82,7 +81,7 @@ pub fn extract(oir: *const Oir) !Recursive {
     // The goal of the optimizer is to reduce this number to the smallest possible
     // cost of the total graph, while keeping the root nodes alive.
     var terms: std.ArrayListUnmanaged(z3.Int) = .{};
-    defer terms.deinit(gpa);
+    defer terms.deinit(arena);
 
     var class_iter = oir.classes.iterator();
     while (class_iter.next()) |entry| {
@@ -94,7 +93,7 @@ pub fn extract(oir: *const Oir) !Recursive {
             const zero = model.int(0);
             const int = model.ite(node_active, one, zero);
             const weight = model.int(@intCast(cost.getCost(oir.getNode(node).tag)));
-            try terms.append(gpa, model.mul(&.{ weight, int }));
+            try terms.append(arena, model.mul(&.{ weight, int }));
         }
     }
 
@@ -122,16 +121,16 @@ pub fn extract(oir: *const Oir) !Recursive {
         var start_class: ?Class.Index = null;
 
         var new_exit_list: std.ArrayListUnmanaged(Class.Index) = .{};
-        defer new_exit_list.deinit(gpa);
+        defer new_exit_list.deinit(arena);
 
         var queue: std.ArrayListUnmanaged(Class.Index) = .{};
-        defer queue.deinit(gpa);
+        defer queue.deinit(arena);
 
         var map: std.AutoHashMapUnmanaged(Class.Index, Class.Index) = .{};
-        defer map.deinit(gpa);
+        defer map.deinit(arena);
 
         for (exit_list) |exit| {
-            try queue.append(gpa, oir.union_find.find(@enumFromInt(exit)));
+            try queue.append(arena, oir.union_find.find(@enumFromInt(exit)));
         }
 
         while (queue.getLastOrNull()) |id| {
@@ -155,14 +154,14 @@ pub fn extract(oir: *const Oir) !Recursive {
             if (all) {
                 const new_id = try recv.addNode(oir.allocator, try node.mapNode(oir, &map));
                 switch (node.tag) {
-                    .ret => try new_exit_list.append(gpa, new_id),
+                    .ret => try new_exit_list.append(arena, new_id),
                     .start => start_class = new_id,
                     else => {},
                 }
-                try map.put(gpa, id, new_id);
+                try map.put(arena, id, new_id);
                 _ = queue.pop();
             } else {
-                try queue.appendSlice(gpa, node.operands(oir));
+                try queue.appendSlice(arena, node.operands(oir));
             }
         }
 
