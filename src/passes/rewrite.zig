@@ -63,7 +63,7 @@ const rewrites: []const Rewrite = blk: {
 };
 
 pub fn run(oir: *Oir) !bool {
-    var matches: std.ArrayListUnmanaged(Result) = .{};
+    var matches: std.ArrayListUnmanaged(Result) = .empty;
     defer {
         for (matches.items) |*m| m.deinit(oir.allocator);
         matches.deinit(oir.allocator);
@@ -94,7 +94,7 @@ pub fn run(oir: *Oir) !bool {
 }
 
 fn applyMatches(oir: *Oir, matches: []const Result) !bool {
-    var ids: std.ArrayListUnmanaged(Class.Index) = .{};
+    var ids: std.ArrayListUnmanaged(Class.Index) = .empty;
     defer ids.deinit(oir.allocator);
 
     var changed: bool = false;

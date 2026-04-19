@@ -30,7 +30,7 @@ pub fn parse(p: *Parser) !void {
         .data = undefined,
     });
 
-    var statements: std.ArrayListUnmanaged(Node.Index) = .{};
+    var statements: std.ArrayListUnmanaged(Node.Index) = .empty;
     defer statements.deinit(p.gpa);
 
     while (p.tokens.get(p.token_index).tag != .eof) {

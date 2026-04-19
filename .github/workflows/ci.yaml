@@ -1,22 +1,22 @@
 on:
-    pull_request:
-    push:
-      branches:
-        - master 
-  
+  pull_request:
+  push:
+    branches:
+      - master
+
 jobs:
-    test:
-        runs-on: ubuntu-latest
-        steps:
-          - uses: actions/checkout@v2
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
 
-          - name: setup-zig
-            uses: mlugg/setup-zig@v2
-            with:
-                version: 0.14.1
-                
-          - name: build
-            run: zig build
+      - name: setup-zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
 
-          - name: test
-            run: zig build test --summary all     
+      - name: build
+        run: zig build
+
+      - name: test
+        run: zig build test --summary all

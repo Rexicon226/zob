@@ -122,9 +122,7 @@ pub const Entry = union(enum) {
 
     pub fn format(
         entry: Entry,
-        comptime _: []const u8,
-        _: std.fmt.FormatOptions,
-        writer: anytype,
+        writer: *std.Io.Writer,
     ) !void {
         switch (entry) {
             .atom => |v| try writer.writeAll(v),
@@ -355,12 +353,8 @@ pub fn deinit(expr: SExpr, allocator: std.mem.Allocator) void {
 
 pub fn format(
     expr: SExpr,
-    comptime fmt: []const u8,
-    _: std.fmt.FormatOptions,
-    writer: anytype,
+    writer: *std.Io.Writer,
 ) !void {
-    comptime assert(fmt.len == 0);
-
     const r: Entry = expr.get(expr.root());
     try writer.print("{}", .{r.fmt(expr)});
 }

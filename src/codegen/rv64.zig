@@ -1,4 +1,4 @@
-//! Backend for emitting P2 (Paralax Propeller 2) assembly
+//! Backend of RISCV-64 code generation
 
 const Oir = @import("../Oir.zig");
 const Recursive = Oir.extraction.Recursive;

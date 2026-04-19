@@ -9,25 +9,25 @@ pub const std_options: std.Options = .{
     .log_level = .err,
 };
 
-pub fn main() !void {
-    var arena_instance = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    defer arena_instance.deinit();
-    const arena = arena_instance.allocator();
+pub fn main(init: std.process.Init) !void {
+    const arena = init.arena.allocator();
+    const gpa = init.gpa;
+    const io = init.io;
 
-    var general_purpose_allocator: std.heap.GeneralPurposeAllocator(.{}) = .init;
-    const gpa = general_purpose_allocator.allocator();
+    const args = try init.minimal.args.toSlice(arena);
 
-    const args = try std.process.argsAlloc(arena);
-
-    const stderr_file = std.io.getStdErr();
+    const stderr = try io.lockStderr(&.{}, null);
     var diagnostics: aro.Diagnostics = .{
-        .output = .{ .to_file = .{
-            .config = std.io.tty.detectConfig(stderr_file),
-            .file = stderr_file,
-        } },
+        .output = .{ .to_writer = stderr.terminal() },
     };
 
-    var comp = try aro.Compilation.initDefault(gpa, &diagnostics, std.fs.cwd());
+    var comp = try aro.Compilation.init(.{
+        .gpa = gpa,
+        .arena = arena,
+        .io = io,
+        .diagnostics = &diagnostics,
+        .environ_map = init.environ_map,
+    });
     defer comp.deinit();
 
     var driver: aro.Driver = .{
@@ -36,20 +36,23 @@ pub fn main() !void {
     };
     defer driver.deinit();
 
-    var macro_buf = std.ArrayList(u8).init(gpa);
-    defer macro_buf.deinit();
+    var macro_buffer: std.ArrayList(u8) = .empty;
+    defer macro_buffer.deinit(gpa);
 
-    std.debug.assert(!try driver.parseArgs(std.io.null_writer, macro_buf.writer(), args));
+    var null_writer: std.Io.Writer.Discarding = .init(&.{});
+    if (try driver.parseArgs(&null_writer.writer, &macro_buffer, args)) std.process.abort();
+
     std.debug.assert(driver.inputs.items.len == 1);
     const source = driver.inputs.items[0];
 
     const builtin_macros = try comp.generateBuiltinMacros(.include_system_defines);
-    const user_macros = try comp.addSourceFromBuffer("<command line>", macro_buf.items);
 
-    var pp = try aro.Preprocessor.initDefault(&comp);
+    var pp = try aro.Preprocessor.init(&comp, .{ .base_file = source.id });
     defer pp.deinit();
-
-    try pp.preprocessSources(&.{ source, builtin_macros, user_macros });
+    try pp.preprocessSources(.{
+        .main = source,
+        .builtin = builtin_macros,
+    });
 
     var tree = try pp.parse();
     defer tree.deinit();
@@ -60,10 +63,9 @@ pub fn main() !void {
     var cg = try CodeGen.init(&oir, gpa, &tree);
     defer cg.deinit(gpa);
 
-    var recv = try cg.build();
+    var recv = try cg.build(io);
     defer recv.deinit(gpa);
 
-    // try zob.p2.generate(&recv);
     try zob.rv64.generate(&recv);
 }
 

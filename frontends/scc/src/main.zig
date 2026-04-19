@@ -9,57 +9,43 @@ pub const std_options: std.Options = .{
     .log_level = .err,
 };
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{ .stack_trace_frames = 16 }){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
-
-    var args = try std.process.argsWithAllocator(allocator);
-    defer args.deinit();
-    _ = args.skip();
+pub fn main(init: std.process.Init) !void {
+    const io = init.io;
+    const gpa = init.gpa;
 
     var input_path: ?[]const u8 = null;
-    while (args.next()) |arg| {
+    for (init.minimal.args.vector[1..]) |arg| {
         if (input_path != null) @panic("two file inputs");
-        input_path = arg;
+        input_path = std.mem.span(arg);
     }
 
     if (input_path == null) @panic("no file provided");
-    const source = try std.fs.cwd().readFileAllocOptions(
-        allocator,
-        input_path.?,
-        10 * 1024 * 1024,
-        null,
-        @alignOf(u8),
-        0,
-    );
-    defer allocator.free(source);
 
-    var ast = try Ast.parse(allocator, source, input_path.?);
-    defer ast.deinit(allocator);
+    const source = try std.Io.Dir.cwd().readFileAllocOptions(io, input_path.?, gpa, .unlimited, .of(u8), 0);
+    defer gpa.free(source);
+
+    var ast = try Ast.parse(gpa, source, input_path.?);
+    defer ast.deinit(gpa);
 
     if (ast.errors.len != 0) {
-        const stderr = std.io.getStdErr();
-        for (ast.errors) |err| {
-            try err.render(ast, stderr.writer());
-        }
-        fail("failed with {d} error(s)", .{ast.errors.len});
+        const stderr = try io.lockStderr(&.{}, null);
+        defer io.unlockStderr();
+        const terminal = stderr.terminal();
+
+        for (ast.errors) |err| try err.render(ast, terminal);
+        try terminal.writer.print("failed with {d} error(s)\n", .{ast.errors.len});
+
+        std.process.abort();
     }
 
-    var oir: zob.Oir = .init(allocator);
+    var oir: zob.Oir = .init(gpa);
     defer oir.deinit();
 
-    var cg: CodeGen = try .init(&oir, allocator, &ast);
-    defer cg.deinit(allocator);
+    var cg: CodeGen = try .init(&oir, gpa, &ast);
+    defer cg.deinit(gpa);
 
-    var recv = try cg.build();
-    defer recv.deinit(allocator);
-}
-
-fn fail(comptime fmt: []const u8, args: anytype) noreturn {
-    const stderr = std.io.getStdErr().writer();
-    stderr.print(fmt ++ "\n", args) catch @panic("failed to print the stderr");
-    std.posix.abort();
+    var recv = try cg.build(io);
+    defer recv.deinit(gpa);
 }
 
 test {

@@ -14,7 +14,7 @@ pub fn run(oir: *Oir) !bool {
     // A buffer of constant nodes found in operand classes.
     // Not a BoundedArray, since there are certain nodes that can have a variable
     // amount of operands.
-    var constants: std.ArrayListUnmanaged(Node.Index) = .{};
+    var constants: std.ArrayListUnmanaged(Node.Index) = .empty;
     defer constants.deinit(oir.allocator);
 
     outer: for (oir.nodes.keys(), 0..) |node, i| {

@@ -25,7 +25,7 @@ pub fn init(oir: *Oir, gpa: std.mem.Allocator, ast: *const Ast) !CodeGen {
     });
     const ctrl_class = try oir.add(.project(0, start_class, .ctrl));
 
-    var symbol_table: SymbolTable = .{};
+    var symbol_table: SymbolTable = .empty;
     try symbol_table.append(gpa, .{});
 
     return .{
@@ -35,13 +35,14 @@ pub fn init(oir: *Oir, gpa: std.mem.Allocator, ast: *const Ast) !CodeGen {
         .ctrl_class = ctrl_class,
         .node_to_class = .{},
         .exits = &oir.exit_list,
-        .scratch = .{},
+        .scratch = .empty,
         .symbol_table = symbol_table,
     };
 }
 
-pub fn build(cg: *CodeGen) !Recursive {
-    const stdout = std.io.getStdOut().writer();
+pub fn build(cg: *CodeGen, io: std.Io) !Recursive {
+    var stdout_writer = std.Io.File.stdout().writer(io, &.{});
+    const stdout = &stdout_writer.interface;
 
     try cg.buildBlock(.root);
     try cg.oir.rebuild();
@@ -50,8 +51,8 @@ pub fn build(cg: *CodeGen) !Recursive {
     try cg.oir.print(stdout);
     try stdout.writeAll("end OIR\n");
 
-    try cg.oir.optimize(.saturate, false);
-    try cg.oir.dump("test.dot");
+    try cg.oir.optimize(io, .saturate, false);
+    try cg.oir.dump(io, "test.dot");
 
     const extracted = try cg.oir.extract(.auto);
 

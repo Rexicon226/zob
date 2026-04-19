@@ -12,5 +12,9 @@ pub const options: std.Options = .{
 };
 
 test {
-    std.testing.refAllDeclsRecursive(@This());
+    _ = Oir;
+    _ = Trace;
+    _ = Recursive;
+    _ = p2;
+    _ = rv64;
 }

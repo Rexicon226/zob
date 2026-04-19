@@ -242,12 +242,12 @@ pub fn newRoot(
     allocator: std.mem.Allocator,
     new_root_idx: SExpr.Index,
 ) !SExpr {
-    var list: std.ArrayListUnmanaged(SExpr.Entry) = .{};
+    var list: std.ArrayListUnmanaged(SExpr.Entry) = .empty;
     defer list.deinit(allocator);
 
-    var queue: std.ArrayListUnmanaged(SExpr.Index) = .{};
+    var queue: std.ArrayListUnmanaged(SExpr.Index) = .empty;
     defer queue.deinit(allocator);
-    var map: std.AutoHashMapUnmanaged(SExpr.Index, SExpr.Index) = .{};
+    var map: std.AutoHashMapUnmanaged(SExpr.Index, SExpr.Index) = .empty;
     defer map.deinit(allocator);
 
     const new_root = expr.get(new_root_idx);
@@ -343,14 +343,14 @@ const Program = struct {
         const allocator = oir.allocator;
 
         var machine: Machine = .{
-            .registers = .{},
+            .registers = .empty,
             .v2r = &p.map,
-            .lookup = .{},
+            .lookup = .empty,
         };
         defer machine.deinit(allocator);
         try machine.registers.append(allocator, class);
 
-        var results: std.ArrayListUnmanaged(Result.Bindings) = .{};
+        var results: std.ArrayListUnmanaged(Result.Bindings) = .empty;
         defer results.deinit(allocator);
 
         try machine.run(oir, p.instructions, p.map, &results);
@@ -483,9 +483,7 @@ const Instruction = union(enum) {
 
     pub fn format(
         inst: Instruction,
-        comptime _: []const u8,
-        _: std.fmt.FormatOptions,
-        writer: anytype,
+        writer: *std.Io.Writer,
     ) !void {
         switch (inst) {
             .bind => |b| try writer.print("bind({}, ${}, ${})", .{
@@ -530,11 +528,11 @@ pub fn search(
 
     var compiler: Compiler = .{
         .next_reg = @enumFromInt(0),
-        .instructions = .{},
+        .instructions = .empty,
         .todo_nodes = .{},
         .v2r = .{},
-        .free_vars = .{},
-        .subtree_size = .{},
+        .free_vars = .empty,
+        .subtree_size = .empty,
     };
     defer compiler.deinit(allocator);
 

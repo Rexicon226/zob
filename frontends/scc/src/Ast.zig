@@ -32,10 +32,10 @@ pub fn parse(
         .source = source,
         .tokens = tokens,
         .token_index = 0,
-        .nodes = .{},
-        .errors = .{},
-        .scratch = .{},
-        .extra_data = .{},
+        .nodes = .empty,
+        .errors = .empty,
+        .scratch = .empty,
+        .extra_data = .empty,
     };
     defer {
         parser.nodes.deinit(gpa);
@@ -273,18 +273,18 @@ pub const Error = struct {
         expected_tag: Token.Tag,
     };
 
-    pub fn render(err: Error, ast: Ast, stderr: anytype) !void {
-        const ttyconf = std.zig.Color.get_tty_conf(.auto);
-        try ttyconf.setColor(stderr, .bold);
+    pub fn render(err: Error, ast: Ast, terminal: std.Io.Terminal) !void {
+        const stderr = terminal.writer;
+        try terminal.setColor(.bold);
 
         // Somehow an invalid token.
         if (@intFromEnum(err.token) >= ast.tokens.len) {
-            try ttyconf.setColor(stderr, .red);
+            try terminal.setColor(.red);
             try stderr.writeAll("error: ");
-            try ttyconf.setColor(stderr, .reset);
-            try ttyconf.setColor(stderr, .bold);
+            try terminal.setColor(.reset);
+            try terminal.setColor(.bold);
             try stderr.writeAll("unexpected EOF\n");
-            try ttyconf.setColor(stderr, .reset);
+            try terminal.setColor(.reset);
             return;
         }
 
@@ -297,14 +297,14 @@ pub const Error = struct {
             err_loc.line + 1,
             err_loc.column + 1,
         });
-        try ttyconf.setColor(stderr, .red);
+        try terminal.setColor(.red);
         try stderr.writeAll("error: ");
-        try ttyconf.setColor(stderr, .reset);
+        try terminal.setColor(.reset);
 
-        try ttyconf.setColor(stderr, .bold);
+        try terminal.setColor(.bold);
         try err.write(ast, stderr);
         try stderr.writeByte('\n');
-        try ttyconf.setColor(stderr, .reset);
+        try terminal.setColor(.reset);
     }
 
     fn write(err: Error, ast: Ast, stderr: anytype) !void {

@@ -45,7 +45,7 @@ trace: Trace,
 exit_list: std.ArrayListUnmanaged(Class.Index),
 
 const UnionFind = struct {
-    parents: std.ArrayListUnmanaged(Class.Index) = .{},
+    parents: std.ArrayListUnmanaged(Class.Index) = .empty,
 
     fn makeSet(f: *UnionFind, gpa: std.mem.Allocator) !Class.Index {
         const id: Class.Index = @enumFromInt(f.parents.items.len);
@@ -372,14 +372,12 @@ pub const Node = struct {
 
     pub fn format(
         _: Node,
-        comptime _: []const u8,
-        _: std.fmt.FormatOptions,
-        _: anytype,
+        _: *std.Io.Writer,
     ) !void {
         @compileError("don't format nodes directly, use Node.fmt");
     }
 
-    pub fn fmt(node: Node, oir: *const Oir) std.fmt.Formatter(format2) {
+    pub fn fmt(node: Node, oir: *const Oir) std.fmt.Alt(FormatContext, format2) {
         return .{ .data = .{
             .node = node,
             .oir = oir,
@@ -393,9 +391,7 @@ pub const Node = struct {
 
     pub fn format2(
         ctx: FormatContext,
-        comptime _: []const u8,
-        _: std.fmt.FormatOptions,
-        stream: anytype,
+        stream: *std.Io.Writer,
     ) !void {
         const node = ctx.node;
         var writer: print_oir.Writer = .{ .nodes = ctx.oir.nodes.keys() };
@@ -408,8 +404,8 @@ const Pair = struct { Node.Index, Class.Index };
 /// A Class contains an N amount of Nodes as children.
 pub const Class = struct {
     index: Index,
-    bag: std.ArrayListUnmanaged(Node.Index) = .{},
-    parents: std.ArrayListUnmanaged(Pair) = .{},
+    bag: std.ArrayListUnmanaged(Node.Index) = .empty,
+    parents: std.ArrayListUnmanaged(Pair) = .empty,
 
     pub const Index = enum(u32) {
         /// The start node is always in the first class, and alone as it's canonical.
@@ -418,11 +414,8 @@ pub const Class = struct {
 
         pub fn format(
             idx: Index,
-            comptime fmt: []const u8,
-            _: std.fmt.FormatOptions,
-            writer: anytype,
+            writer: *std.Io.Writer,
         ) !void {
-            assert(fmt.len == 0);
             try writer.print("%{d}", .{@intFromEnum(idx)});
         }
     };
@@ -453,46 +446,38 @@ const passes: []const Pass = &.{
 
 pub fn optimize(
     oir: *Oir,
-    mode: enum {
-        /// Optimize until running all passes creates no new changes.
-        /// NOTE: likely will be very slow for any large input
-        saturate,
-    },
-    /// Prints dumps a graphviz of the current OIR state after each pass iteration.
+    io: std.Io,
+    mode: enum { saturate },
     output_graph: bool,
 ) !void {
-    switch (mode) {
-        .saturate => {
-            try oir.rebuild();
-            assert(oir.clean);
+    std.debug.assert(mode == .saturate); // only mode for now
 
-            var i: u32 = 0;
-            while (true) {
-                var new_change: bool = false;
-                inline for (passes) |pass| {
-                    if (output_graph) {
-                        const name = try std.fmt.allocPrint(
-                            oir.allocator,
-                            "graphs/pre_{s}_{}.dot",
-                            .{ pass.name, i },
-                        );
-                        defer oir.allocator.free(name);
-                        try oir.dump(name);
-                    }
+    try oir.rebuild();
+    assert(oir.clean);
 
-                    const trace = oir.trace.start(@src(), "{s}", .{pass.name});
-                    defer trace.end();
-
-                    if (try pass.func(oir)) new_change = true;
-                    // TODO: in theory we don't actually need to rebuild after every pass
-                    // maybe we should look into rebuilding on-demand?
-                    if (!oir.clean) try oir.rebuild();
-                }
-
-                i += 1;
-                if (!new_change) break;
+    var i: u32 = 0;
+    while (true) {
+        var new_change: bool = false;
+        inline for (passes) |pass| {
+            if (output_graph) {
+                var buffer: [std.fs.max_path_bytes]u8 = undefined;
+                const name = try std.fmt.bufPrint(&buffer, "graphs/pre_{s}_{}.dot", .{ pass.name, i });
+                try oir.dump(io, name);
             }
-        },
+
+            const trace = oir.trace.start(@src(), "{s}", .{pass.name});
+            defer trace.end();
+
+            const result = try pass.func(oir);
+            if (result) new_change = true;
+
+            // TODO: in theory we don't actually need to rebuild after every pass
+            // maybe we should look into rebuilding on-demand?
+            if (!oir.clean) try oir.rebuild();
+        }
+
+        i += 1;
+        if (!new_change) break;
     }
 }
 
@@ -502,19 +487,23 @@ pub fn init(allocator: std.mem.Allocator) Oir {
         .nodes = .{},
         .node_to_class = .{},
         .classes = .{},
-        .extra = .{},
+        .extra = .empty,
         .union_find = .{},
-        .pending = .{},
+        .pending = .empty,
         .trace = .init(),
-        .exit_list = .{},
+        .exit_list = .empty,
         .clean = true,
     };
 }
 
-pub fn dump(oir: *Oir, name: []const u8) !void {
-    const graphviz_file = try std.fs.cwd().createFile(name, .{});
-    defer graphviz_file.close();
-    try print_oir.dumpOirGraph(oir, graphviz_file.writer());
+pub fn dump(oir: *Oir, io: std.Io, name: []const u8) !void {
+    const file = try std.Io.Dir.cwd().createFile(io, name, .{});
+    defer file.close(io);
+
+    var file_writer = file.writer(io, &.{});
+    const writer = &file_writer.interface;
+
+    try print_oir.dumpOirGraph(oir, writer);
 }
 
 pub fn print(oir: *Oir, stream: anytype) !void {
@@ -605,7 +594,7 @@ fn makeClass(oir: *Oir, node_idx: Node.Index) !Class.Index {
 
     var class: Class = .{
         .index = id,
-        .bag = .{},
+        .bag = .empty,
     };
 
     try class.bag.append(oir.allocator, node_idx);
@@ -732,7 +721,7 @@ pub fn findCycles(oir: *const Oir) !std.AutoHashMapUnmanaged(Node.Index, Class.I
         bool,
         Class.Index,
     }).initCapacity(allocator, oir.classes.size);
-    defer stack.deinit();
+    defer stack.deinit(allocator);
 
     var color = std.AutoHashMap(Class.Index, Color).init(allocator);
     defer color.deinit();
@@ -748,7 +737,7 @@ pub fn findCycles(oir: *const Oir) !std.AutoHashMapUnmanaged(Node.Index, Class.I
         const enter, const id = entry;
         if (enter) {
             color.getPtr(id).?.* = .gray;
-            try stack.append(.{ false, id });
+            try stack.append(allocator, .{ false, id });
 
             const class_ptr = oir.getClass(id);
             for (class_ptr.bag.items) |node_idx| {
@@ -756,7 +745,7 @@ pub fn findCycles(oir: *const Oir) !std.AutoHashMapUnmanaged(Node.Index, Class.I
                 for (node.operands(oir)) |child| {
                     const child_color = color.get(child).?;
                     switch (child_color) {
-                        .white => try stack.append(.{ true, child }),
+                        .white => try stack.append(allocator, .{ true, child }),
                         .gray => try cycles.put(allocator, node_idx, id),
                         .black => {},
                     }

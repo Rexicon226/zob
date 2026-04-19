@@ -51,7 +51,7 @@ pub fn extract(oir: *const Oir) !Recursive {
         .cost_memo = .empty,
         .best_node = .{},
         .map = .{},
-        .exit_list = .{},
+        .exit_list = .empty,
         .start_class = null,
     };
     defer e.deinit();
@@ -193,7 +193,7 @@ fn extractBestNode(e: *SimpleExtractor, class_idx: Class.Index) !NodeCost {
         }
     }
     if (best_cost == std.math.maxInt(u32)) {
-        std.debug.panic("extracted cyclic terms, no best node could be found! {}", .{class_idx});
+        std.debug.panic("extracted cyclic terms, no best node could be found! {f}", .{class_idx});
     }
 
     const entry: NodeCost = .{ best_cost, best_node };

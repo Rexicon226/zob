@@ -25,9 +25,7 @@ pub fn build(b: *std.Build) !void {
     zob_mod.addOptions("build_options", options);
 
     const test_lib = b.addTest(.{
-        .root_source_file = b.path("src/lib.zig"),
-        .target = target,
-        .optimize = optimize,
+        .root_module = zob_mod,
         .filters = filters orelse &.{},
     });
     test_lib.root_module.addOptions("build_options", options);

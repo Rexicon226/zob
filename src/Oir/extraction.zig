@@ -11,9 +11,9 @@ const Class = Oir.Class;
 
 /// A form of OIR where nodes reference other nodes.
 pub const Recursive = struct {
-    nodes: std.ArrayListUnmanaged(Node) = .{},
-    exit_list: std.ArrayListUnmanaged(Class.Index) = .{},
-    extra: std.ArrayListUnmanaged(u32) = .{},
+    nodes: std.ArrayListUnmanaged(Node) = .empty,
+    exit_list: std.ArrayListUnmanaged(Class.Index) = .empty,
+    extra: std.ArrayListUnmanaged(u32) = .empty,
 
     // TODO: Explore making this its own unique type. Currently we can't do that because
     // the Node data payload types use Class.Index to reference other Classes, which isn't

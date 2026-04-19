@@ -1,5 +1,6 @@
 //! Prints OIR to graphviz
 
+const std = @import("std");
 const Oir = @import("../Oir.zig");
 const Recursive = @import("extraction.zig").Recursive;
 
@@ -198,7 +199,7 @@ pub const Writer = struct {
     indent: u32 = 0,
     nodes: []const Oir.Node,
 
-    fn printBody(w: *Writer, repr: anytype, stream: anytype) !void {
+    fn printBody(w: *Writer, repr: anytype, stream: *std.Io.Writer) !void {
         for (0..w.nodes.len) |i| {
             try stream.print("%{d} = ", .{i});
             try w.printNode(w.nodes[i], repr, stream);
@@ -206,7 +207,7 @@ pub const Writer = struct {
         }
     }
 
-    pub fn printNode(w: *Writer, node: Oir.Node, repr: anytype, stream: anytype) !void {
+    pub fn printNode(w: *Writer, node: Oir.Node, repr: anytype, stream: *std.Io.Writer) !void {
         try stream.print("{s}(", .{@tagName(node.tag)});
         switch (node.tag) {
             .ret,
@@ -233,39 +234,39 @@ pub const Writer = struct {
         try stream.writeAll(")");
     }
 
-    fn printUnOp(_: *Writer, node: Oir.Node, stream: anytype) !void {
+    fn printUnOp(_: *Writer, node: Oir.Node, stream: *std.Io.Writer) !void {
         const op = node.data.un_op;
-        try stream.print("{}", .{op});
+        try stream.print("{f}", .{op});
     }
 
-    fn printBinOp(_: *Writer, node: Oir.Node, stream: anytype) !void {
+    fn printBinOp(_: *Writer, node: Oir.Node, stream: *std.Io.Writer) !void {
         const bin_op = node.data.bin_op;
-        try stream.print("{}, {}", .{ bin_op[0], bin_op[1] });
+        try stream.print("{f}, {f}", .{ bin_op[0], bin_op[1] });
     }
 
-    fn printProject(_: *Writer, node: Oir.Node, stream: anytype) !void {
+    fn printProject(_: *Writer, node: Oir.Node, stream: *std.Io.Writer) !void {
         const project = node.data.project;
-        try stream.print("{d} {}", .{ project.index, project.tuple });
+        try stream.print("{d} {f}", .{ project.index, project.tuple });
     }
 
-    fn printConstant(_: *Writer, node: Oir.Node, stream: anytype) !void {
+    fn printConstant(_: *Writer, node: Oir.Node, stream: *std.Io.Writer) !void {
         const constant = node.data.constant;
         try stream.print("{d}", .{constant});
     }
 
-    fn printCtrlDataOp(_: *Writer, node: Oir.Node, stream: anytype) !void {
+    fn printCtrlDataOp(_: *Writer, node: Oir.Node, stream: *std.Io.Writer) !void {
         const bin_op = node.data.bin_op;
-        try stream.print("{}, {}", .{ bin_op[0], bin_op[1] });
+        try stream.print("{f}, {f}", .{ bin_op[0], bin_op[1] });
     }
 
-    fn printStart(_: *Writer, _: Oir.Node, repr: anytype, stream: anytype) !void {
+    fn printStart(_: *Writer, _: Oir.Node, repr: anytype, stream: *std.Io.Writer) !void {
         for (repr.exit_list.items, 0..) |exit, i| {
             try stream.writeAll(if (i == 0) "" else ", ");
-            try stream.print("{}", .{exit});
+            try stream.print("{f}", .{exit});
         }
     }
 
-    fn printCtrlList(_: *Writer, node: Oir.Node, repr: anytype, stream: anytype) !void {
+    fn printCtrlList(_: *Writer, node: Oir.Node, repr: anytype, stream: *std.Io.Writer) !void {
         const span = node.data.list;
         for (repr.extra.items[span.start..span.end], 0..) |item, i| {
             try stream.writeAll(if (i == 0) "" else ", ");
