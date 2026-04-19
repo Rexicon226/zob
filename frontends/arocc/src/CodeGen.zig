@@ -66,9 +66,19 @@ pub fn build(cg: *CodeGen, io: std.Io) !Recursive {
     try cg.oir.print(stdout);
     try stdout.writeAll("end OIR\n");
 
-    try cg.oir.optimize(io, .saturate, false);
+    try cg.oir.optimize(io, .saturate, true);
 
-    return cg.oir.extract(.auto);
+    try stdout.writeAll("before extraction OIR:\n");
+    try cg.oir.print(stdout);
+    try stdout.writeAll("end OIR\n");
+
+    const recv = try cg.oir.extract(.auto);
+
+    try stdout.writeAll("optimized OIR:\n");
+    try recv.print(stdout);
+    try stdout.writeAll("end OIR\n");
+
+    return recv;
 }
 
 fn buildFn(cg: *CodeGen, decl: Tree.Node.Index) !void {
@@ -103,8 +113,7 @@ fn buildStmt(cg: *CodeGen, stmt: Tree.Node.Index) !void {
             const operand: Oir.Class.Index = switch (ret.operand) {
                 .expr => |idx| try cg.buildExpr(idx),
                 .implicit => |zeroes| {
-                    _ = zeroes;
-                    @panic("TODO");
+                    std.debug.panic("TODO: implicit return (zeroes={})", .{zeroes});
                 },
                 .none => @panic("TODO"),
             };
@@ -154,6 +163,17 @@ fn buildStmt(cg: *CodeGen, stmt: Tree.Node.Index) !void {
             for (compound.body) |s| try cg.buildStmt(s);
             return; // nothing to add to the oir
         },
+        .variable => |variable| {
+            const rvalue = try cg.buildExpr(variable.initializer.?);
+            const ident = tree.tokSlice(variable.name_tok);
+
+            if (cg.findIdentifier(ident)) |existing| {
+                existing.* = rvalue;
+            } else {
+                const latest = &cg.symbol_table.items[cg.symbol_table.items.len - 1];
+                try latest.put(cg.gpa, ident, rvalue);
+            }
+        },
         else => std.debug.panic("TODO: {s}", .{@tagName(node_tags[@intFromEnum(stmt)])}),
     }
 }
@@ -168,21 +188,22 @@ fn buildExpr(cg: *CodeGen, expr: Tree.Node.Index) !Oir.Class.Index {
     }
 
     const class = switch (expr.get(tree)) {
-        .add_expr => |bin| bin: {
+        .add_expr,
+        .equal_expr,
+        => |bin, t| bin: {
+            const tag: Oir.Node.Tag = switch (t) {
+                .add_expr => .add,
+                .equal_expr => .cmp_eq,
+                else => unreachable,
+            };
+
             const lhs = try cg.buildExpr(bin.lhs);
             const rhs = try cg.buildExpr(bin.rhs);
-            break :bin try cg.oir.add(.binOp(
-                .add,
-                lhs,
-                rhs,
-            ));
+            break :bin try cg.oir.add(.binOp(tag, lhs, rhs));
         },
         .int_literal => unreachable, // handled in the value_map above
         .cast => |cast| switch (cast.kind) {
-            .lval_to_rval => c: {
-                const operand = try cg.buildLval(cast.operand);
-                break :c try cg.oir.add(.init(.load, operand));
-            },
+            .lval_to_rval => try cg.buildLval(cast.operand),
             else => std.debug.panic("TODO: cast {s}", .{@tagName(cast.kind)}),
         },
         else => std.debug.panic("TODO: {s}", .{@tagName(node_tags[@intFromEnum(expr)])}),

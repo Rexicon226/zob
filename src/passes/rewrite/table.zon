@@ -10,10 +10,22 @@
         .to = "(add ?y ?x)",
     },
     .{
+        .name = "comm-and",
+        .from = "(and ?x ?y)",
+        .to = "(and ?y ?x)",
+    },
+    .{
+        .name = "comm-cmp-eq",
+        .from = "(cmp_eq ?x ?y)",
+        .to = "(cmp_eq ?y ?x)",
+    },
+
+    .{
         .name = "mul-to-shl",
         .from = "(mul ?x @known_pow2(y))",
         .to = "(shl ?x @log2(y))",
     },
+
     .{
         .name = "zero-add",
         .from = "(add ?x 0)",
@@ -24,6 +36,7 @@
         .from = "(add ?x ?x)",
         .to = "(mul ?x 2)",
     },
+
     .{
         .name = "zero-mul",
         .from = "(mul ?x 0)",
@@ -35,8 +48,73 @@
         .to = "?x",
     },
     .{
-        .name = "one-div",
+        .name = "one-div-exact",
         .from = "(div_exact ?x 1)",
+        .to = "?x",
+    },
+    .{
+        .name = "one-div-trunc",
+        .from = "(div_trunc ?x 1)",
+        .to = "?x",
+    },
+    .{
+        .name = "self-div-exact",
+        .from = "(div_exact ?x ?x)",
+        .to = "1",
+    },
+    .{
+        .name = "self-div-trunc",
+        .from = "(div_trunc ?x ?x)",
+        .to = "1",
+    },
+    .{
+        .name = "zero-div-exact",
+        .from = "(div_exact 0 ?x)",
+        .to = "0",
+    },
+    .{
+        .name = "zero-div-trunc",
+        .from = "(div_trunc 0 ?x)",
+        .to = "0",
+    },
+    .{
+        .name = "zero-sub",
+        .from = "(sub ?x 0)",
+        .to = "?x",
+    },
+    .{
+        .name = "self-sub",
+        .from = "(sub ?x ?x)",
+        .to = "0",
+    },
+    .{
+        .name = "zero-shl",
+        .from = "(shl ?x 0)",
+        .to = "?x",
+    },
+    .{
+        .name = "zero-shr",
+        .from = "(shr ?x 0)",
+        .to = "?x",
+    },
+    .{
+        .name = "shl-zero",
+        .from = "(shl 0 ?x)",
+        .to = "0",
+    },
+    .{
+        .name = "shr-zero",
+        .from = "(shr 0 ?x)",
+        .to = "0",
+    },
+    .{
+        .name = "zero-and",
+        .from = "(and ?x 0)",
+        .to = "0",
+    },
+    .{
+        .name = "self-and",
+        .from = "(and ?x ?x)",
         .to = "?x",
     },
     .{
@@ -55,6 +133,11 @@
         .to = "(mul ?x (add 1 ?y))",
     },
     .{
+        .name = "distribute",
+        .from = "(mul ?x (add ?y ?z))",
+        .to = "(add (mul ?x ?y) (mul ?x ?z))",
+    },
+    .{
         .name = "cmp_eq_same",
         .from = "(cmp_eq ?x ?x)",
         .to = "1",
@@ -63,5 +146,30 @@
         .name = "cmp_gt_same",
         .from = "(cmp_gt ?x ?x)",
         .to = "0",
+    },
+    .{
+        .name = "add-sub-cancel",
+        .from = "(add ?x (sub 0 ?x))",
+        .to = "0",
+    },
+    .{
+        .name = "sub-to-add-neg",
+        .from = "(sub ?x ?y)",
+        .to = "(add ?x (sub 0 ?y))",
+    },
+    .{
+        .name = "mul-neg-one",
+        .from = "(mul ?x (sub 0 1))",
+        .to = "(sub 0 ?x)",
+    },
+    .{
+        .name = "mul-by-two-to-shl",
+        .from = "(mul ?x 2)",
+        .to = "(shl ?x 1)",
+    },
+    .{
+        .name = "add-self-to-shl",
+        .from = "(add ?x ?x)",
+        .to = "(shl ?x 1)",
     },
 }

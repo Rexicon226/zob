@@ -66,7 +66,7 @@ pub fn main(init: std.process.Init) !void {
     var recv = try cg.build(io);
     defer recv.deinit(gpa);
 
-    try zob.rv64.generate(&recv);
+    try zob.rv64.generate(&recv, io);
 }
 
 fn fail(comptime fmt: []const u8, args: anytype) noreturn {

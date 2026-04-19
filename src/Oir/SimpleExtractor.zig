@@ -68,6 +68,13 @@ pub fn extract(oir: *const Oir) !Recursive {
 
     var recv: Recursive = .{};
     for (oir.exit_list.items) |exit| {
+        const exit_class = oir.union_find.find(exit);
+        const best_node_idx = e.best_node.get(exit_class) orelse continue;
+        const best_node = oir.getNode(best_node_idx);
+        if (best_node.tag == .ret) {
+            const ctrl_class = best_node.data.bin_op[0];
+            if (e.isClassDead(ctrl_class)) continue;
+        }
         _ = try e.extractClass(exit, &recv);
     }
     recv.exit_list = try e.exit_list.clone(oir.allocator);
@@ -116,8 +123,26 @@ fn extractClass(e: *SimpleExtractor, class_idx: Class.Index, recv: *Recursive) !
             try e.map.put(gpa, class_idx, new_node_idx);
             return new_node_idx;
         },
-        .ret,
+        .ret => {
+            const bin_op = best_node.data.bin_op;
+            const ctrl = bin_op[0];
+
+            if (e.isClassDead(ctrl)) {
+                try e.map.put(gpa, class_idx, .dead);
+                return .dead;
+            }
+
+            const lhs = try e.extractClass(ctrl, recv);
+            const rhs = try e.extractClass(bin_op[1], recv);
+
+            const new_node: Node = .binOp(.ret, lhs, rhs);
+            const new_node_idx = try recv.addNode(gpa, new_node);
+            try e.map.put(gpa, class_idx, new_node_idx);
+            try e.exit_list.append(gpa, new_node_idx);
+            return new_node_idx;
+        },
         .branch,
+        .cmp_eq,
         .cmp_gt,
         .add,
         .sub,
@@ -132,10 +157,6 @@ fn extractClass(e: *SimpleExtractor, class_idx: Class.Index, recv: *Recursive) !
             const new_node: Node = .binOp(best_node.tag, lhs, rhs);
             const new_node_idx = try recv.addNode(gpa, new_node);
             try e.map.put(gpa, class_idx, new_node_idx);
-            switch (best_node.tag) {
-                .ret => try e.exit_list.append(gpa, new_node_idx),
-                else => {},
-            }
             return new_node_idx;
         },
         .constant => {
@@ -143,7 +164,10 @@ fn extractClass(e: *SimpleExtractor, class_idx: Class.Index, recv: *Recursive) !
             try e.map.put(gpa, class_idx, idx);
             return idx;
         },
-        .dead => unreachable,
+        .dead => {
+            try e.map.put(gpa, class_idx, .dead);
+            return .dead;
+        },
         else => std.debug.panic("TODO: extractClass {s}\n", .{@tagName(best_node.tag)}),
     }
 }
@@ -199,6 +223,20 @@ fn extractBestNode(e: *SimpleExtractor, class_idx: Class.Index) !NodeCost {
     const entry: NodeCost = .{ best_cost, best_node };
     try e.cost_memo.putNoClobber(oir.allocator, class_idx, entry);
     return entry;
+}
+
+/// Check if a class contains a dead node.
+fn isClassDead(e: *SimpleExtractor, class_idx: Class.Index) bool {
+    const oir = e.oir;
+    const canonical = oir.union_find.find(class_idx);
+    if (oir.classes.get(canonical)) |class| {
+        for (class.bag.items) |node_idx| {
+            if (oir.getNode(node_idx).tag == .dead) {
+                return true;
+            }
+        }
+    }
+    return false;
 }
 
 pub fn deinit(e: *SimpleExtractor) void {

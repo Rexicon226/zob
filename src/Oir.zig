@@ -180,6 +180,7 @@ pub const Node = struct {
             return switch (tag) {
                 .constant,
                 .start,
+                .dead,
                 => true,
                 else => false,
             };
@@ -307,9 +308,9 @@ pub const Node = struct {
             .ret,
             .branch,
             .region,
+            .dead,
             => .ctrl,
             .project => node.data.project.type,
-            .dead => unreachable,
         };
     }
 
@@ -410,6 +411,7 @@ pub const Class = struct {
     pub const Index = enum(u32) {
         /// The start node is always in the first class, and alone as it's canonical.
         start,
+        dead = std.math.maxInt(u32),
         _,
 
         pub fn format(
