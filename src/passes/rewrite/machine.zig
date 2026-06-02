@@ -398,8 +398,8 @@ const Machine = struct {
                             // run for remaining instructions
                             try m.run(oir, insts[i..], map, matches);
                         }
-                        return;
                     }
+                    return;
                 },
                 .lookup => |lookup| {
                     m.lookup.clearRetainingCapacity();

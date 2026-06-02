@@ -533,6 +533,10 @@ const passes: []const Pass = &.{
         .name = "common-rewrites",
         .func = @import("passes/rewrite.zig").run,
     },
+    .{
+        .name = "loop-opt",
+        .func = @import("passes/loop.zig").run,
+    },
 };
 
 pub fn optimize(
@@ -549,7 +553,7 @@ pub fn optimize(
     var i: u32 = 0;
     while (true) {
         var new_change: bool = false;
-        inline for (passes) |pass| {
+        for (passes) |pass| {
             if (graphs) |path| {
                 var buffer: [std.fs.max_path_bytes]u8 = undefined;
                 const name = try std.fmt.bufPrint(&buffer, "{s}/pre_{s}_{}.dot", .{ path, pass.name, i });
@@ -568,7 +572,14 @@ pub fn optimize(
         }
 
         i += 1;
-        if (!new_change) break;
+        if (!new_change) {
+            if (graphs) |path| {
+                var buffer: [std.fs.max_path_bytes]u8 = undefined;
+                const name = try std.fmt.bufPrint(&buffer, "{s}/final.dot", .{path});
+                try oir.dump(io, name);
+            }
+            break;
+        }
     }
 }
 
