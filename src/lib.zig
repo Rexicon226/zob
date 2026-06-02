@@ -4,7 +4,6 @@ pub const Trace = @import("trace.zig").Trace;
 
 pub const Recursive = Oir.extraction.Recursive;
 
-pub const p2 = @import("codegen/p2.zig");
 pub const rv64 = @import("codegen/rv64.zig");
 
 pub const options: std.Options = .{
@@ -15,6 +14,5 @@ test {
     _ = Oir;
     _ = Trace;
     _ = Recursive;
-    _ = p2;
     _ = rv64;
 }

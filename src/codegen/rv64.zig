@@ -1,14 +1,24 @@
-//! Backend for RISC-V 64-bit code generation
+//! RISC-V 64-bit assembly backend.
+//!
+//! TODO: more in-depth comments here would be good
+//!
+//! Operates on the extracted Oir through a few seperate steps.
+//!
+//! 1. `Schedule`. Converts the `Oir.extraction.Recursive` into a region-tree
+//! and computes placement for nodes.
+//! 2. `Mir`. Selects instructions using virtual registers.
+//! 3. `RegAlloc`. As the name suggests, allocations physical registers / spills.
+//! 4. `Emit`. Prints assembly, in the future of course will emit real objects.
 
 const std = @import("std");
 const Oir = @import("../Oir.zig");
+const Schedule = @import("rv64/Schedule.zig");
+const Mir = @import("rv64/Mir.zig");
+const RegAlloc = @import("rv64/RegAlloc.zig");
+
 const Recursive = Oir.extraction.Recursive;
-const Node = Oir.Node;
-const Class = Oir.Class;
 
-const log = std.log.scoped(.rv64);
-
-const Register = enum(u5) {
+pub const Register = enum(u5) {
     zero = 0,
     ra = 1,
     sp = 2,
@@ -17,7 +27,6 @@ const Register = enum(u5) {
     t0 = 5,
     t1 = 6,
     t2 = 7,
-
     s0 = 8,
     s1 = 9,
     a0 = 10,
@@ -28,7 +37,6 @@ const Register = enum(u5) {
     a5 = 15,
     a6 = 16,
     a7 = 17,
-
     s2 = 18,
     s3 = 19,
     s4 = 20,
@@ -39,166 +47,161 @@ const Register = enum(u5) {
     s9 = 25,
     s10 = 26,
     s11 = 27,
-
     t3 = 28,
     t4 = 29,
     t5 = 30,
     t6 = 31,
-
-    const fp: Register = .s0;
 };
 
-const temp_regs = [_]Register{ .t0, .t1, .t2, .t3, .t4, .t5, .t6, .s2, .s3, .s4, .s5, .s6, .s7, .s8, .s9, .s10, .s11 };
-const arg_regs = [_]Register{ .a0, .a1, .a2, .a3, .a4, .a5, .a6, .a7 };
+pub const arg_regs = [_]Register{ .a0, .a1, .a2, .a3, .a4, .a5, .a6, .a7 };
 
-const CodeGen = struct {
-    allocator: std.mem.Allocator,
+/// The registers that the allocator may hand out, in preference order.
+pub const alloc_pool = [_]Register{ .t0, .t1, .t2, .t3, .s2, .s3, .s4, .s5, .s6, .s7, .s8, .s9, .s10, .s11 };
 
-    recv: *const Recursive,
-    output: std.ArrayList(u8),
+/// Scratch registers used only by the emitter to materialize spilled operands.
+/// Will rework all of this in the future with a real graph-color based RegAlloc.
+const scratch_dst: Register = .t4;
+const scratch_src0: Register = .t5;
+const scratch_src1: Register = .t6;
 
-    reg_map: std.AutoHashMapUnmanaged(Class.Index, Register),
-    next_temp: usize,
-    used_saved_regs: std.AutoHashMapUnmanaged(Register, void),
+const slot_size = 8;
 
-    fn init(allocator: std.mem.Allocator, recv: *const Recursive) CodeGen {
-        return .{
-            .recv = recv,
-            .output = .empty,
-            .allocator = allocator,
-            .reg_map = .empty,
-            .next_temp = 0,
-            .used_saved_regs = .empty,
-        };
-    }
-
-    fn deinit(cg: *CodeGen) void {
-        cg.output.deinit(cg.allocator);
-        cg.reg_map.deinit(cg.allocator);
-        cg.used_saved_regs.deinit(cg.allocator);
-    }
-
-    fn emit(cg: *CodeGen, comptime fmt: []const u8, args: anytype) !void {
-        try cg.output.print(cg.allocator, "    " ++ fmt ++ "\n", args);
-    }
-
-    fn emitLabel(cg: *CodeGen, comptime fmt: []const u8, args: anytype) !void {
-        try cg.output.print(cg.allocator, fmt ++ "\n", args);
-    }
-
-    fn allocReg(cg: *CodeGen, idx: Class.Index) !Register {
-        if (cg.reg_map.get(idx)) |reg| {
-            return reg;
-        }
-
-        if (cg.next_temp >= temp_regs.len) {
-            return error.OutOfRegisters;
-        }
-
-        const reg = temp_regs[cg.next_temp];
-        cg.next_temp += 1;
-
-        try cg.reg_map.put(cg.allocator, idx, reg);
-
-        if (@intFromEnum(reg) >= @intFromEnum(Register.s2) and
-            @intFromEnum(reg) <= @intFromEnum(Register.s11))
-        {
-            try cg.used_saved_regs.put(cg.allocator, reg, {});
-        }
-
-        return reg;
-    }
-
-    fn getReg(cg: *CodeGen, idx: Class.Index) !Register {
-        return cg.reg_map.get(idx) orelse error.UnmappedNode;
-    }
-
-    fn generateNode(cg: *CodeGen, idx: Class.Index) !void {
-        const node = cg.recv.getNode(idx);
-
-        switch (node.tag) {
-            .start => {},
-            .project => {
-                const project = node.data.project;
-                if (project.type == .data) {
-                    const arg_idx = project.index;
-                    if (arg_idx >= 1 and arg_idx <= arg_regs.len) {
-                        const arg_reg = arg_regs[arg_idx - 1];
-                        try cg.reg_map.put(cg.allocator, idx, arg_reg);
-                    }
-                }
-            },
-
-            .constant => {
-                const value = node.data.constant;
-                const dest = try cg.allocReg(idx);
-                try cg.emit("li {t}, {d}", .{ dest, value });
-            },
-
-            .add => {
-                const lhs_idx = node.data.bin_op[0];
-                const rhs_idx = node.data.bin_op[1];
-
-                const lhs_reg = try cg.getReg(lhs_idx);
-                const rhs_reg = try cg.getReg(rhs_idx);
-                const dest = try cg.allocReg(idx);
-
-                try cg.emit("add {t}, {t}, {t}", .{ dest, lhs_reg, rhs_reg });
-            },
-
-            .cmp_eq => {
-                const lhs_idx = node.data.bin_op[0];
-                const rhs_idx = node.data.bin_op[1];
-
-                const lhs_reg = try cg.getReg(lhs_idx);
-                const rhs_reg = try cg.getReg(rhs_idx);
-                const dest = try cg.allocReg(idx);
-
-                try cg.emit("xor {t}, {t}, {t}", .{ dest, lhs_reg, rhs_reg });
-                try cg.emit("seqz {t}, {t}", .{ dest, dest });
-            },
-
-            .ret => {
-                const val_idx = node.data.bin_op[1];
-                const val_reg = try cg.getReg(val_idx);
-
-                if (val_reg != .a0) {
-                    try cg.emit("mv a0, {t}", .{val_reg});
-                }
-            },
-
-            .branch, .region => {},
-            .dead => unreachable,
-
-            else => |t| std.debug.panic("TODO: rv64 codegen {t}", .{t}),
-        }
-    }
-
-    fn generateFunction(cg: *CodeGen, name: []const u8) !void {
-        try cg.emitLabel(".globl {s}", .{name});
-        try cg.emitLabel(".type {s}, @function", .{name});
-        try cg.emitLabel("{s}:", .{name});
-
-        for (cg.recv.nodes.items, 0..) |_, i| {
-            const idx: Class.Index = @enumFromInt(i);
-            try cg.generateNode(idx);
-        }
-
-        try cg.emit("ret", .{});
-        try cg.emitLabel(".size {s}, .-{s}", .{ name, name });
-    }
-};
-
-pub fn generate(recv: *const Recursive, io: std.Io) !void {
-    const allocator = std.heap.page_allocator;
-
-    var cg = CodeGen.init(allocator, recv);
-    defer cg.deinit();
-
-    try cg.emitLabel(".text", .{});
-    try cg.generateFunction("foo");
-
-    _ = io;
-    std.debug.print("ASM:\n", .{});
-    std.debug.print("{s}\n", .{cg.output.items});
+pub fn isSaved(reg: Register) bool {
+    return switch (reg) {
+        .s2, .s3, .s4, .s5, .s6, .s7, .s8, .s9, .s10, .s11 => true,
+        else => false,
+    };
 }
+
+pub fn generate(recv: *const Recursive, gpa: std.mem.Allocator, stream: *std.Io.Writer) !void {
+    var sched = try Schedule.compute(gpa, recv);
+    defer sched.deinit(gpa);
+
+    var mir = try Mir.build(gpa, recv, &sched);
+    defer mir.deinit(gpa);
+
+    var regalloc = try RegAlloc.run(gpa, &mir, recv.nodes.items.len);
+    defer regalloc.deinit(gpa);
+
+    var emitter: Emitter = .{ .w = stream, .mir = &mir, .ra = &regalloc };
+    try emitter.run("foo");
+}
+
+const Emitter = struct {
+    w: *std.Io.Writer,
+    mir: *const Mir,
+    ra: *const RegAlloc.Result,
+
+    fn run(e: *Emitter, name: []const u8) !void {
+        const frame = e.frameSize();
+
+        try e.w.print(".text\n", .{});
+        try e.w.print(".globl {s}\n", .{name});
+        try e.w.print(".type {s}, @function\n", .{name});
+        try e.w.print("{s}:\n", .{name});
+
+        if (frame != 0) {
+            try e.emitLine("addi sp, sp, -{d}", .{frame});
+            for (e.ra.used_saved, 0..) |reg, j| {
+                try e.emitLine("sd {t}, {d}(sp)", .{ reg, e.savedOffset(j) });
+            }
+        }
+
+        for (e.mir.insts.items) |inst| try e.emitInst(inst, frame);
+
+        try e.w.print(".size {s}, .-{s}\n", .{ name, name });
+    }
+
+    fn emitInst(e: *Emitter, inst: Mir.Inst, frame: u64) !void {
+        switch (inst) {
+            .arg => |a| {
+                const dst, const slot = e.defReg(a.dst);
+                try e.emitLine("mv {t}, {t}", .{ dst, arg_regs[a.index] });
+                try e.finishDef(dst, slot);
+            },
+            .li => |a| {
+                const dst, const slot = e.defReg(a.dst);
+                try e.emitLine("li {t}, {d}", .{ dst, a.imm });
+                try e.finishDef(dst, slot);
+            },
+            .un => |a| {
+                const src = try e.useReg(a.src, scratch_src0);
+                const dst, const slot = e.defReg(a.dst);
+                switch (a.op) {
+                    .load => try e.emitLine("lw {t}, 0({t})", .{ dst, src }),
+                    .store => try e.emitLine("sw {t}, 0({t})", .{ dst, src }),
+                    else => try e.emitLine("{s} {t}, {t}", .{ @tagName(a.op), dst, src }),
+                }
+                try e.finishDef(dst, slot);
+            },
+            .bin => |a| {
+                const lhs = try e.useReg(a.lhs, scratch_src0);
+                const rhs = try e.useReg(a.rhs, scratch_src1);
+                const dst, const slot = e.defReg(a.dst);
+                try e.emitLine("{s} {t}, {t}, {t}", .{ @tagName(a.op), dst, lhs, rhs });
+                try e.finishDef(dst, slot);
+            },
+            .beqz => |a| {
+                const src = try e.useReg(a.src, scratch_src0);
+                try e.emitLine("beqz {t}, .Lbb{d}", .{ src, a.target });
+            },
+            .j => |target| try e.emitLine("j .Lbb{d}", .{target}),
+            .label => |id| try e.w.print(".Lbb{d}:\n", .{id}),
+            .set_ret => |v| {
+                const src = try e.useReg(v, scratch_src0);
+                try e.emitLine("mv a0, {t}", .{src});
+            },
+            .ret => {
+                if (frame != 0) {
+                    for (e.ra.used_saved, 0..) |reg, j| {
+                        try e.emitLine("ld {t}, {d}(sp)", .{ reg, e.savedOffset(j) });
+                    }
+                    try e.emitLine("addi sp, sp, {d}", .{frame});
+                }
+                try e.emitLine("ret", .{});
+            },
+        }
+    }
+
+    /// Resolve a source operand to a register, reloading from its spill slot into
+    /// `scratch` if necessary.
+    fn useReg(e: *Emitter, v: Mir.VReg, scratch: Register) !Register {
+        switch (e.ra.locs[@intFromEnum(v)]) {
+            .reg => |r| return r,
+            .spill => |slot| {
+                try e.emitLine("lw {t}, {d}(sp)", .{ scratch, e.spillOffset(slot) });
+                return scratch;
+            },
+        }
+    }
+
+    /// Pick the register to write a result into. Returns the spill slot too (if any),
+    /// which `finishDef` then stores back.
+    fn defReg(e: *Emitter, v: Mir.VReg) struct { Register, ?u32 } {
+        switch (e.ra.locs[@intFromEnum(v)]) {
+            .reg => |r| return .{ r, null },
+            .spill => |slot| return .{ scratch_dst, slot },
+        }
+    }
+
+    fn finishDef(e: *Emitter, dst: Register, slot: ?u32) !void {
+        if (slot) |s| try e.emitLine("sw {t}, {d}(sp)", .{ dst, e.spillOffset(s) });
+    }
+
+    fn spillOffset(_: *Emitter, slot: u32) u64 {
+        return @as(u64, slot) * slot_size;
+    }
+
+    fn savedOffset(e: *Emitter, j: usize) u64 {
+        return (@as(u64, e.ra.num_spills) + j) * slot_size;
+    }
+
+    fn frameSize(e: *Emitter) u64 {
+        const bytes = (@as(u64, e.ra.num_spills) + e.ra.used_saved.len) * slot_size;
+        return std.mem.alignForward(u64, bytes, 16);
+    }
+
+    fn emitLine(e: *Emitter, comptime fmt: []const u8, args: anytype) !void {
+        try e.w.print("    " ++ fmt ++ "\n", args);
+    }
+};

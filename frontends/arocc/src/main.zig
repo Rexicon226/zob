@@ -66,11 +66,9 @@ pub fn main(init: std.process.Init) !void {
     var recv = try cg.build(io);
     defer recv.deinit(gpa);
 
-    try zob.rv64.generate(&recv, io);
-}
+    var stdout = std.Io.File.stdout().writer(io, &.{});
+    const writer = &stdout.interface;
 
-fn fail(comptime fmt: []const u8, args: anytype) noreturn {
-    const stderr = std.io.getStdErr().writer();
-    stderr.print(fmt ++ "\n", args) catch @panic("failed to print the stderr");
-    std.posix.abort();
+    try zob.rv64.generate(&recv, gpa, writer);
+    try writer.flush();
 }

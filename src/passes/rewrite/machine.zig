@@ -15,11 +15,11 @@ const MultiRewrite = rewrite.MultiRewrite;
 
 const Compiler = struct {
     next_reg: Reg,
-    instructions: std.ArrayListUnmanaged(Instruction),
+    instructions: std.ArrayList(Instruction),
     todo_nodes: std.AutoHashMapUnmanaged(struct { SExpr.Index, Reg }, SExpr.Entry),
     v2r: std.StringHashMapUnmanaged(Reg),
-    free_vars: std.ArrayListUnmanaged(std.StringArrayHashMapUnmanaged(void)),
-    subtree_size: std.ArrayListUnmanaged(u64),
+    free_vars: std.ArrayList(std.StringArrayHashMapUnmanaged(void)),
+    subtree_size: std.ArrayList(u64),
 
     const Todo = struct { SExpr.Index, Reg };
 
@@ -242,10 +242,10 @@ pub fn newRoot(
     allocator: std.mem.Allocator,
     new_root_idx: SExpr.Index,
 ) !SExpr {
-    var list: std.ArrayListUnmanaged(SExpr.Entry) = .empty;
+    var list: std.ArrayList(SExpr.Entry) = .empty;
     defer list.deinit(allocator);
 
-    var queue: std.ArrayListUnmanaged(SExpr.Index) = .empty;
+    var queue: std.ArrayList(SExpr.Index) = .empty;
     defer queue.deinit(allocator);
     var map: std.AutoHashMapUnmanaged(SExpr.Index, SExpr.Index) = .empty;
     defer map.deinit(allocator);
@@ -295,7 +295,7 @@ const Program = struct {
         p: *Program,
         rw: Rewrite,
         oir: *const Oir,
-        matches: *std.ArrayListUnmanaged(Result),
+        matches: *std.ArrayList(Result),
     ) !void {
         const pattern = rw.from;
         var iter = oir.classes.valueIterator();
@@ -324,7 +324,7 @@ const Program = struct {
     // fn searchMulti(
     //     p: *Program,
     //     oir: *const Oir,
-    //     matches: *std.ArrayListUnmanaged(Result),
+    //     matches: *std.ArrayList(Result),
     // ) !void {
     //     var iter = oir.classes.valueIterator();
     //     while (iter.next()) |class| {
@@ -337,7 +337,7 @@ const Program = struct {
         oir: *const Oir,
         class: Class.Index,
         pattern: SExpr,
-        matches: *std.ArrayListUnmanaged(Result),
+        matches: *std.ArrayList(Result),
     ) !void {
         std.debug.assert(oir.clean); // must be clean to search
         const allocator = oir.allocator;
@@ -350,7 +350,7 @@ const Program = struct {
         defer machine.deinit(allocator);
         try machine.registers.append(allocator, class);
 
-        var results: std.ArrayListUnmanaged(Result.Bindings) = .empty;
+        var results: std.ArrayList(Result.Bindings) = .empty;
         defer results.deinit(allocator);
 
         try machine.run(oir, p.instructions, p.map, &results);
@@ -372,17 +372,17 @@ const Program = struct {
 };
 
 const Machine = struct {
-    registers: std.ArrayListUnmanaged(Class.Index),
+    registers: std.ArrayList(Class.Index),
     /// Owned by the overhead Program
     v2r: *const std.StringHashMapUnmanaged(Reg),
-    lookup: std.ArrayListUnmanaged(Class.Index),
+    lookup: std.ArrayList(Class.Index),
 
     fn run(
         m: *Machine,
         oir: *const Oir,
         insts: []const Instruction,
         map: std.StringHashMapUnmanaged(Reg),
-        matches: *std.ArrayListUnmanaged(Result.Bindings),
+        matches: *std.ArrayList(Result.Bindings),
     ) !void {
         for (insts, 1..) |inst, i| {
             switch (inst) {
@@ -421,7 +421,6 @@ const Machine = struct {
                             .builtin => unreachable, // NOTE: not really unreachable i think, dunno
                             .node => |n| {
                                 var new_node = switch (n.tag) {
-                                    .region => unreachable,
                                     inline else => |t| Node.init(t, undefined),
                                 };
                                 for (new_node.mutableOperands(oir), n.list) |*op, l| {
@@ -522,7 +521,7 @@ const Reg = enum(u32) {
 pub fn search(
     oir: *const Oir,
     rw: Rewrite,
-    matches: *std.ArrayListUnmanaged(Result),
+    matches: *std.ArrayList(Result),
 ) Result.Error!void {
     const allocator = oir.allocator;
 
@@ -566,7 +565,7 @@ pub fn search(
 
 //     std.debug.print("program: {any}\n", .{program.instructions});
 
-//     var matches: std.ArrayListUnmanaged(Result) = .{};
+//     var matches: std.ArrayList(Result) = .{};
 //     try program.searchMulti(oir, &matches);
 
 //     std.debug.print("num: {}\n", .{matches.items.len});

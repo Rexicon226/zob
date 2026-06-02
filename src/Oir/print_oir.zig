@@ -55,13 +55,6 @@ pub fn dumpOirGraph(
         for (class.bag.items, 0..) |node_idx, i| {
             const node = oir.getNode(node_idx);
             switch (node.tag) {
-                .ret,
-                .branch,
-                => {
-                    const ctrl, const data = node.data.bin_op;
-                    try printClassEdge(stream, class_idx, i, ctrl, .red);
-                    try printClassEdge(stream, class_idx, i, data, .black);
-                },
                 .project,
                 => {
                     const project = node.data.project;
@@ -70,18 +63,6 @@ pub fn dumpOirGraph(
                         .ctrl => .red,
                         .data => .black,
                     });
-                },
-                .region => {
-                    const list = node.data.list;
-                    for (list.toSlice(oir)) |item| {
-                        try printClassEdge(
-                            stream,
-                            class_idx,
-                            i,
-                            @enumFromInt(item),
-                            .red,
-                        );
-                    }
                 },
                 else => for (node.operands(oir)) |child_idx| {
                     try printClassEdge(stream, class_idx, i, child_idx, .black);
@@ -156,11 +137,6 @@ pub fn dumpRecvGraph(
 
     for (recv.nodes.items, 0..) |node, i| {
         switch (node.tag) {
-            .ret, .branch => {
-                const ctrl, const data = node.data.bin_op;
-                try printEdge(stream, i, ctrl, .red);
-                try printEdge(stream, i, data, .black);
-            },
             .project => {
                 const project = node.data.project;
                 const target = project.tuple;
@@ -168,12 +144,6 @@ pub fn dumpRecvGraph(
                     .ctrl => .red,
                     .data => .black,
                 });
-            },
-            .region => {
-                const list = node.data.list;
-                for (list.toSlice(recv)) |item| {
-                    try printEdge(stream, i, @enumFromInt(item), .red);
-                }
             },
             else => for (node.operands(recv)) |idx| {
                 try printEdge(stream, i, idx, .black);
@@ -210,7 +180,6 @@ pub const Writer = struct {
     pub fn printNode(w: *Writer, node: Oir.Node, repr: anytype, stream: *std.Io.Writer) !void {
         try stream.print("{s}(", .{@tagName(node.tag)});
         switch (node.tag) {
-            .ret,
             .@"and",
             .sub,
             .shl,
@@ -221,15 +190,16 @@ pub const Writer = struct {
             .add,
             .cmp_gt,
             .cmp_eq,
-            => try w.printBinOp(node, stream),
             .load,
-            => try w.printUnOp(node, stream),
+            => try w.printBinOp(node, stream),
+            .gamma,
+            .theta,
+            .store,
+            => try w.printTriOp(node, stream),
+            .ret => try w.printCtrlList(node, repr, stream),
             .project => try w.printProject(node, stream),
             .constant => try w.printConstant(node, stream),
-            .branch => try w.printCtrlDataOp(node, stream),
             .start => try w.printStart(node, repr, stream),
-            .region => try w.printCtrlList(node, repr, stream),
-            else => try stream.print("TODO: {s}", .{@tagName(node.tag)}),
         }
         try stream.writeAll(")");
     }
@@ -254,9 +224,9 @@ pub const Writer = struct {
         try stream.print("{d}", .{constant});
     }
 
-    fn printCtrlDataOp(_: *Writer, node: Oir.Node, stream: *std.Io.Writer) !void {
-        const bin_op = node.data.bin_op;
-        try stream.print("{f}, {f}", .{ bin_op[0], bin_op[1] });
+    fn printTriOp(_: *Writer, node: Oir.Node, stream: *std.Io.Writer) !void {
+        const tri_op = node.data.tri_op;
+        try stream.print("{f}, {f}, {f}", .{ tri_op[0], tri_op[1], tri_op[2] });
     }
 
     fn printStart(_: *Writer, _: Oir.Node, repr: anytype, stream: *std.Io.Writer) !void {

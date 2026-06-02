@@ -6,14 +6,14 @@ suite Zig the best. A second goal is to create a general optimizing backend, one
 as for simple compiled languages, test out new and interesting optimizations, and just see how Zig
 fairs as a language, for writing optimizers.
 
-The current implementation is a mix of E-Graphs and Sea of Nodes. At first, I was keen on using RVSDG
-since given Zig's very structural nature it seemed like it would be a good fit, however after a few
-months of fiddling around with it, RVSDG is just too restrictive. This is likely just my own experience,
-but I found it extremely difficult to develop algorithms to convert from Zig's SSA to RVSDG.
-Maybe I'll come back to it one day, but for now, I'd like to use something a bit less esoteric, such as 
-SoN, and move further in the implementation.
+The current implementation is a mix of E-Graphs and RVSDG. This allows for some
+truly unique and interesting optimization flows, which I don't believe have been
+explored in depth, if at all, in modern optimization frameworks. For compatibility
+with Zig's SSA, this will require developing some new re-looper algorithms for
+construction the flow we need, but it should be doable. In the near future I'd 
+like to mock up Zig's SSA in a simple sandbox here and write such an algorithm.
 
 Implementation goals are:
-- Implement an abstract optimizing IR based on e-graphs, rvsdg, and SoN.
+- Implement an abstract optimizing IR based on e-graphs and rvsdg.
 - Implement a RISC-V machine code backend to provide a simpler method 
 of register allocation and backend generalization.

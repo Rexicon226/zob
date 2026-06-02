@@ -15,40 +15,21 @@ const assert = std.debug.assert;
 
 oir: *const Oir,
 
-/// Describes cycles found in the OIR. EGraphs are allowed to have cycles,
-/// they are not DAGs. However, it's impossible to extract a "best node"
-/// from a cyclic class pattern so we must skip them. If after iterating through
-/// all of the nodes in a class we can't find one that doesn't cycle, this means
-/// the class itself cycles and the graph is unsolvable.
-///
-/// The key is a cyclic node index and the value is the index of the class
-/// which references the class the node is in.
-cycles: std.AutoHashMapUnmanaged(Node.Index, Class.Index),
-
-/// Relates class indicies to the best node in them. Since the classes
-/// are immutable after the OIR optimization passes, we can confidently
-/// reuse the extraction. This amortization makes our extraction strategy
-/// just barely usable.
-cost_memo: std.AutoHashMapUnmanaged(Class.Index, NodeCost),
-
 start_class: ?Class.Index,
 
+/// The chosen lowest-cost node for each canonical class.
 best_node: std.AutoHashMapUnmanaged(Class.Index, Node.Index),
 map: std.AutoHashMapUnmanaged(Class.Index, Class.Index),
 
-exit_list: std.ArrayListUnmanaged(Class.Index),
+exit_list: std.ArrayList(Class.Index),
 
-const NodeCost = struct {
-    u32,
-    Node.Index,
-};
+/// Sentinel cost for a class that has no finite-cost (acyclic) extraction yet.
+const infinite = std.math.maxInt(u32);
 
 /// Extracts the best pattern of Oir from the E-Graph given a cost model.
 pub fn extract(oir: *const Oir) !Recursive {
     var e: SimpleExtractor = .{
         .oir = oir,
-        .cycles = try oir.findCycles(),
-        .cost_memo = .empty,
         .best_node = .{},
         .map = .{},
         .exit_list = .empty,
@@ -56,30 +37,68 @@ pub fn extract(oir: *const Oir) !Recursive {
     };
     defer e.deinit();
 
-    log.debug("cycles found: {}", .{e.cycles.count()});
-
-    {
-        var iter = oir.classes.valueIterator();
-        while (iter.next()) |class| {
-            const best_node = try e.getBestNode(class.index);
-            try e.best_node.put(oir.allocator, class.index, best_node);
-        }
-    }
+    try e.computeBestNodes();
 
     var recv: Recursive = .{};
     for (oir.exit_list.items) |exit| {
         const exit_class = oir.union_find.find(exit);
-        const best_node_idx = e.best_node.get(exit_class) orelse continue;
-        const best_node = oir.getNode(best_node_idx);
-        if (best_node.tag == .ret) {
-            const ctrl_class = best_node.data.bin_op[0];
-            if (e.isClassDead(ctrl_class)) continue;
-        }
+        _ = e.best_node.get(exit_class) orelse continue;
         _ = try e.extractClass(exit, &recv);
     }
     recv.exit_list = try e.exit_list.clone(oir.allocator);
 
     return recv;
+}
+
+/// Computes the best (lowest-cost) node for every class via Bellman-Ford style
+/// fixpoint.
+///
+/// E-graphs may contain cycles (e.g. store-to-load forwarding unions a load with
+/// the stored value, while the load still references the store). A class only
+/// ever receives a finite cost through a node whose childre are *all* finite, so
+/// cyclic nodes are skipped automatically as long as the class has an acyclic
+/// alternative (such as a `constant`). Since every node with operands has a
+/// non-zero base cost, the chosen subgraph is well-founded and therefore acyclic.
+fn computeBestNodes(e: *SimpleExtractor) !void {
+    const oir = e.oir;
+    const gpa = oir.allocator;
+
+    var best_cost: std.AutoHashMapUnmanaged(Class.Index, u32) = .{};
+    defer best_cost.deinit(gpa);
+
+    var changed: bool = true;
+    while (changed) {
+        changed = false;
+
+        var iter = oir.classes.iterator();
+        while (iter.next()) |entry| {
+            const class_idx = entry.key_ptr.*;
+            const class = entry.value_ptr.*;
+
+            var current = best_cost.get(class_idx) orelse infinite;
+            for (class.bag.items) |node_idx| {
+                const node = oir.getNode(node_idx);
+
+                var total: u32 = cost.getCost(node.tag);
+                for (node.operands(oir)) |child| {
+                    const child_cost = best_cost.get(oir.union_find.find(child)) orelse infinite;
+                    if (child_cost == infinite) {
+                        total = infinite;
+                        break;
+                    }
+                    total += child_cost;
+                }
+
+                const clamped: u32 = @min(infinite, total);
+                if (clamped < current) {
+                    current = clamped;
+                    try best_cost.put(gpa, class_idx, clamped);
+                    try e.best_node.put(gpa, class_idx, node_idx);
+                    changed = true;
+                }
+            }
+        }
+    }
 }
 
 fn extractClass(e: *SimpleExtractor, class_idx: Class.Index, recv: *Recursive) !Class.Index {
@@ -110,44 +129,58 @@ fn extractClass(e: *SimpleExtractor, class_idx: Class.Index, recv: *Recursive) !
             try e.map.put(gpa, class_idx, new_node_idx);
             return new_node_idx;
         },
-        .load => {
-            const un_op = best_node.data.un_op;
+        .store => {
+            const tri_op = best_node.data.tri_op;
 
-            const operand = try e.extractClass(un_op, recv);
+            const mem_state = try e.extractClass(tri_op[0], recv);
+            const address = try e.extractClass(tri_op[1], recv);
+            const value = try e.extractClass(tri_op[2], recv);
 
-            const new_node: Node = .{
-                .tag = best_node.tag,
-                .data = .{ .un_op = operand },
-            };
+            const new_node: Node = .store(mem_state, address, value);
             const new_node_idx = try recv.addNode(gpa, new_node);
             try e.map.put(gpa, class_idx, new_node_idx);
             return new_node_idx;
         },
         .ret => {
-            const bin_op = best_node.data.bin_op;
-            const ctrl = bin_op[0];
+            const results = best_node.data.list.toSlice(oir);
 
-            if (e.isClassDead(ctrl)) {
-                try e.map.put(gpa, class_idx, .dead);
-                return .dead;
+            var extracted: std.ArrayList(Class.Index) = .empty;
+            defer extracted.deinit(gpa);
+            for (results) |result| {
+                try extracted.append(gpa, try e.extractClass(@enumFromInt(result), recv));
             }
 
-            const lhs = try e.extractClass(ctrl, recv);
-            const rhs = try e.extractClass(bin_op[1], recv);
-
-            const new_node: Node = .binOp(.ret, lhs, rhs);
+            const span = try recv.listToSpan(extracted.items, gpa);
+            const new_node: Node = .ret(span);
             const new_node_idx = try recv.addNode(gpa, new_node);
             try e.map.put(gpa, class_idx, new_node_idx);
             try e.exit_list.append(gpa, new_node_idx);
             return new_node_idx;
         },
-        .branch,
+        .gamma => {
+            const tri_op = best_node.data.tri_op;
+
+            const pred = try e.extractClass(tri_op[0], recv);
+            const then = try e.extractClass(tri_op[1], recv);
+            const els = try e.extractClass(tri_op[2], recv);
+
+            const new_node: Node = .gamma(pred, then, els);
+            const new_node_idx = try recv.addNode(gpa, new_node);
+            try e.map.put(gpa, class_idx, new_node_idx);
+            return new_node_idx;
+        },
+        .theta => @panic("TODO: theta extraction unsupported"),
         .cmp_eq,
         .cmp_gt,
         .add,
         .sub,
+        .mul,
+        .@"and",
         .shl,
         .shr,
+        .div_trunc,
+        .div_exact,
+        .load,
         => {
             const bin_op = best_node.data.bin_op;
 
@@ -164,85 +197,11 @@ fn extractClass(e: *SimpleExtractor, class_idx: Class.Index, recv: *Recursive) !
             try e.map.put(gpa, class_idx, idx);
             return idx;
         },
-        .dead => {
-            try e.map.put(gpa, class_idx, .dead);
-            return .dead;
-        },
-        else => std.debug.panic("TODO: extractClass {s}\n", .{@tagName(best_node.tag)}),
     }
-}
-
-fn getBestNode(e: *SimpleExtractor, class_idx: Class.Index) !Node.Index {
-    _, const best_node = try e.extractBestNode(class_idx);
-
-    log.debug("best node for class {} is {s}", .{
-        class_idx,
-        @tagName(e.oir.getNode(best_node).tag),
-    });
-
-    return best_node;
-}
-
-/// Given a class, extract the "best" node from it.
-fn extractBestNode(e: *SimpleExtractor, class_idx: Class.Index) !NodeCost {
-    const oir = e.oir;
-    const class = oir.classes.get(class_idx).?;
-    assert(class.bag.items.len > 0);
-
-    if (e.cost_memo.get(class_idx)) |entry| return entry;
-
-    var best_cost: u32 = std.math.maxInt(u32);
-    var best_node: Node.Index = class.bag.items[0];
-
-    for (class.bag.items) |node_idx| {
-        // the node is known to cycle, we must skip it.
-        if (e.cycles.get(node_idx) != null) continue;
-
-        const node = oir.getNode(node_idx);
-
-        const base_cost = cost.getCost(node.tag);
-        var child_cost: u32 = 0;
-        for (node.operands(oir)) |sub_class_idx| {
-            assert(sub_class_idx != class_idx); // checked for cycles above
-
-            const extracted_cost, _ = try e.extractBestNode(sub_class_idx);
-            child_cost += extracted_cost;
-        }
-
-        const node_cost = base_cost + child_cost;
-
-        if (node_cost < best_cost) {
-            best_cost = node_cost;
-            best_node = node_idx;
-        }
-    }
-    if (best_cost == std.math.maxInt(u32)) {
-        std.debug.panic("extracted cyclic terms, no best node could be found! {f}", .{class_idx});
-    }
-
-    const entry: NodeCost = .{ best_cost, best_node };
-    try e.cost_memo.putNoClobber(oir.allocator, class_idx, entry);
-    return entry;
-}
-
-/// Check if a class contains a dead node.
-fn isClassDead(e: *SimpleExtractor, class_idx: Class.Index) bool {
-    const oir = e.oir;
-    const canonical = oir.union_find.find(class_idx);
-    if (oir.classes.get(canonical)) |class| {
-        for (class.bag.items) |node_idx| {
-            if (oir.getNode(node_idx).tag == .dead) {
-                return true;
-            }
-        }
-    }
-    return false;
 }
 
 pub fn deinit(e: *SimpleExtractor) void {
     const allocator = e.oir.allocator;
-    e.cost_memo.deinit(allocator);
-    e.cycles.deinit(allocator);
     e.best_node.deinit(allocator);
     e.map.deinit(allocator);
     e.exit_list.deinit(allocator);

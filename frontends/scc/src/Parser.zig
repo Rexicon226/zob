@@ -11,9 +11,9 @@ source: [:0]const u8,
 tokens: std.MultiArrayList(Token),
 token_index: u32,
 nodes: std.MultiArrayList(Node),
-errors: std.ArrayListUnmanaged(Ast.Error),
-scratch: std.ArrayListUnmanaged(Node.Index),
-extra_data: std.ArrayListUnmanaged(Node.Index),
+errors: std.ArrayList(Ast.Error),
+scratch: std.ArrayList(Node.Index),
+extra_data: std.ArrayList(Node.Index),
 
 const Error = error{
     OutOfMemory,
@@ -30,7 +30,7 @@ pub fn parse(p: *Parser) !void {
         .data = undefined,
     });
 
-    var statements: std.ArrayListUnmanaged(Node.Index) = .empty;
+    var statements: std.ArrayList(Node.Index) = .empty;
     defer statements.deinit(p.gpa);
 
     while (p.tokens.get(p.token_index).tag != .eof) {

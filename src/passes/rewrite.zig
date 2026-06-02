@@ -63,7 +63,7 @@ const rewrites: []const Rewrite = blk: {
 };
 
 pub fn run(oir: *Oir) !bool {
-    var matches: std.ArrayListUnmanaged(Result) = .empty;
+    var matches: std.ArrayList(Result) = .empty;
     defer {
         for (matches.items) |*m| m.deinit(oir.allocator);
         matches.deinit(oir.allocator);
@@ -94,7 +94,7 @@ pub fn run(oir: *Oir) !bool {
 }
 
 fn applyMatches(oir: *Oir, matches: []const Result) !bool {
-    var ids: std.ArrayListUnmanaged(Class.Index) = .empty;
+    var ids: std.ArrayList(Class.Index) = .empty;
     defer ids.deinit(oir.allocator);
 
     var changed: bool = false;
@@ -107,7 +107,6 @@ fn applyMatches(oir: *Oir, matches: []const Result) !bool {
                 .constant => |c| try oir.add(.constant(c)),
                 .node => |n| b: {
                     var new = switch (n.tag) {
-                        .region => unreachable, // TODO
                         inline else => |t| Node.init(t, undefined),
                     };
                     for (new.mutableOperands(oir), n.list) |*op, child| {
@@ -160,7 +159,7 @@ fn testSearch(oir: *const Oir, comptime buffer: []const u8, num_matches: u64) !v
     const apply = SExpr.parse("?x");
     const pattern = SExpr.parse(buffer);
 
-    var matches: std.ArrayListUnmanaged(Result) = .{};
+    var matches: std.ArrayList(Result) = .{};
     defer {
         for (matches.items) |*m| m.deinit(oir.allocator);
         matches.deinit(oir.allocator);

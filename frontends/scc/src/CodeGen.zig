@@ -10,13 +10,13 @@ gpa: std.mem.Allocator,
 oir: *Oir,
 ast: *const Ast,
 ctrl_class: ?Oir.Class.Index,
-exits: *std.ArrayListUnmanaged(Oir.Class.Index),
+exits: *std.ArrayList(Oir.Class.Index),
 node_to_class: std.AutoHashMapUnmanaged(Ast.Node.Index, Oir.Class.Index),
 symbol_table: SymbolTable,
-scratch: std.ArrayListUnmanaged(Oir.Class.Index),
+scratch: std.ArrayList(Oir.Class.Index),
 
 const Error = error{OutOfMemory};
-const SymbolTable = std.ArrayListUnmanaged(std.StringHashMapUnmanaged(Oir.Class.Index));
+const SymbolTable = std.ArrayList(std.StringHashMapUnmanaged(Oir.Class.Index));
 
 pub fn init(oir: *Oir, gpa: std.mem.Allocator, ast: *const Ast) !CodeGen {
     const start_class = try oir.add(.{

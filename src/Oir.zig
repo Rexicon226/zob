@@ -9,7 +9,7 @@ nodes: std.AutoArrayHashMapUnmanaged(Node, void),
 
 /// Used for storing dynamic and temporary data. Things like the Node `list` payload are stored
 /// on this array. We can assume that it'll live as long as the OIR does.
-extra: std.ArrayListUnmanaged(u32),
+extra: std.ArrayList(u32),
 
 /// Represents the list of all E-Classes in the graph.
 ///
@@ -31,7 +31,7 @@ union_find: UnionFind,
 /// rebuilding and lets the graph process faster. `add` and `union` dirty the graph, marking `clean`
 /// as false, and then `rebuild` will iterate through the pending items to analyze and mark `clean`
 /// as true.
-pending: std.ArrayListUnmanaged(Pair),
+pending: std.ArrayList(Pair),
 
 /// Indicates whether or not reading type operations are allowed on the E-Graph.
 ///
@@ -42,10 +42,10 @@ trace: Trace,
 /// A list of classes/nodes which act as exits from the function. This will usually
 /// be `ret` nodes. We use it later in the extraction to understand where to start
 /// looking for the best path.
-exit_list: std.ArrayListUnmanaged(Class.Index),
+exit_list: std.ArrayList(Class.Index),
 
 const UnionFind = struct {
-    parents: std.ArrayListUnmanaged(Class.Index) = .empty,
+    parents: std.ArrayList(Class.Index) = .empty,
 
     fn makeSet(f: *UnionFind, gpa: std.mem.Allocator) !Class.Index {
         const id: Class.Index = @enumFromInt(f.parents.items.len);
@@ -107,6 +107,14 @@ pub const NodeContext = struct {
         if (a.data == .constant) {
             return a.data.constant == b.data.constant;
         }
+        // `project`'s identity includes the field index and type, which are not
+        // part of the `operands()` (only the tuple is). Without this, every
+        // projection off the sample tuple would be considered equal and collapse
+        // into one class.
+        if (a.data == .project) {
+            if (a.data.project.index != b.data.project.index) return false;
+            if (a.data.project.type != b.data.project.type) return false;
+        }
 
         for (a.operands(oir), b.operands(oir)) |a_class, b_class| {
             if (a_class != b_class) {
@@ -150,12 +158,18 @@ pub const Node = struct {
         start,
         /// The return nodes are input to the `start` node in the function
         ///
-        /// This node uses the `bin_op` payload, where the first item is the preceding
-        /// control node, and the second item is the data node which represents
-        /// the return value.
+        /// The return node is the single exit of the function. There is no
+        /// control flow to be represented in RVSDG, so this uses the `list`
+        /// payload to hold the function's result values. By convention,
+        /// element 0 is the final memory state. A value-returning function
+        /// adds its return value at element 1.
         ret,
-        branch,
-        region,
+        /// A conditional ("if"). Uses the `tri_op` payload, `(predicate, then, else)`.
+        /// Selects either of the operands based on the predicate.
+        gamma,
+        /// A tail-controlled loop. Uses the `tri_op` payload, `(init, step, exit_pred)`.
+        /// Currently unsupported. TODO!!
+        theta,
 
         // Integer arthimatics.
         add,
@@ -171,16 +185,17 @@ pub const Node = struct {
         cmp_eq,
         cmp_gt,
 
+        /// Memory load. Uses the `bin_op` payload `(mem_state, address)` and produces
+        /// the loaded value. Takes the memory state purely to order it against stores.
         load,
+        /// Memory store. Uses the `tri_op` payload `(mem_state, address, value)` and
+        /// produces a new memory state.
         store,
-
-        dead,
 
         pub fn isCanonical(tag: Tag) bool {
             return switch (tag) {
                 .constant,
                 .start,
-                .dead,
                 => true,
                 else => false,
             };
@@ -190,11 +205,15 @@ pub const Node = struct {
             return switch (tag) {
                 .constant,
                 => .constant,
-                .region,
                 .start,
+                .ret,
                 => .list,
                 .project,
                 => .project,
+                .gamma,
+                .theta,
+                .store,
+                => .tri_op,
                 .cmp_gt,
                 .cmp_eq,
                 .@"and",
@@ -205,14 +224,8 @@ pub const Node = struct {
                 .shr,
                 .div_trunc,
                 .div_exact,
-                .store,
-                .ret,
-                .branch,
-                => .bin_op,
                 .load,
-                => .un_op,
-                .dead,
-                => .none,
+                => .bin_op,
             };
         }
     };
@@ -224,6 +237,7 @@ pub const Node = struct {
         /// function can return a slice, otherwise padding between struct elements
         /// would be undefined and it wouldn't be safe.
         bin_op: [2]Class.Index,
+        tri_op: [3]Class.Index,
         un_op: Class.Index,
         project: Project,
         list: Span,
@@ -271,6 +285,7 @@ pub const Node = struct {
         return switch (node.data) {
             .none, .constant => &.{},
             .bin_op => |*bin_op| bin_op,
+            .tri_op => |*tri_op| tri_op,
             .un_op => |*un_op| un_op[0..1],
             .project => |*proj| (&proj.tuple)[0..1],
             .list => |span| @ptrCast(repr.extra.items[span.start..span.end]),
@@ -282,6 +297,7 @@ pub const Node = struct {
         return switch (node.data) {
             .none, .constant => &.{},
             .bin_op => |*bin_op| bin_op,
+            .tri_op => |*tri_op| tri_op,
             .un_op => |*un_op| un_op[0..1],
             .project => |*proj| (&proj.tuple)[0..1],
             .list => |span| @ptrCast(repr.extra.items[span.start..span.end]),
@@ -303,12 +319,11 @@ pub const Node = struct {
             .shr,
             .div_trunc,
             .div_exact,
+            .gamma,
+            .theta,
             => .data,
             .start,
             .ret,
-            .branch,
-            .region,
-            .dead,
             => .ctrl,
             .project => node.data.project.type,
         };
@@ -337,8 +352,27 @@ pub const Node = struct {
     }
 
     // Helper functions
-    pub fn branch(ctrl: Class.Index, pred: Class.Index) Node {
-        return binOp(.branch, ctrl, pred);
+    pub fn ret(results: Span) Node {
+        return .{ .tag = .ret, .data = .{ .list = results } };
+    }
+
+    /// Memory load: `(mem_state, address)` -> loaded value.
+    pub fn load(mem_state: Class.Index, address: Class.Index) Node {
+        return binOp(.load, mem_state, address);
+    }
+
+    /// Memory store: `(mem_state, address, value)` -> new memory state.
+    pub fn store(mem_state: Class.Index, address: Class.Index, value: Class.Index) Node {
+        return .{ .tag = .store, .data = .{ .tri_op = .{ mem_state, address, value } } };
+    }
+
+    /// Conditional: selects `then` when `pred` is non-zero, else `els`.
+    pub fn gamma(pred: Class.Index, then: Class.Index, els: Class.Index) Node {
+        return .{ .tag = .gamma, .data = .{ .tri_op = .{ pred, then, els } } };
+    }
+
+    pub fn theta(init_val: Class.Index, step: Class.Index, exit_pred: Class.Index) Node {
+        return .{ .tag = .theta, .data = .{ .tri_op = .{ init_val, step, exit_pred } } };
     }
 
     pub fn project(index: u32, tuple: Class.Index, ty: Type) Node {
@@ -349,13 +383,6 @@ pub const Node = struct {
                 .tuple = tuple,
                 .type = ty,
             } },
-        };
-    }
-
-    pub fn region(span: Span) Node {
-        return .{
-            .tag = .region,
-            .data = .{ .list = span },
         };
     }
 
@@ -405,8 +432,8 @@ const Pair = struct { Node.Index, Class.Index };
 /// A Class contains an N amount of Nodes as children.
 pub const Class = struct {
     index: Index,
-    bag: std.ArrayListUnmanaged(Node.Index) = .empty,
-    parents: std.ArrayListUnmanaged(Pair) = .empty,
+    bag: std.ArrayList(Node.Index) = .empty,
+    parents: std.ArrayList(Pair) = .empty,
 
     pub const Index = enum(u32) {
         /// The start node is always in the first class, and alone as it's canonical.
@@ -620,10 +647,10 @@ fn makeClass(oir: *Oir, node_idx: Node.Index) !Class.Index {
 ///
 /// This can be thought of as "merging" two classes when they were proven to be equivalent.
 pub fn @"union"(oir: *Oir, a_idx: Class.Index, b_idx: Class.Index) !bool {
-    oir.clean = false;
     var a = oir.union_find.findMutable(a_idx);
     var b = oir.union_find.findMutable(b_idx);
     if (a == b) return false;
+    oir.clean = false;
 
     log.debug("union on {} -> {}", .{ b, a });
 

@@ -1,10 +1,5 @@
 .zig-cache/
 zig-out/
 zig-pkg/
-.vscode/
-out.dot
+build/
 graphs/*
-trace.json
-input.ir
-test.dot
-input.ir

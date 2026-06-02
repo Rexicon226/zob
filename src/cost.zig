@@ -23,13 +23,15 @@ pub fn getCost(tag: Oir.Node.Tag) u32 {
         // Compare
         .cmp_eq,
         .cmp_gt,
-        .branch,
         => 1,
+
+        // We want to bias towards folding away if there exists an equivalent
+        // flat form.
+        .gamma => 6,
+        .theta => 10,
 
         .start,
         .ret,
-        .dead,
-        .region,
         // constants have zero latency so that we bias towards
         // selecting the "free" canonical element.
         .constant,

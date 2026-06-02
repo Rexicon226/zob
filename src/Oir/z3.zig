@@ -80,7 +80,7 @@ pub fn extract(oir: *const Oir) !Recursive {
     // weight, which is 0 if it isn't active, or 1 * cost(tag) if it is.
     // The goal of the optimizer is to reduce this number to the smallest possible
     // cost of the total graph, while keeping the root nodes alive.
-    var terms: std.ArrayListUnmanaged(z3.Int) = .{};
+    var terms: std.ArrayList(z3.Int) = .{};
     defer terms.deinit(arena);
 
     var class_iter = oir.classes.iterator();
@@ -120,10 +120,10 @@ pub fn extract(oir: *const Oir) !Recursive {
         var recv: Recursive = .{};
         var start_class: ?Class.Index = null;
 
-        var new_exit_list: std.ArrayListUnmanaged(Class.Index) = .{};
+        var new_exit_list: std.ArrayList(Class.Index) = .{};
         defer new_exit_list.deinit(arena);
 
-        var queue: std.ArrayListUnmanaged(Class.Index) = .{};
+        var queue: std.ArrayList(Class.Index) = .{};
         defer queue.deinit(arena);
 
         var map: std.AutoHashMapUnmanaged(Class.Index, Class.Index) = .{};

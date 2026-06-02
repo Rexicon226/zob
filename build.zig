@@ -1,7 +1,7 @@
 const std = @import("std");
 
 const frontends = .{
-    .{ "scc", "C" },
+    // .{ "scc", "C" },
     .{ "arocc", "C-aro" },
 };
 
