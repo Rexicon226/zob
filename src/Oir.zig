@@ -539,7 +539,7 @@ pub fn optimize(
     oir: *Oir,
     io: std.Io,
     mode: enum { saturate },
-    output_graph: bool,
+    graphs: ?[]const u8,
 ) !void {
     std.debug.assert(mode == .saturate); // only mode for now
 
@@ -550,9 +550,9 @@ pub fn optimize(
     while (true) {
         var new_change: bool = false;
         inline for (passes) |pass| {
-            if (output_graph) {
+            if (graphs) |path| {
                 var buffer: [std.fs.max_path_bytes]u8 = undefined;
-                const name = try std.fmt.bufPrint(&buffer, "graphs/pre_{s}_{}.dot", .{ pass.name, i });
+                const name = try std.fmt.bufPrint(&buffer, "{s}/pre_{s}_{}.dot", .{ path, pass.name, i });
                 try oir.dump(io, name);
             }
 

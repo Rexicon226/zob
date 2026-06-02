@@ -2,4 +2,4 @@
 zig-out/
 zig-pkg/
 build/
-graphs/*
+graphs/

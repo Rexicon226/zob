@@ -3,10 +3,41 @@ const aro = @import("aro");
 const zob = @import("zob");
 const builtin = @import("builtin");
 
+const cli = @import("cli.zig");
 const CodeGen = @import("CodeGen.zig");
 
 pub const std_options: std.Options = .{
     .log_level = .err,
+};
+
+const Cmd = struct {
+    file_path: ?[]const u8,
+    graphs: ?[]const u8,
+
+    const cmd_info: cli.CommandInfo(Cmd) = .{
+        .help = .{
+            .short = "C11 Compiler",
+            .long = null,
+        },
+        .sub = .{
+            .file_path = .{
+                .kind = .positional,
+                .name_override = "path",
+                .alias = .none,
+                .default_value = null,
+                .config = .string,
+                .help = "input '.c' path",
+            },
+            .graphs = .{
+                .kind = .named,
+                .name_override = "graph-path",
+                .alias = .none,
+                .default_value = null,
+                .config = .string,
+                .help = "if specified, graphviz outputs are written to the provided directory",
+            },
+        },
+    };
 };
 
 pub fn main(init: std.process.Init) !void {
@@ -14,7 +45,41 @@ pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
     const io = init.io;
 
-    const args = try init.minimal.args.toSlice(arena);
+    var args_iter = try init.minimal.args.iterateAllocator(gpa);
+    defer args_iter.deinit();
+    _ = args_iter.skip();
+
+    const no_color = no_color: {
+        const value = init.environ_map.get("NO_COLOR") orelse break :no_color false;
+        break :no_color !std.ascii.eqlIgnoreCase(value, "false");
+    };
+    const clicolor_force = clicolor_force: {
+        const value = init.environ_map.get("CLICOLOR_FORCE") orelse break :clicolor_force false;
+        break :clicolor_force !std.ascii.eqlIgnoreCase(value, "false");
+    };
+
+    var stdout = std.Io.File.stdout();
+    defer stdout.close(io);
+
+    var stdout_writer = stdout.writer(io, &.{});
+    const stdout_w = &stdout_writer.interface;
+
+    const terminal: std.Io.Terminal = .{
+        .writer = stdout_w,
+        .mode = try .detect(io, stdout, no_color, clicolor_force),
+    };
+
+    const Parser = cli.Parser(Cmd, Cmd.cmd_info);
+    const cmd = try Parser.parse(
+        gpa,
+        "cc",
+        terminal,
+        &args_iter,
+    ) orelse return;
+    defer Parser.free(gpa, cmd);
+
+    const input = cmd.file_path orelse
+        fail("expected input file path", .{});
 
     const stderr = try io.lockStderr(&.{}, null);
     var diagnostics: aro.Diagnostics = .{
@@ -36,23 +101,15 @@ pub fn main(init: std.process.Init) !void {
     };
     defer driver.deinit();
 
-    var macro_buffer: std.ArrayList(u8) = .empty;
-    defer macro_buffer.deinit(gpa);
-
-    var null_writer: std.Io.Writer.Discarding = .init(&.{});
-    if (try driver.parseArgs(&null_writer.writer, &macro_buffer, args)) std.process.abort();
-
+    const source = try comp.addSourceFromPath(input);
+    try driver.inputs.append(gpa, source);
     std.debug.assert(driver.inputs.items.len == 1);
-    const source = driver.inputs.items[0];
 
     const builtin_macros = try comp.generateBuiltinMacros(.include_system_defines);
 
     var pp = try aro.Preprocessor.init(&comp, .{ .base_file = source.id });
     defer pp.deinit();
-    try pp.preprocessSources(.{
-        .main = source,
-        .builtin = builtin_macros,
-    });
+    try pp.preprocessSources(.{ .main = source, .builtin = builtin_macros });
 
     var tree = try pp.parse();
     defer tree.deinit();
@@ -63,12 +120,13 @@ pub fn main(init: std.process.Init) !void {
     var cg = try CodeGen.init(&oir, gpa, &tree);
     defer cg.deinit(gpa);
 
-    var recv = try cg.build(io);
+    var recv = try cg.build(io, cmd.graphs);
     defer recv.deinit(gpa);
 
-    var stdout = std.Io.File.stdout().writer(io, &.{});
-    const writer = &stdout.interface;
+    try zob.rv64.generate(&recv, gpa, stdout_w);
+}
 
-    try zob.rv64.generate(&recv, gpa, writer);
-    try writer.flush();
+fn fail(comptime fmt: []const u8, args: anytype) noreturn {
+    std.debug.print(fmt ++ "\n", args);
+    std.process.exit(1);
 }

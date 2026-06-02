@@ -45,7 +45,7 @@ pub fn init(
     };
 }
 
-pub fn build(cg: *CodeGen, io: std.Io) !Recursive {
+pub fn build(cg: *CodeGen, io: std.Io, graphs: ?[]const u8) !Recursive {
     var stdout_writer = std.Io.File.stdout().writer(io, &.{});
     const stdout = &stdout_writer.interface;
 
@@ -66,7 +66,7 @@ pub fn build(cg: *CodeGen, io: std.Io) !Recursive {
     try cg.oir.print(stdout);
     try stdout.writeAll("end OIR\n");
 
-    try cg.oir.optimize(io, .saturate, false);
+    try cg.oir.optimize(io, .saturate, graphs);
 
     try stdout.writeAll("before extraction OIR:\n");
     try cg.oir.print(stdout);
