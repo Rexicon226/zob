@@ -15,6 +15,8 @@ node_to_class: std.AutoHashMapUnmanaged(Tree.Node.Index, Oir.Class.Index),
 symbol_table: SymbolTable,
 /// Current memory state, passed through loads and stores.
 mem_state: Oir.Class.Index,
+/// Monotonic source of unique `theta` loop ids.
+next_loop: u32 = 0,
 
 const Error = error{OutOfMemory};
 const SymbolTable = std.ArrayList(std.StringHashMapUnmanaged(Oir.Class.Index));
@@ -147,6 +149,15 @@ fn buildSeq(cg: *CodeGen, stmts: []const Tree.Node.Index) Error!?Oir.Class.Index
             // A nested block and everything after it is just a longer sequence.
             .compound_stmt => |compound| return cg.buildConcat(compound.body, rest),
             .if_stmt => |cond_br| return cg.buildIf(cond_br, rest),
+            .while_stmt => |w| return cg.buildLoop(w.cond, w.body, null, rest),
+            .for_stmt => |f| {
+                // The init clause runs once, in the current scope, before the loop.
+                switch (f.init) {
+                    .decls => |decls| _ = try cg.buildSeq(decls),
+                    .expr => |maybe| if (maybe) |e| try cg.buildExprStmt(e),
+                }
+                return cg.buildLoop(f.cond, f.body, f.incr, rest);
+            },
             .variable => |variable| {
                 const rvalue = try cg.buildExpr(variable.initializer.?);
                 const ident = tree.tokSlice(variable.name_tok);
@@ -247,6 +258,98 @@ fn freeEnv(cg: *CodeGen, env: *SymbolTable) void {
     env.deinit(cg.gpa);
 }
 
+/// Lowers a `while`/`for` loop into a test-first `theta`, then folds the
+/// continuation `rest` into the post-loop tail. Conservatively carries the
+/// memory state (slot 0) plus every in-scope variable.
+fn buildLoop(
+    cg: *CodeGen,
+    cond: ?Tree.Node.Index,
+    body: Tree.Node.Index,
+    incr: ?Tree.Node.Index,
+    rest: []const Tree.Node.Index,
+) Error!?Oir.Class.Index {
+    const gpa = cg.gpa;
+
+    var names: std.ArrayList([]const u8) = .empty;
+    defer names.deinit(gpa);
+    try cg.collectScopeNames(&names);
+    const count: u32 = @intCast(names.items.len + 1); // + memory state (slot 0)
+    const total = count * 3 + 1;
+
+    // TODO: cleanup pretty bad slice handling here, both in binding string
+    // interning and with just placing directly into `extra`.
+
+    // theta body = args ++ inits ++ [pred] ++ nexts.
+    const buf = try gpa.alloc(Oir.Class.Index, total);
+    defer gpa.free(buf);
+
+    var inits: std.ArrayList(Oir.Class.Index) = .initBuffer(buf[count..][0..count]);
+    try inits.appendBounded(cg.mem_state);
+    for (names.items) |name| try inits.appendBounded(cg.findIdentifier(name).?.*);
+
+    const loop_id = cg.next_loop;
+    cg.next_loop += 1;
+
+    var args: std.ArrayList(Oir.Class.Index) = .initBuffer(buf[0..count]);
+    for (0..count) |slot| {
+        const v = try cg.oir.add(.loopvar(loop_id, @intCast(slot)));
+        try args.appendBounded(v);
+    }
+
+    cg.mem_state = args.items[0];
+    for (names.items, 0..) |name, j| cg.findIdentifier(name).?.* = args.items[j + 1];
+
+    // Predicate, the loop continues while it is non-zero.
+    cg.node_to_class.clearRetainingCapacity();
+    const pred = if (cond) |c| try cg.buildExpr(c) else try cg.oir.add(.constant(1));
+    buf[count * 2] = pred;
+
+    // Body, then the `for` increment.
+    cg.node_to_class.clearRetainingCapacity();
+    if (try cg.buildArm(body, &.{})) |_| @panic("TODO: return/break inside a loop");
+    if (incr) |inc| try cg.buildExprStmt(inc);
+
+    // Next-iteration values.
+    var nexts: std.ArrayList(Oir.Class.Index) = .initBuffer(buf[count * 2 + 1 ..][0..count]);
+    try nexts.appendBounded(cg.mem_state);
+    for (names.items) |name| try nexts.appendBounded(cg.findIdentifier(name).?.*);
+
+    const span = try cg.oir.listToSpan(buf);
+    const theta = try cg.oir.add(.theta(loop_id, count, span));
+
+    // The continuation runs on the loop's outputs (final value of each slot).
+    cg.mem_state = try cg.oir.add(.project(0, theta, .data));
+    for (names.items, 0..) |name, j| {
+        cg.findIdentifier(name).?.* = try cg.oir.add(.project(@intCast(j + 1), theta, .data));
+    }
+
+    cg.node_to_class.clearRetainingCapacity();
+    return cg.buildSeq(rest);
+}
+
+/// Evaluates an expression for its side effects.
+fn buildExprStmt(cg: *CodeGen, expr: Tree.Node.Index) Error!void {
+    switch (expr.get(cg.tree)) {
+        .assign_expr => |a| _ = try cg.buildAssign(a.lhs, a.rhs),
+        else => _ = try cg.buildExpr(expr),
+    }
+}
+
+/// Collects every in-scope variable name (innermost scope first, deduped).
+fn collectScopeNames(cg: *CodeGen, out: *std.ArrayList([]const u8)) !void {
+    var i = cg.symbol_table.items.len;
+    while (i > 0) {
+        i -= 1;
+        var it = cg.symbol_table.items[i].keyIterator();
+        while (it.next()) |key| {
+            const name = key.*;
+            for (out.items) |existing| {
+                if (std.mem.eql(u8, existing, name)) break;
+            } else try out.append(cg.gpa, name);
+        }
+    }
+}
+
 /// Lowers an assignment `lhs = rhs`, returning the assigned value. A store through a
 /// pointer (`*p = v`) advances the memory state. Assigning a scalar local just rebinds
 /// its SSA value in the symbol table.
@@ -289,17 +392,31 @@ fn buildExpr(cg: *CodeGen, expr: Tree.Node.Index) Error!Oir.Class.Index {
 
     const class = switch (expr.get(tree)) {
         .add_expr,
+        .sub_expr,
+        .mul_expr,
+        .div_expr,
+        .bit_and_expr,
+        .shl_expr,
+        .shr_expr,
         .equal_expr,
+        .greater_than_expr,
+        .less_than_expr,
         => |bin, t| bin: {
-            const tag: Oir.Node.Tag = switch (t) {
-                .add_expr => .add,
-                .equal_expr => .cmp_eq,
-                else => unreachable,
-            };
-
             const lhs = try cg.buildExpr(bin.lhs);
             const rhs = try cg.buildExpr(bin.rhs);
-            break :bin try cg.oir.add(.binOp(tag, lhs, rhs));
+            break :bin switch (t) {
+                .add_expr => try cg.oir.add(.binOp(.add, lhs, rhs)),
+                .sub_expr => try cg.oir.add(.binOp(.sub, lhs, rhs)),
+                .mul_expr => try cg.oir.add(.binOp(.mul, lhs, rhs)),
+                .div_expr => try cg.oir.add(.binOp(.div_trunc, lhs, rhs)),
+                .bit_and_expr => try cg.oir.add(.binOp(.@"and", lhs, rhs)),
+                .shl_expr => try cg.oir.add(.binOp(.shl, lhs, rhs)),
+                .shr_expr => try cg.oir.add(.binOp(.shr, lhs, rhs)),
+                .equal_expr => try cg.oir.add(.binOp(.cmp_eq, lhs, rhs)),
+                .greater_than_expr => try cg.oir.add(.binOp(.cmp_gt, lhs, rhs)),
+                .less_than_expr => try cg.oir.add(.binOp(.cmp_lt, lhs, rhs)),
+                else => unreachable,
+            };
         },
         .int_literal => unreachable, // handled in the value_map above
         .cast => |cast| switch (cast.kind) {

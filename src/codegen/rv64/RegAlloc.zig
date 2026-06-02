@@ -45,6 +45,43 @@ pub fn run(gpa: std.mem.Allocator, mir: *const Mir, num_vregs: usize) !Result {
         inst.forEachUse(&ctx, LiveCtx.mark);
     }
 
+    // We need to account for loop back-edges. A value live anywhere in a loop
+    // must stay live until the back-edge, otherwise the body could re-use its
+    // register and clobber it before the next iteration. A back-edge is a `j`
+    // to an earlier label.
+
+    // A back-edge is a jump to an earlier label. We need to account for these
+    // while allocating, because a value live anywhere within a loop must stay
+    // live until the back-edge. Otherwise, the body could re-use its register
+    // and clobber it before the next iteration. We extend the interval of
+    // every value overlapping the loop out to the jump.
+    {
+        const BackEdge = struct { head: usize, edge: usize };
+        var edges: std.ArrayList(BackEdge) = .empty;
+        defer edges.deinit(gpa);
+        for (mir.insts.items, 0..) |inst, idx| {
+            const target = switch (inst) {
+                .j => |t| t,
+                else => continue,
+            };
+            const head = labelIndex(mir, target) orelse continue;
+            if (head < idx) try edges.append(gpa, .{ .head = head, .edge = idx });
+        }
+        std.sort.pdq(BackEdge, edges.items, {}, struct {
+            fn less(_: void, a: BackEdge, b: BackEdge) bool {
+                return a.edge < b.edge;
+            }
+        }.less);
+        for (edges.items) |e| {
+            for (0..num_vregs) |v| {
+                if (!seen[v]) continue;
+                if (start[v] <= e.edge and end[v] >= e.head and end[v] < e.edge) {
+                    end[v] = e.edge;
+                }
+            }
+        }
+    }
+
     // Order vregs by interval start.
     var order: std.ArrayList(usize) = .empty;
     defer order.deinit(gpa);
@@ -119,6 +156,13 @@ const LiveCtx = struct {
 
 fn lessByStart(start: []const usize, a: usize, b: usize) bool {
     return start[a] < start[b];
+}
+
+fn labelIndex(mir: *const Mir, label: Mir.Label) ?usize {
+    for (mir.insts.items, 0..) |inst, idx| {
+        if (inst == .label and inst.label == label) return idx;
+    }
+    return null;
 }
 
 fn contains(regs: []const Register, reg: Register) bool {

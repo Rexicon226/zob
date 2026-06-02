@@ -163,10 +163,15 @@ const Builder = struct {
         const node = b.recv.nodes.items[@intFromEnum(n)];
         switch (node.tag) {
             .start => {}, // abstract entry, nothing to emit
+            .loopvar => {},
             .project => {
+                if (b.sched.is_mem[@intFromEnum(n)]) return; // memory state, no register
                 const project = node.data.project;
-                if (project.index != 0) {
-                    try b.add(.{ .arg = .{ .dst = n, .index = project.index - 1 } });
+                const tuple = b.recv.nodes.items[@intFromEnum(project.tuple)];
+                switch (tuple.tag) {
+                    .start => try b.add(.{ .arg = .{ .dst = n, .index = project.index - 1 } }),
+                    .theta => try b.add(.mv(n, tuple.data.loop.args(b.recv)[project.index])),
+                    else => std.debug.panic("project of {s}", .{@tagName(tuple.tag)}),
                 }
             },
             .constant => try b.add(.{ .li = .{ .dst = n, .imm = node.data.constant } }),
@@ -198,6 +203,10 @@ const Builder = struct {
                 // a > b <=> b < a
                 const ops = node.data.bin_op;
                 try b.add(.slt(n, ops[1], ops[0]));
+            },
+            .cmp_lt => {
+                const ops = node.data.bin_op;
+                try b.add(.slt(n, ops[0], ops[1]));
             },
             .load => {
                 // (mem, address)
@@ -242,7 +251,37 @@ const Builder = struct {
                     }
                 }
             },
-            .theta => @panic("rv64: theta/loops are not supported yet"),
+            .theta => {
+                const loop = node.data.loop;
+                const regions = b.sched.theta_regions.get(n).?;
+                const args = loop.args(b.recv);
+                const inits = loop.inits(b.recv);
+                const nexts = loop.nexts(b.recv);
+
+                const head = b.new();
+                const exit = b.new();
+
+                // Initialize each loop slot register. Slot 0 is the memory state
+                // so we skip it. The rest get `arg_i := init_i`.
+                for (args, inits, 0..) |arg, init, slot| {
+                    if (slot == 0) continue;
+                    try b.add(.mv(arg, init));
+                }
+
+                try b.add(.{ .label = head });
+                try b.emitRegion(regions[0]); // test: compute the predicate
+                try b.add(.{ .beqz = .{ .src = loop.pred(b.recv), .target = exit } });
+                try b.emitRegion(regions[1]); // body: compute next values (side effects)
+
+                // Advance the slot registers. The next values are already in their
+                // own vregs, so sequential copies are safe (no slot is read again).
+                for (args, nexts, 0..) |arg, next, slot| {
+                    if (slot == 0) continue;
+                    try b.add(.mv(arg, next));
+                }
+                try b.add(.{ .j = head });
+                try b.add(.{ .label = exit });
+            },
             .ret => {
                 // (final_mem, ret)
                 const ops = node.operands(b.recv);

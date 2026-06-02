@@ -34,7 +34,13 @@ pub const Region = struct {
         root,
         gamma_then,
         gamma_else,
-        // loop, we'll use this for `theta` lowering
+        /// A loop's header. The continue predicate is computed here, before
+        /// the test.
+        loop_test,
+        /// A loop's body. The next-iteration values (incl. side effects) are
+        /// computed here, after the test, so they only run when the loop
+        /// continues.
+        loop_body,
     };
 };
 
@@ -44,6 +50,10 @@ regions: std.ArrayList(Region),
 node_region: []Region.Id,
 /// For each `gamma` node, the `{ then, else }` child regions of its own region.
 gamma_regions: std.AutoHashMapUnmanaged(Index, [2]Region.Id),
+/// For each `theta` node, the `{ test, body }` regions of its loop. `body` is a
+/// child of `test` so values shared by the predicate and the body land in `test`
+/// (computed once, before the test).
+theta_regions: std.AutoHashMapUnmanaged(Index, [2]Region.Id),
 /// Whether a node produces a memory-state token rather than a data value.
 /// Memory-state values never occupy a register; they only sequence side effects.
 is_mem: []bool,
@@ -66,12 +76,13 @@ pub fn compute(gpa: std.mem.Allocator, recv: *const Recursive) !Schedule {
     errdefer regions.deinit(gpa);
     try regions.append(gpa, .{ .parent = .root, .depth = 0, .kind = .root });
 
-    var gamma_regions: std.AutoHashMapUnmanaged(Index, [2]Region.Id) = .{};
+    var gamma_regions: std.AutoHashMapUnmanaged(Index, [2]Region.Id) = .empty;
+    var theta_regions: std.AutoHashMapUnmanaged(Index, [2]Region.Id) = .empty;
 
     // Gammas that live in the same region and branch on the same predicate share
     // one pair of arm regions (and, in the emitter, one branch). Keyed by
     // `(parent region, predicate node)`.
-    var fusion: std.AutoHashMapUnmanaged(FusionKey, [2]Region.Id) = .{};
+    var fusion: std.AutoHashMapUnmanaged(FusionKey, [2]Region.Id) = .empty;
     defer fusion.deinit(gpa);
 
     // Classify memory-state vs data nodes.
@@ -80,6 +91,7 @@ pub fn compute(gpa: std.mem.Allocator, recv: *const Recursive) !Schedule {
         is_mem[i] = switch (node.tag) {
             .store, .start => true,
             .project => node.data.project.index == 0,
+            .loopvar => node.data.loopvar.index == 0,
             .gamma => is_mem[@intFromEnum(node.data.tri_op[1])],
             else => false,
         };
@@ -119,7 +131,20 @@ pub fn compute(gpa: std.mem.Allocator, recv: *const Recursive) !Schedule {
                 mergeUse(node_region, regions.items, ops[1], arms[0]);
                 mergeUse(node_region, regions.items, ops[2], arms[1]);
             },
-            .theta => @panic("rv64: theta/loops are not supported yet"),
+            .theta => {
+                const loop = node.data.loop;
+                const test_region = try addRegion(&regions, gpa, region, .loop_test);
+                const body_region = try addRegion(&regions, gpa, test_region, .loop_body);
+                try theta_regions.put(gpa, @enumFromInt(i), .{ test_region, body_region });
+
+                // Loop args and the predicate live in the header. The initial
+                // values are computed before the loop. The next values run in the
+                // body, after the test.
+                for (loop.args(recv)) |arg| mergeUse(node_region, regions.items, arg, test_region);
+                for (loop.inits(recv)) |init| mergeUse(node_region, regions.items, init, region);
+                mergeUse(node_region, regions.items, loop.pred(recv), test_region);
+                for (loop.nexts(recv)) |next| mergeUse(node_region, regions.items, next, body_region);
+            },
             else => for (node.operands(recv)) |op| {
                 mergeUse(node_region, regions.items, op, region);
             },
@@ -131,13 +156,14 @@ pub fn compute(gpa: std.mem.Allocator, recv: *const Recursive) !Schedule {
     // and never recomputed inside a branch where the source arg register may
     // be gone.
     for (recv.nodes.items, 0..) |node, idx| {
-        if (node.tag == .project) node_region[idx] = .root;
+        if (node.tag == .project and node.data.project.tuple == .start) node_region[idx] = .root;
     }
 
     return .{
         .regions = regions,
         .node_region = node_region,
         .gamma_regions = gamma_regions,
+        .theta_regions = theta_regions,
         .is_mem = is_mem,
     };
 }
@@ -183,5 +209,6 @@ pub fn deinit(s: *Schedule, gpa: std.mem.Allocator) void {
     s.regions.deinit(gpa);
     gpa.free(s.node_region);
     s.gamma_regions.deinit(gpa);
+    s.theta_regions.deinit(gpa);
     gpa.free(s.is_mem);
 }

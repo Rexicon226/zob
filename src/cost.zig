@@ -1,4 +1,4 @@
-//! Defines simple cost information about MIR instructions
+//! Defines simple cost information about OIR instructions
 
 pub fn getCost(tag: Oir.Node.Tag) u32 {
     return switch (tag) {
@@ -23,6 +23,7 @@ pub fn getCost(tag: Oir.Node.Tag) u32 {
         // Compare
         .cmp_eq,
         .cmp_gt,
+        .cmp_lt,
         => 1,
 
         // We want to bias towards folding away if there exists an equivalent
@@ -36,6 +37,8 @@ pub fn getCost(tag: Oir.Node.Tag) u32 {
         // selecting the "free" canonical element.
         .constant,
         .project,
+        // a loop-carried reference is just a register, free to read.
+        .loopvar,
         => 0,
     };
 }

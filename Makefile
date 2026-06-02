@@ -23,8 +23,10 @@ ELVES := $(NAMES:%=$(BUILD)/%.elf)
 RUNS  := $(addprefix run-,$(NAMES))
 
 .DEFAULT_GOAL := test
-.PHONY: test clean $(RUNS)
+.PHONY: test clean FORCE $(RUNS)
 .SECONDARY:
+
+FORCE:
 
 test: $(ELVES)
 	@fail=0; \
@@ -41,7 +43,7 @@ $(RUNS): run-%: $(BUILD)/%.elf
 $(BUILD):
 	@mkdir -p $(BUILD)
 
-$(BUILD)/%.s: tests/%.c | $(BUILD)
+$(BUILD)/%.s: tests/%.c FORCE | $(BUILD)
 	@echo "ASM   $*"
 	@$(ZIG) build arocc -- $< 2>/dev/null | sed -n '/^\.text/,/^\.size/p' > $@
 	@test -s $@ || { echo "  no assembly produced for $<"; rm -f $@; exit 1; }

@@ -31,6 +31,7 @@ pub fn run(oir: *Oir) !bool {
             .shr,
             .cmp_eq,
             .cmp_gt,
+            .cmp_lt,
             .@"and",
             => {
                 // The class has already been solved for a constant, no need to do anything else!
@@ -64,6 +65,7 @@ pub fn run(oir: *Oir) !bool {
                         null,
                     .cmp_eq => @intFromBool(lhs_value == rhs_value),
                     .cmp_gt => @intFromBool(lhs_value > rhs_value),
+                    .cmp_lt => @intFromBool(lhs_value < rhs_value),
                     .@"and" => lhs_value & rhs_value,
                     else => unreachable,
                 };
@@ -99,6 +101,7 @@ pub fn run(oir: *Oir) !bool {
 
             // No fold rule for loops yet.
             .theta => {},
+            .loopvar => {}, // a leaf loop-carried reference
 
             .constant => {}, // already folded!
             .project => {}, // function arguments, nothing to fold

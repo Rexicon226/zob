@@ -189,19 +189,34 @@ pub const Writer = struct {
             .div_trunc,
             .add,
             .cmp_gt,
+            .cmp_lt,
             .cmp_eq,
             .load,
             => try w.printBinOp(node, stream),
             .gamma,
-            .theta,
             .store,
             => try w.printTriOp(node, stream),
+            .theta => try w.printTheta(node, repr, stream),
+            .loopvar => try w.printLoopvar(node, stream),
             .ret => try w.printCtrlList(node, repr, stream),
             .project => try w.printProject(node, stream),
             .constant => try w.printConstant(node, stream),
             .start => try w.printStart(node, repr, stream),
         }
         try stream.writeAll(")");
+    }
+
+    fn printTheta(_: *Writer, node: Oir.Node, repr: anytype, stream: *std.Io.Writer) !void {
+        const loop = node.data.loop;
+        try stream.print("#{d}", .{loop.id});
+        for (loop.inits(repr)) |c| try stream.print(", init {f}", .{c});
+        try stream.print(", pred {f}", .{loop.pred(repr)});
+        for (loop.nexts(repr)) |c| try stream.print(", next {f}", .{c});
+    }
+
+    fn printLoopvar(_: *Writer, node: Oir.Node, stream: *std.Io.Writer) !void {
+        const lv = node.data.loopvar;
+        try stream.print("#{d}[{d}]", .{ lv.loop, lv.index });
     }
 
     fn printUnOp(_: *Writer, node: Oir.Node, stream: *std.Io.Writer) !void {

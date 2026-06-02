@@ -107,13 +107,21 @@ pub const NodeContext = struct {
         if (a.data == .constant) {
             return a.data.constant == b.data.constant;
         }
-        // `project`'s identity includes the field index and type, which are not
-        // part of the `operands()` (only the tuple is). Without this, every
-        // projection off the sample tuple would be considered equal and collapse
-        // into one class.
-        if (a.data == .project) {
-            if (a.data.project.index != b.data.project.index) return false;
-            if (a.data.project.type != b.data.project.type) return false;
+
+        switch (a.data) {
+            .project => |p| {
+                if (p.index != b.data.project.index) return false;
+                if (p.type != b.data.project.type) return false;
+            },
+            .loopvar => |p| {
+                return p.loop == b.data.loopvar.loop and
+                    p.index == b.data.loopvar.index;
+            },
+            .loop => |p| {
+                if (p.id != b.data.loop.id) return false;
+                if (p.count != b.data.loop.count) return false;
+            },
+            else => {},
         }
 
         for (a.operands(oir), b.operands(oir)) |a_class, b_class| {
@@ -167,9 +175,18 @@ pub const Node = struct {
         /// A conditional ("if"). Uses the `tri_op` payload, `(predicate, then, else)`.
         /// Selects either of the operands based on the predicate.
         gamma,
-        /// A tail-controlled loop. Uses the `tri_op` payload, `(init, step, exit_pred)`.
-        /// Currently unsupported. TODO!!
+        /// A test-first loop over N loop-carried values. Uses the `loop` payload.
+        /// ```
+        /// v = inits;
+        /// while (pred(v) != 0)
+        ///     v = nexts(v);
+        /// ```
+        /// and the final value of carried slot` i` is read with `project(theta, i)`.
+        /// Inside the body, the current value of slot `i` is `loopvar(id, i)`.
         theta,
+        /// A loop-carried value referenced inside a `theta` body.
+        /// A leaf carrying `(loop id, slot index)`.
+        loopvar,
 
         // Integer arthimatics.
         add,
@@ -183,6 +200,7 @@ pub const Node = struct {
 
         // Compare
         cmp_eq,
+        cmp_lt,
         cmp_gt,
 
         /// Memory load. Uses the `bin_op` payload `(mem_state, address)` and produces
@@ -211,10 +229,14 @@ pub const Node = struct {
                 .project,
                 => .project,
                 .gamma,
-                .theta,
                 .store,
                 => .tri_op,
+                .theta,
+                => .loop,
+                .loopvar,
+                => .loopvar,
                 .cmp_gt,
+                .cmp_lt,
                 .cmp_eq,
                 .@"and",
                 .add,
@@ -241,6 +263,39 @@ pub const Node = struct {
         un_op: Class.Index,
         project: Project,
         list: Span,
+        loop: Loop,
+        loopvar: Loopvar,
+    };
+
+    /// Payload for `theta`. `body` holds, in order: the N loop-arg classes,
+    /// the N initial values, the continue predicate, then the N next-iteration
+    /// values (length 3*N+1).
+    ///
+    /// `id` matches the body's `loopvar`s. `count` is N. Slot 0 is the memory state
+    /// and slots 1.. are scalar values.
+    pub const Loop = struct {
+        id: u32,
+        count: u32,
+        body: Span,
+
+        pub fn args(loop: Loop, repr: anytype) []const Class.Index {
+            return @ptrCast(repr.extra.items[loop.body.start..][0..loop.count]);
+        }
+        pub fn inits(loop: Loop, repr: anytype) []const Class.Index {
+            return @ptrCast(repr.extra.items[loop.body.start + loop.count ..][0..loop.count]);
+        }
+        pub fn pred(loop: Loop, repr: anytype) Class.Index {
+            return @enumFromInt(repr.extra.items[loop.body.start + 2 * loop.count]);
+        }
+        pub fn nexts(loop: Loop, repr: anytype) []const Class.Index {
+            const off = loop.body.start + 2 * loop.count + 1;
+            return @ptrCast(repr.extra.items[off..][0..loop.count]);
+        }
+    };
+
+    pub const Loopvar = struct {
+        loop: u32,
+        index: u32,
     };
 
     /// A span in the Oir "extra" array.
@@ -283,24 +338,26 @@ pub const Node = struct {
     pub fn operands(node: *const Node, repr: anytype) []const Class.Index {
         if (node.tag == .start) return &.{}; // no real operands
         return switch (node.data) {
-            .none, .constant => &.{},
+            .none, .constant, .loopvar => &.{},
             .bin_op => |*bin_op| bin_op,
             .tri_op => |*tri_op| tri_op,
             .un_op => |*un_op| un_op[0..1],
             .project => |*proj| (&proj.tuple)[0..1],
             .list => |span| @ptrCast(repr.extra.items[span.start..span.end]),
+            .loop => |loop| @ptrCast(repr.extra.items[loop.body.start..loop.body.end]),
         };
     }
 
     pub fn mutableOperands(node: *Node, repr: anytype) []Class.Index {
         if (node.tag == .start) return &.{}; // no real operands
         return switch (node.data) {
-            .none, .constant => &.{},
+            .none, .constant, .loopvar => &.{},
             .bin_op => |*bin_op| bin_op,
             .tri_op => |*tri_op| tri_op,
             .un_op => |*un_op| un_op[0..1],
             .project => |*proj| (&proj.tuple)[0..1],
             .list => |span| @ptrCast(repr.extra.items[span.start..span.end]),
+            .loop => |loop| @ptrCast(repr.extra.items[loop.body.start..loop.body.end]),
         };
     }
 
@@ -311,6 +368,7 @@ pub const Node = struct {
             .store,
             .cmp_gt,
             .cmp_eq,
+            .cmp_lt,
             .@"and",
             .add,
             .sub,
@@ -321,6 +379,7 @@ pub const Node = struct {
             .div_exact,
             .gamma,
             .theta,
+            .loopvar,
             => .data,
             .start,
             .ret,
@@ -371,8 +430,11 @@ pub const Node = struct {
         return .{ .tag = .gamma, .data = .{ .tri_op = .{ pred, then, els } } };
     }
 
-    pub fn theta(init_val: Class.Index, step: Class.Index, exit_pred: Class.Index) Node {
-        return .{ .tag = .theta, .data = .{ .tri_op = .{ init_val, step, exit_pred } } };
+    pub fn theta(id: u32, count: u32, body: Span) Node {
+        return .{ .tag = .theta, .data = .{ .loop = .{ .id = id, .count = count, .body = body } } };
+    }
+    pub fn loopvar(id: u32, index: u32) Node {
+        return .{ .tag = .loopvar, .data = .{ .loopvar = .{ .loop = id, .index = index } } };
     }
 
     pub fn project(index: u32, tuple: Class.Index, ty: Type) Node {

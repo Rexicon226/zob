@@ -169,9 +169,31 @@ fn extractClass(e: *SimpleExtractor, class_idx: Class.Index, recv: *Recursive) !
             try e.map.put(gpa, class_idx, new_node_idx);
             return new_node_idx;
         },
-        .theta => @panic("TODO: theta extraction unsupported"),
+        .theta => {
+            const loop = best_node.data.loop;
+
+            var body: std.ArrayList(Class.Index) = .empty;
+            defer body.deinit(gpa);
+            for (loop.args(oir)) |c| try body.append(gpa, try e.extractClass(c, recv));
+            for (loop.inits(oir)) |c| try body.append(gpa, try e.extractClass(c, recv));
+            try body.append(gpa, try e.extractClass(loop.pred(oir), recv));
+            for (loop.nexts(oir)) |c| try body.append(gpa, try e.extractClass(c, recv));
+
+            const span = try recv.listToSpan(body.items, gpa);
+            const new_node: Node = .theta(loop.id, loop.count, span);
+            const new_node_idx = try recv.addNode(gpa, new_node);
+            try e.map.put(gpa, class_idx, new_node_idx);
+            return new_node_idx;
+        },
+        .loopvar => {
+            const lv = best_node.data.loopvar;
+            const new_node_idx = try recv.addNode(gpa, .loopvar(lv.loop, lv.index));
+            try e.map.put(gpa, class_idx, new_node_idx);
+            return new_node_idx;
+        },
         .cmp_eq,
         .cmp_gt,
+        .cmp_lt,
         .add,
         .sub,
         .mul,
