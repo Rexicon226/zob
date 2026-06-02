@@ -219,6 +219,17 @@ pub const Node = struct {
             };
         }
 
+        pub fn isCommutative(tag: Tag) bool {
+            return switch (tag) {
+                .add,
+                .mul,
+                .@"and",
+                .cmp_eq,
+                => true,
+                else => false,
+            };
+        }
+
         pub fn dataType(tag: Tag) std.meta.FieldEnum(Data) {
             return switch (tag) {
                 .constant,
@@ -549,9 +560,8 @@ pub fn optimize(
 
     try oir.rebuild();
     assert(oir.clean);
-
     var i: u32 = 0;
-    while (true) {
+    while (true) : (i += 1) {
         var new_change: bool = false;
         for (passes) |pass| {
             if (graphs) |path| {
@@ -571,7 +581,6 @@ pub fn optimize(
             if (!oir.clean) try oir.rebuild();
         }
 
-        i += 1;
         if (!new_change) {
             if (graphs) |path| {
                 var buffer: [std.fs.max_path_bytes]u8 = undefined;
@@ -621,6 +630,16 @@ pub fn getClassPtr(oir: *Oir, idx: Class.Index) *Class {
 pub fn getClass(oir: *const Oir, idx: Class.Index) Class {
     const found = oir.union_find.find(idx);
     return oir.classes.get(found).?;
+}
+
+/// Whether the class `idx` belongs to contains a constant node.
+fn classHasConstant(oir: *const Oir, idx: Class.Index) bool {
+    const found = oir.union_find.find(idx);
+    const class = oir.classes.get(found) orelse return false;
+    for (class.bag.items) |node_idx| {
+        if (oir.getNode(node_idx).tag == .constant) return true;
+    }
+    return false;
 }
 
 pub fn findClass(oir: *const Oir, node_idx: Node.Index) Class.Index {
@@ -707,7 +726,6 @@ fn makeClass(oir: *Oir, node_idx: Node.Index) !Class.Index {
         try class_ptr.parents.append(oir.allocator, .{ node_idx, id });
     }
 
-    try oir.pending.append(oir.allocator, .{ node_idx, id });
     try oir.classes.put(oir.allocator, id, class);
     try oir.node_to_class.putNoClobberContext(oir.allocator, node_idx, id, .{ .oir = oir });
 
@@ -745,68 +763,67 @@ pub fn @"union"(oir: *Oir, a_idx: Class.Index, b_idx: Class.Index) !bool {
     const a_class = oir.classes.getPtr(a).?;
     assert(a == a_class.index);
 
-    try oir.pending.appendSlice(oir.allocator, b_class.parents.items);
     try a_class.bag.appendSlice(oir.allocator, b_class.bag.items);
     try a_class.parents.appendSlice(oir.allocator, b_class.parents.items);
 
     return true;
 }
 
-/// Performs a rebuild of the E-Graph to ensure that invariances are met.
-///
-/// This looks over hashes of the nodes and merges duplicate nodes.
-/// We can hash based on the class indices themselves, as they don't change during the
-/// rebuild.
+/// Performs a rebuild of the E-Graph to restore its invariants.
 pub fn rebuild(oir: *Oir) !void {
     const trace = oir.trace.start(@src(), "rebuilding", .{});
     defer trace.end();
     log.debug("rebuilding", .{});
 
-    while (oir.pending.pop()) |pair| {
-        const node_idx, const class_idx = pair;
+    var merges: std.ArrayList([2]Class.Index) = .empty;
+    defer merges.deinit(oir.allocator);
 
-        // before modifying the node in-place, we must remove it from the hashmap
-        // in order to not get a stale hash.
-        assert(oir.node_to_class.removeContext(node_idx, .{ .oir = oir }));
+    while (true) {
+        oir.node_to_class.clearRetainingCapacity();
+        merges.clearRetainingCapacity();
 
-        const node = oir.getNodePtr(node_idx);
-        for (node.mutableOperands(oir)) |*id| {
-            id.* = oir.union_find.findMutable(id.*);
-        }
+        var iter = oir.classes.iterator();
+        while (iter.next()) |entry| {
+            const leader = entry.key_ptr.*;
+            for (entry.value_ptr.bag.items) |node_idx| {
+                const node = oir.getNodePtr(node_idx);
+                for (node.mutableOperands(oir)) |*op| {
+                    op.* = oir.union_find.findMutable(op.*);
+                }
+                if (node.tag.isCommutative()) {
+                    const ops = node.mutableOperands(oir);
+                    const a_const = oir.classHasConstant(ops[0]);
+                    const b_const = oir.classHasConstant(ops[1]);
+                    const swap = if (a_const != b_const)
+                        a_const // a constant must move to the second slot
+                    else
+                        @intFromEnum(ops[0]) > @intFromEnum(ops[1]);
+                    if (swap) std.mem.swap(Class.Index, &ops[0], &ops[1]);
+                }
 
-        if (try oir.node_to_class.fetchPutContext(
-            oir.allocator,
-            node_idx,
-            class_idx,
-            .{ .oir = oir },
-        )) |prev| {
-            _ = try oir.@"union"(prev.value, class_idx);
-        }
-    }
-
-    var iter = oir.classes.iterator();
-    while (iter.next()) |entry| {
-        for (entry.value_ptr.bag.items) |node_idx| {
-            // NOTE: if this assert fails, you've modified the underlying data of a node
-            assert(oir.node_to_class.removeContext(node_idx, .{ .oir = oir }));
-
-            const node = oir.getNodePtr(node_idx);
-            for (node.mutableOperands(oir)) |*child| {
-                child.* = oir.union_find.findMutable(child.*);
+                const gop = try oir.node_to_class.getOrPutContext(
+                    oir.allocator,
+                    node_idx,
+                    .{ .oir = oir },
+                );
+                if (gop.found_existing) {
+                    const existing = gop.value_ptr.*;
+                    if (existing != leader) {
+                        try merges.append(oir.allocator, .{ existing, leader });
+                    }
+                } else {
+                    gop.value_ptr.* = leader;
+                }
             }
+        }
 
-            // place the newly changed node back on the map
-            try oir.node_to_class.putNoClobberContext(
-                oir.allocator,
-                node_idx,
-                entry.key_ptr.*,
-                .{ .oir = oir },
-            );
+        if (merges.items.len == 0) break;
+        for (merges.items) |pair| {
+            _ = try oir.@"union"(pair[0], pair[1]);
         }
     }
 
     if (builtin.mode == .Debug) try oir.verifyNodes();
-    assert(oir.pending.items.len == 0);
     oir.clean = true;
 }
 
@@ -929,7 +946,6 @@ pub fn deinit(oir: *Oir) void {
     oir.nodes.deinit(allocator);
 
     oir.union_find.deinit(allocator);
-    oir.pending.deinit(allocator);
     oir.extra.deinit(allocator);
     oir.exit_list.deinit(allocator);
 }

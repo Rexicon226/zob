@@ -1,5 +1,6 @@
 const std = @import("std");
 const Oir = @import("../Oir.zig");
+const eval = @import("eval.zig");
 
 const Node = Oir.Node;
 const Class = Oir.Class;
@@ -49,28 +50,7 @@ pub fn run(oir: *Oir) !bool {
                 const lhs_value = oir.getNode(lhs).data.constant;
                 const rhs_value = oir.getNode(rhs).data.constant;
 
-                const result: ?i64 = switch (node.tag) {
-                    .add => lhs_value +% rhs_value,
-                    .sub => lhs_value -% rhs_value,
-                    .mul => lhs_value *% rhs_value,
-                    .div_exact => if (rhs_value != 0) @divExact(lhs_value, rhs_value) else null,
-                    .div_trunc => if (rhs_value != 0) @divTrunc(lhs_value, rhs_value) else null,
-                    .shl => if (rhs_value >= 0 and rhs_value < 64)
-                        lhs_value << @intCast(rhs_value)
-                    else
-                        null,
-                    .shr => if (rhs_value >= 0 and rhs_value < 64)
-                        lhs_value >> @intCast(rhs_value)
-                    else
-                        null,
-                    .cmp_eq => @intFromBool(lhs_value == rhs_value),
-                    .cmp_gt => @intFromBool(lhs_value > rhs_value),
-                    .cmp_lt => @intFromBool(lhs_value < rhs_value),
-                    .@"and" => lhs_value & rhs_value,
-                    else => unreachable,
-                };
-
-                if (result) |value| {
+                if (eval.binOp(node.tag, lhs_value, rhs_value)) |value| {
                     const new_class = try oir.add(.{
                         .tag = .constant,
                         .data = .{ .constant = value },

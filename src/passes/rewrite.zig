@@ -120,19 +120,16 @@ fn applyMatches(oir: *Oir, matches: []const Result) !bool {
 
                     switch (b.tag) {
                         .log2 => {
-                            // TODO: I'd like to figure out a way to safely access `classContains`
-                            // for constants without having to rebuild the graph. In theory it should
-                            // be possible, but my concern right now is that if the class index gets
-                            // merged into a larger class, it will cause issues. Maybe union find
-                            // makes up for that? Need to do more testing.
-                            try oir.rebuild();
-
+                            // We can't actually rebuild the graph here, a batch of
+                            // matches may have added nodes whose pending merges
+                            // would trip a duplicate-node assertion.
+                            //
+                            // Instead, kinda sketchy, but we can technically
+                            // just access the class as we've already proven that
+                            // there must be a constant node in this class.
                             const idx = m.bindings.get(b.expr).?;
-
-                            const node_idx = oir.classContains(idx, .constant) orelse
+                            const value = constInClass(oir, idx) orelse
                                 @panic("@log2 binding isn't a power of two?");
-                            const node = oir.getNode(node_idx);
-                            const value = node.data.constant;
                             if (value < 1) @panic("how do we handle @log2 of a negative?");
                             const log_value = std.math.log2_int(u64, @intCast(value));
                             break :b try oir.add(.constant(log_value));
@@ -151,7 +148,16 @@ fn applyMatches(oir: *Oir, matches: []const Result) !bool {
     return changed;
 }
 
-const expectEqual = std.testing.expectEqual;
+fn constInClass(oir: *Oir, idx: Class.Index) ?i64 {
+    for ([_]Class.Index{ oir.union_find.find(idx), idx }) |c| {
+        const class = oir.classes.get(c) orelse continue;
+        for (class.bag.items) |node_idx| {
+            const node = oir.getNode(node_idx);
+            if (node.tag == .constant) return node.data.constant;
+        }
+    }
+    return null;
+}
 
 fn testSearch(oir: *const Oir, comptime buffer: []const u8, num_matches: u64) !void {
     std.debug.assert(oir.clean); // must be clean before searching
@@ -170,7 +176,7 @@ fn testSearch(oir: *const Oir, comptime buffer: []const u8, num_matches: u64) !v
         .name = "test",
     }, &matches);
 
-    try expectEqual(num_matches, matches.items.len);
+    try std.testing.expectEqual(num_matches, matches.items.len);
 }
 
 test "basic match" {

@@ -1,26 +1,5 @@
 .{
     .{
-        .name = "comm-mul",
-        .from = "(mul ?x ?y)",
-        .to = "(mul ?y ?x)",
-    },
-    .{
-        .name = "comm-add",
-        .from = "(add ?x ?y)",
-        .to = "(add ?y ?x)",
-    },
-    .{
-        .name = "comm-and",
-        .from = "(and ?x ?y)",
-        .to = "(and ?y ?x)",
-    },
-    .{
-        .name = "comm-cmp-eq",
-        .from = "(cmp_eq ?x ?y)",
-        .to = "(cmp_eq ?y ?x)",
-    },
-
-    .{
         .name = "mul-to-shl",
         .from = "(mul ?x @known_pow2(y))",
         .to = "(shl ?x @log2(y))",
@@ -133,11 +112,6 @@
         .to = "(mul ?x (add 1 ?y))",
     },
     .{
-        .name = "distribute",
-        .from = "(mul ?x (add ?y ?z))",
-        .to = "(add (mul ?x ?y) (mul ?x ?z))",
-    },
-    .{
         .name = "cmp_eq_same",
         .from = "(cmp_eq ?x ?x)",
         .to = "1",
@@ -151,11 +125,6 @@
         .name = "add-sub-cancel",
         .from = "(add ?x (sub 0 ?x))",
         .to = "0",
-    },
-    .{
-        .name = "sub-to-add-neg",
-        .from = "(sub ?x ?y)",
-        .to = "(add ?x (sub 0 ?y))",
     },
     .{
         .name = "mul-neg-one",
