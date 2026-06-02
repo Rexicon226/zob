@@ -97,7 +97,11 @@ insts: std.ArrayList(Inst),
 const Mir = @This();
 
 pub fn build(gpa: std.mem.Allocator, recv: *const Recursive, sched: *const Schedule) !Mir {
-    var b: Builder = .{ .gpa = gpa, .recv = recv, .sched = sched };
+    const emitted = try gpa.alloc(bool, recv.nodes.items.len);
+    defer gpa.free(emitted);
+    @memset(emitted, false);
+
+    var b: Builder = .{ .gpa = gpa, .recv = recv, .sched = sched, .emitted = emitted };
     try b.emitRegion(.root);
     return .{ .insts = b.insts };
 }
@@ -112,6 +116,8 @@ const Builder = struct {
     sched: *const Schedule,
     insts: std.ArrayList(Inst) = .empty,
     next_label: Label = 0,
+    /// Gammas already lowered as part of a fused branch group, indexed by node.
+    emitted: []bool,
 
     fn add(b: *Builder, inst: Inst) !void {
         try b.insts.append(b.gpa, inst);
@@ -128,6 +134,28 @@ const Builder = struct {
     fn emitRegion(b: *Builder, region: Schedule.Region.Id) std.mem.Allocator.Error!void {
         for (b.recv.nodes.items, 0..) |_, i| {
             if (b.sched.node_region[i] == region) try b.emitNode(@enumFromInt(i));
+        }
+    }
+
+    /// At the tail of a fused branch arm, copy each data gamma's selected value
+    /// into its result vreg. Memory gammas produce no value, so they are skipped.
+    fn emitGroupMoves(
+        b: *Builder,
+        region: Schedule.Region.Id,
+        pred: NodeIdx,
+        arm: enum { then, @"else" },
+    ) !void {
+        for (b.recv.nodes.items, 0..) |g, i| {
+            if (g.tag != .gamma) continue;
+            if (b.sched.node_region[i] != region) continue;
+            if (g.data.tri_op[0] != pred) continue;
+            if (b.sched.is_mem[i]) continue;
+            const dst: NodeIdx = @enumFromInt(i);
+            const src = switch (arm) {
+                .then => g.data.tri_op[1],
+                .@"else" => g.data.tri_op[2],
+            };
+            try b.add(.mv(dst, src));
         }
     }
 
@@ -182,24 +210,37 @@ const Builder = struct {
                 try b.add(.store(ops[2], ops[1]));
             },
             .gamma => {
-                const ops = node.data.tri_op;
+                // Lowered as part of a fused branch group already.
+                if (b.emitted[@intFromEnum(n)]) return;
+
+                const region = b.sched.node_region[@intFromEnum(n)];
+                const pred = node.data.tri_op[0];
                 const arms = b.sched.gamma_regions.get(n).?;
-                const is_data = !b.sched.is_mem[@intFromEnum(n)];
 
                 const else_label = b.new();
                 const join_label = b.new();
 
-                try b.add(.{ .beqz = .{ .src = ops[0], .target = else_label } });
+                try b.add(.{ .beqz = .{ .src = pred, .target = else_label } });
 
                 try b.emitRegion(arms[0]); // then
-                if (is_data) try b.add(.mv(n, ops[1]));
+                try b.emitGroupMoves(region, pred, .then);
                 try b.add(.{ .j = join_label });
 
                 try b.add(.{ .label = else_label });
                 try b.emitRegion(arms[1]); // else
-                if (is_data) try b.add(.mv(n, ops[2]));
+                try b.emitGroupMoves(region, pred, .@"else");
 
                 try b.add(.{ .label = join_label });
+
+                // Mark the whole group lowered.
+                for (b.recv.nodes.items, 0..) |g, i| {
+                    if (g.tag == .gamma and
+                        b.sched.node_region[i] == region and
+                        g.data.tri_op[0] == pred)
+                    {
+                        b.emitted[i] = true;
+                    }
+                }
             },
             .theta => @panic("rv64: theta/loops are not supported yet"),
             .ret => {

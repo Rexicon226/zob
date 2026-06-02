@@ -50,6 +50,8 @@ is_mem: []bool,
 
 const Schedule = @This();
 
+const FusionKey = struct { region: Region.Id, pred: Index };
+
 pub fn compute(gpa: std.mem.Allocator, recv: *const Recursive) !Schedule {
     const n = recv.nodes.items.len;
 
@@ -65,6 +67,12 @@ pub fn compute(gpa: std.mem.Allocator, recv: *const Recursive) !Schedule {
     try regions.append(gpa, .{ .parent = .root, .depth = 0, .kind = .root });
 
     var gamma_regions: std.AutoHashMapUnmanaged(Index, [2]Region.Id) = .{};
+
+    // Gammas that live in the same region and branch on the same predicate share
+    // one pair of arm regions (and, in the emitter, one branch). Keyed by
+    // `(parent region, predicate node)`.
+    var fusion: std.AutoHashMapUnmanaged(FusionKey, [2]Region.Id) = .{};
+    defer fusion.deinit(gpa);
 
     // Classify memory-state vs data nodes.
     // Loop runs forwards, as operands have lower indices.
@@ -91,16 +99,25 @@ pub fn compute(gpa: std.mem.Allocator, recv: *const Recursive) !Schedule {
         const node = recv.nodes.items[i];
         switch (node.tag) {
             .gamma => {
-                const then_region = try addRegion(&regions, gpa, region, .gamma_then);
-                const else_region = try addRegion(&regions, gpa, region, .gamma_else);
-                try gamma_regions.put(gpa, @enumFromInt(i), .{ then_region, else_region });
-
                 const ops = node.data.tri_op;
+                const key: FusionKey = .{ .region = region, .pred = ops[0] };
+
+                // Reuse the arm regions of an already-seen sibling gamma with the
+                // same predicate, so they all lower to a single branch.
+                const arms = fusion.get(key) orelse arms: {
+                    const then_region = try addRegion(&regions, gpa, region, .gamma_then);
+                    const else_region = try addRegion(&regions, gpa, region, .gamma_else);
+                    const pair: [2]Region.Id = .{ then_region, else_region };
+                    try fusion.put(gpa, key, pair);
+                    break :arms pair;
+                };
+                try gamma_regions.put(gpa, @enumFromInt(i), arms);
+
                 // predicate is evaluated in the gamma's own region
                 // each arm value is needed only inside that arm.
                 mergeUse(node_region, regions.items, ops[0], region);
-                mergeUse(node_region, regions.items, ops[1], then_region);
-                mergeUse(node_region, regions.items, ops[2], else_region);
+                mergeUse(node_region, regions.items, ops[1], arms[0]);
+                mergeUse(node_region, regions.items, ops[2], arms[1]);
             },
             .theta => @panic("rv64: theta/loops are not supported yet"),
             else => for (node.operands(recv)) |op| {

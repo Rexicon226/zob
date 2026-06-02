@@ -98,9 +98,13 @@ fn buildFn(cg: *CodeGen, decl: Tree.Node.Index) !void {
                 try latest.put(cg.gpa, name, node);
             }
 
-            // The function body, or lambda, produces an optional return value
-            // plus the final memory state.
-            const value = try cg.buildStmt(func.body.?);
+            // The function body produces an optional return value plus the final
+            // memory state. Early returns are merged into a single exit via gammas.
+            const body = func.body.?;
+            const value = switch (body.get(tree)) {
+                .compound_stmt => |c| try cg.buildSeq(c.body),
+                else => try cg.buildSeq(&.{body}),
+            };
             const is_void = func_ty.return_type.is(tree.comp, .void);
 
             var results: std.ArrayList(Oir.Class.Index) = .empty;
@@ -120,81 +124,127 @@ fn buildFn(cg: *CodeGen, decl: Tree.Node.Index) !void {
     }
 }
 
-/// Lowers a statement, returning the function's return value if this statment
-/// (or one of its sub-statements) definitely returns, or `null` if control
-/// falls through. We represent an `if` whos arms both return as a `gamma` node
-/// that multiplexes over the two return values.
-fn buildStmt(cg: *CodeGen, stmt: Tree.Node.Index) Error!?Oir.Class.Index {
+/// Lowers a sequence of statments, returning the function's return value if the
+/// sequence definitely returns, or `null` if control falls off the end.
+///
+/// Early returns are handled with continuation-style lowering. When a branch
+/// statement is reached, the statements *after* it become the continuation that
+/// runs on whichever arm falls through. Each arm therefore produces a value for
+/// the whole tail, and the two are merged with a `gamma`.
+fn buildSeq(cg: *CodeGen, stmts: []const Tree.Node.Index) Error!?Oir.Class.Index {
     const tree = cg.tree;
     const node_tags = tree.nodes.items(.tag);
 
-    switch (stmt.get(tree)) {
-        .return_stmt => |ret| return switch (ret.operand) {
-            .expr => |idx| try cg.buildExpr(idx),
-            // A valueless return (`return;`, or the implicit end of a void function)
-            // contributes no return value. The memory state carries the effects.
-            .none, .implicit => null,
-        },
-        .if_stmt => |cond_br| {
-            const predicate = try cg.buildExpr(cond_br.cond);
-
-            // Each arm gets its own copy of the incoming memory state so a store
-            // in one arm doesn't leak into another (or out of the `if`). The
-            // arms' resulting states are merged back with a gamma below.
-            const mem_before = cg.mem_state;
-
-            cg.mem_state = mem_before;
-            const then_value = try cg.buildStmt(cond_br.then_body);
-            const then_mem = cg.mem_state;
-
-            cg.mem_state = mem_before;
-            const else_value = if (cond_br.else_body) |else_body|
-                try cg.buildStmt(else_body)
-            else
-                null;
-            const else_mem = cg.mem_state;
-
-            // Merge the memory effects of the two arms with a gamma node.
-            // If no memory-related operations happened within, we can just skip
-            // it, applying the `same-gamma` rewrite.
-            cg.mem_state = if (then_mem == else_mem)
-                then_mem
-            else
-                try cg.oir.add(.gamma(predicate, then_mem, else_mem));
-
-            if (then_value) |then_class| {
-                if (else_value) |else_class| {
-                    return try cg.oir.add(.gamma(predicate, then_class, else_class));
+    for (stmts, 0..) |stmt, i| {
+        const rest = stmts[i + 1 ..];
+        switch (stmt.get(tree)) {
+            .return_stmt => |ret| return switch (ret.operand) {
+                .expr => |idx| try cg.buildExpr(idx),
+                // A valueless return (`return;`, or the implicit end of a void function)
+                // contributes no return value. The memory state carries the effects.
+                .none, .implicit => null,
+            },
+            // A nested block and everything after it is just a longer sequence.
+            .compound_stmt => |compound| return cg.buildConcat(compound.body, rest),
+            .if_stmt => |cond_br| return cg.buildIf(cond_br, rest),
+            .variable => |variable| {
+                const rvalue = try cg.buildExpr(variable.initializer.?);
+                const ident = tree.tokSlice(variable.name_tok);
+                if (cg.findIdentifier(ident)) |existing| {
+                    existing.* = rvalue;
+                } else {
+                    const latest = &cg.symbol_table.items[cg.symbol_table.items.len - 1];
+                    try latest.put(cg.gpa, ident, rvalue);
                 }
-            }
-            if (then_value == null and else_value == null) return null;
-
-            @panic("TODO: if where only one arm returns");
-        },
-        .compound_stmt => |compound| {
-            for (compound.body) |s| {
-                if (try cg.buildStmt(s)) |value| return value; // rest is unreachable
-            }
-            return null;
-        },
-        .variable => |variable| {
-            const rvalue = try cg.buildExpr(variable.initializer.?);
-            const ident = tree.tokSlice(variable.name_tok);
-
-            if (cg.findIdentifier(ident)) |existing| {
-                existing.* = rvalue;
-            } else {
-                const latest = &cg.symbol_table.items[cg.symbol_table.items.len - 1];
-                try latest.put(cg.gpa, ident, rvalue);
-            }
-            return null;
-        },
-        .assign_expr => |assign| {
-            _ = try cg.buildAssign(assign.lhs, assign.rhs);
-            return null;
-        },
-        else => std.debug.panic("TODO: {s}", .{@tagName(node_tags[@intFromEnum(stmt)])}),
+            },
+            .assign_expr => |assign| _ = try cg.buildAssign(assign.lhs, assign.rhs),
+            else => std.debug.panic("TODO: {s}", .{@tagName(node_tags[@intFromEnum(stmt)])}),
+        }
     }
+    return null;
+}
+
+/// Lowers `head ++ rest` as one sequence.
+fn buildConcat(
+    cg: *CodeGen,
+    head: []const Tree.Node.Index,
+    rest: []const Tree.Node.Index,
+) Error!?Oir.Class.Index {
+    var buf: std.ArrayList(Tree.Node.Index) = .empty;
+    defer buf.deinit(cg.gpa);
+    try buf.appendSlice(cg.gpa, head);
+    try buf.appendSlice(cg.gpa, rest);
+    return cg.buildSeq(buf.items);
+}
+
+/// Lowers an `if`, folding the continuation `rest` into both arms. Each arm
+/// runs its own copy of the memory state and variable environment so effects in
+/// one arm don't leak into the other. The arms' resulting memory states and
+/// return values are merged with gammas.
+fn buildIf(
+    cg: *CodeGen,
+    cond_br: anytype,
+    rest: []const Tree.Node.Index,
+) Error!?Oir.Class.Index {
+    const predicate = try cg.buildExpr(cond_br.cond);
+    const mem_before = cg.mem_state;
+    const env_before = try cg.snapshotEnv();
+
+    // The then arm runs on the live environment.
+    cg.node_to_class.clearRetainingCapacity();
+    cg.mem_state = mem_before;
+    const then_value = try cg.buildArm(cond_br.then_body, rest);
+    const then_mem = cg.mem_state;
+    var then_env = cg.symbol_table;
+
+    // The else arm runs on a fresh copy of the pre-if environment.
+    cg.symbol_table = env_before;
+    cg.node_to_class.clearRetainingCapacity();
+    cg.mem_state = mem_before;
+    const else_value = try cg.buildArm(cond_br.else_body, rest);
+    const else_mem = cg.mem_state;
+
+    // `cg.symbol_table` now holds the else arm's environment, which we keep live;
+    // the then arm's copy is no longer needed.
+    cg.freeEnv(&then_env);
+
+    cg.mem_state = if (then_mem == else_mem)
+        then_mem
+    else
+        try cg.oir.add(.gamma(predicate, then_mem, else_mem));
+
+    if (then_value) |t| {
+        if (else_value) |e| return try cg.oir.add(.gamma(predicate, t, e));
+        return t; // else fell off the end (missing return on that path)
+    }
+    return else_value;
+}
+
+/// Lowers `arm ++ rest`, where `arm` may be absent (a missing `else`).
+fn buildArm(
+    cg: *CodeGen,
+    arm: ?Tree.Node.Index,
+    rest: []const Tree.Node.Index,
+) Error!?Oir.Class.Index {
+    const arm_stmt = arm orelse return cg.buildSeq(rest);
+    return switch (arm_stmt.get(cg.tree)) {
+        .compound_stmt => |compound| cg.buildConcat(compound.body, rest),
+        else => cg.buildConcat(&.{arm_stmt}, rest),
+    };
+}
+
+fn snapshotEnv(cg: *CodeGen) !SymbolTable {
+    var copy: SymbolTable = .empty;
+    errdefer freeEnv(cg, &copy);
+    for (cg.symbol_table.items) |scope| {
+        try copy.append(cg.gpa, try scope.clone(cg.gpa));
+    }
+    return copy;
+}
+
+fn freeEnv(cg: *CodeGen, env: *SymbolTable) void {
+    for (env.items) |*s| s.deinit(cg.gpa);
+    env.deinit(cg.gpa);
 }
 
 /// Lowers an assignment `lhs = rhs`, returning the assigned value. A store through a
