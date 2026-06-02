@@ -17,6 +17,13 @@ symbol_table: SymbolTable,
 mem_state: Oir.Class.Index,
 /// Monotonic source of unique `theta` loop ids.
 next_loop: u32 = 0,
+/// Map of function names to lambda id.
+/// TODO: make into a unique enum
+fn_ids: std.StringHashMapUnmanaged(u32),
+/// Function names indexed by lambda id, used for asm labels in the backend.
+fn_names: std.ArrayList([]const u8),
+/// The id of the `lambda` currently being lowered, used to build its `param`s.
+cur_fn: u32 = 0,
 /// Predicate under which the currently-lowering path executes, relative to the
 /// enclosing function/loop entry. Branches refine it. `return`/`break`/`continue`
 /// capture it so multiple exists can be merged with gammas.
@@ -74,20 +81,33 @@ pub fn init(
         .active = .start, // placeholder, set per-function in buildFn
         .returns = .empty,
         .loops = .empty,
+        .fn_ids = .empty,
+        .fn_names = .empty,
     };
 }
 
-pub fn build(cg: *CodeGen, io: std.Io, graphs: ?[]const u8) !Recursive {
+pub fn build(cg: *CodeGen, io: std.Io, graphs: ?[]const u8) ![]Recursive {
     var stdout_writer = std.Io.File.stdout().writer(io, &.{});
     const stdout = &stdout_writer.interface;
 
     const tree = cg.tree;
     const node_tags = tree.nodes.items(.tag);
 
+    // Assign every function an Id before lowering any body, so a `call` can name
+    // its callee by Id even for forward references / recursion.
     for (cg.tree.root_decls.items) |node| {
-        switch (cg.tree.nodes.items(.tag)[@intFromEnum(node)]) {
+        if (node_tags[@intFromEnum(node)] != .fn_def) continue;
+        const func = node.get(tree).function;
+        const name = tree.tokSlice(func.name_tok);
+        if (cg.fn_ids.contains(name)) continue; // a prototype already reserved it
+        try cg.fn_ids.put(cg.gpa, name, @intCast(cg.fn_names.items.len));
+        try cg.fn_names.append(cg.gpa, name);
+    }
+
+    for (cg.tree.root_decls.items) |node| {
+        switch (node_tags[@intFromEnum(node)]) {
             .fn_def => try cg.buildFn(node),
-            .typedef => {},
+            .fn_proto, .typedef => {},
             else => std.debug.panic("TODO: {s}", .{@tagName(node_tags[@intFromEnum(node)])}),
         }
     }
@@ -104,29 +124,37 @@ pub fn build(cg: *CodeGen, io: std.Io, graphs: ?[]const u8) !Recursive {
     try cg.oir.print(stdout);
     try stdout.writeAll("end OIR\n");
 
-    const recv = try cg.oir.extract(.auto);
+    const recvs = try cg.oir.extract(.auto);
 
     try stdout.writeAll("optimized OIR:\n");
-    try recv.print(stdout);
+    for (recvs) |recv| {
+        try recv.print(stdout);
+        try stdout.writeAll("--\n");
+    }
     try stdout.writeAll("end OIR\n");
 
-    return recv;
+    return recvs;
 }
 
 fn buildFn(cg: *CodeGen, decl: Tree.Node.Index) !void {
     const tree = cg.tree;
 
     switch (decl.get(tree)) {
-        // TODO: Oir should only represent one function - currently all functions
-        // are put into the same Oir, which would easily create an invalid graph.
         .function => |func| {
             const func_ty = func.qt.base(tree.comp).type.func;
+            const id = cg.fn_ids.get(tree.tokSlice(func.name_tok)).?;
+            cg.cur_fn = id;
 
-            // project(0, start) is the input memory state, with arguments following at 1..n.
-            cg.mem_state = try cg.oir.add(.project(0, .start, .data));
+            for (cg.symbol_table.items) |*s| s.deinit(cg.gpa);
+            cg.symbol_table.clearRetainingCapacity();
+            try cg.symbol_table.append(cg.gpa, .{});
+            cg.node_to_class.clearRetainingCapacity();
+
+            // param(id, 0) is the input memory state; arguments follow at 1..n.
+            cg.mem_state = try cg.oir.add(.param(id, 0));
             for (func_ty.params, 0..) |param, i| {
                 const name = cg.tree.tokSlice(param.name_tok);
-                const node = try cg.oir.add(.project(@intCast(i + 1), .start, .data));
+                const node = try cg.oir.add(.param(id, @intCast(i + 1)));
 
                 const latest = &cg.symbol_table.items[cg.symbol_table.items.len - 1];
                 try latest.put(cg.gpa, name, node);
@@ -161,8 +189,8 @@ fn buildFn(cg: *CodeGen, decl: Tree.Node.Index) !void {
             if (!is_void) try results.append(cg.gpa, value.?);
 
             const span = try cg.oir.listToSpan(results.items);
-            const ret = try cg.oir.add(.ret(span));
-            try cg.exits.append(cg.gpa, ret);
+            const lambda = try cg.oir.add(.lambda(id, @intCast(func_ty.params.len), span));
+            try cg.exits.append(cg.gpa, lambda);
         },
         .typedef => {},
         else => |t| std.debug.panic("TODO: {s}", .{@tagName(t)}),
@@ -544,6 +572,13 @@ fn buildExpr(cg: *CodeGen, expr: Tree.Node.Index) Error!Oir.Class.Index {
         return cg.buildConstant(expr, val);
     }
 
+    // Calls advance the memory state, so they must never be memoized. `.get`
+    // normalizes the `call_expr`/`call_expr_one` raw tags into one `.call_expr`.
+    switch (node_tags[@intFromEnum(expr)]) {
+        .call_expr, .call_expr_one => return cg.buildCall(expr.get(tree).call_expr),
+        else => {},
+    }
+
     const class = switch (expr.get(tree)) {
         .add_expr,
         .sub_expr,
@@ -582,6 +617,38 @@ fn buildExpr(cg: *CodeGen, expr: Tree.Node.Index) Error!Oir.Class.Index {
 
     try cg.node_to_class.put(cg.gpa, expr, class);
     return class;
+}
+
+/// Lowers `foo(args...)` into a `call` node. The call reads the current memory
+/// state and produces a tuple `(mem', result)`; we advance `mem_state` to `mem'`
+/// and return `result`.
+/// Lowers `foo(args...)` into a `call` node. The call reads the current memory
+/// state and produces a tuple `(mem', result)`. We advance `mem_state` to `mem'`
+/// and return `result`.
+fn buildCall(cg: *CodeGen, call: Tree.Node.Call) Error!Oir.Class.Index {
+    const callee = cg.fn_ids.get(cg.calleeName(call.callee)) orelse
+        std.debug.panic("TODO: call to unknown function", .{});
+
+    var body: std.ArrayList(Oir.Class.Index) = .empty;
+    defer body.deinit(cg.gpa);
+    try body.append(cg.gpa, undefined); // slot 0 reserved for the memory state
+    for (call.args) |arg| try body.append(cg.gpa, try cg.buildExpr(arg));
+    body.items[0] = cg.mem_state; // captured after args are evaluated
+
+    const span = try cg.oir.listToSpan(body.items);
+    const node = try cg.oir.add(.call(callee, span));
+    cg.mem_state = try cg.oir.add(.project(0, node, .data));
+    return cg.oir.add(.project(1, node, .data));
+}
+
+fn calleeName(cg: *CodeGen, idx: Tree.Node.Index) []const u8 {
+    const tree = cg.tree;
+    return switch (idx.get(tree)) {
+        .cast => |c| cg.calleeName(c.operand),
+        .paren_expr => |p| cg.calleeName(p.operand),
+        .decl_ref_expr => |d| tree.tokSlice(d.name_tok),
+        else => |t| std.debug.panic("TODO: callee {s}", .{@tagName(t)}),
+    };
 }
 
 fn buildLval(cg: *CodeGen, idx: Tree.Node.Index) Error!Oir.Class.Index {
@@ -648,4 +715,6 @@ pub fn deinit(cg: *CodeGen, allocator: std.mem.Allocator) void {
     cg.symbol_table.deinit(allocator);
     cg.returns.deinit(allocator);
     cg.loops.deinit(allocator);
+    cg.fn_ids.deinit(allocator);
+    cg.fn_names.deinit(allocator);
 }

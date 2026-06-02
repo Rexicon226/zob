@@ -47,23 +47,29 @@ pub const Inst = union(enum) {
     set_ret: VReg,
     // `mv dst, {arg}`
     arg: struct { dst: VReg, index: u32 },
+    /// `mv a{index}, src`, places a call argument into its ABI register.
+    set_arg: struct { index: u32, src: VReg },
+    /// `call {name}; mv dst, a0`. Clobbers the caller-saved registers.
+    call: struct { callee: u32, dst: VReg },
     ret,
 
     /// Calls `f(ctx, vreg)` for each vreg this instruction defines.
     pub fn forEachDef(inst: Inst, ctx: anytype, comptime f: fn (@TypeOf(ctx), VReg) void) void {
         switch (inst) {
             inline .arg, .li, .bin, .un => |p| f(ctx, p.dst),
-            .beqz, .j, .label, .set_ret, .ret => {},
+            .call => |p| f(ctx, p.dst),
+            .beqz, .j, .label, .set_ret, .set_arg, .ret => {},
         }
     }
 
     /// Calls `f(ctx, vreg)` for each vreg this instruction uses.
     pub fn forEachUse(inst: Inst, ctx: anytype, comptime f: fn (@TypeOf(ctx), VReg) void) void {
         switch (inst) {
-            .arg, .li, .j, .label, .ret => {},
+            .arg, .li, .j, .label, .ret, .call => {},
             .un => |p| f(ctx, p.src),
             .beqz => |p| f(ctx, p.src),
             .set_ret => |v| f(ctx, v),
+            .set_arg => |p| f(ctx, p.src),
             .bin => |p| {
                 f(ctx, p.lhs);
                 f(ctx, p.rhs);
@@ -102,6 +108,15 @@ pub fn build(gpa: std.mem.Allocator, recv: *const Recursive, sched: *const Sched
     @memset(emitted, false);
 
     var b: Builder = .{ .gpa = gpa, .recv = recv, .sched = sched, .emitted = emitted };
+
+    // Move incoming arguments out of a0..a7 at the very top of the function,
+    // before any `call` can clobber them.
+    for (recv.nodes.items, 0..) |node, i| {
+        if (node.tag == .param and node.data.param.index >= 1) {
+            try b.add(.{ .arg = .{ .dst = @enumFromInt(i), .index = node.data.param.index - 1 } });
+        }
+    }
+
     try b.emitRegion(.root);
     return .{ .insts = b.insts };
 }
@@ -171,6 +186,7 @@ const Builder = struct {
                 switch (tuple.tag) {
                     .start => try b.add(.{ .arg = .{ .dst = n, .index = project.index - 1 } }),
                     .theta => try b.add(.mv(n, tuple.data.loop.args(b.recv)[project.index])),
+                    .call => try b.add(.mv(n, project.tuple)),
                     else => std.debug.panic("project of {s}", .{@tagName(tuple.tag)}),
                 }
             },
@@ -287,6 +303,21 @@ const Builder = struct {
                 const ops = node.operands(b.recv);
                 if (ops.len > 1) try b.add(.{ .set_ret = ops[1] });
                 try b.add(.ret);
+            },
+            // A function root. Its results are (final_mem, value?).
+            // Set the return register from the value and return.
+            .lambda => {
+                const results = node.data.lambda.results(b.recv);
+                if (results.len > 1) try b.add(.{ .set_ret = results[1] });
+                try b.add(.ret);
+            },
+            .param => {},
+            .call => {
+                const c = node.data.call;
+                for (c.args(b.recv), 0..) |arg, i| {
+                    try b.add(.{ .set_arg = .{ .index = @intCast(i), .src = arg } });
+                }
+                try b.add(.{ .call = .{ .callee = c.callee, .dst = n } });
             },
         }
     }

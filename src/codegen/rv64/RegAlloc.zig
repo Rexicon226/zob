@@ -82,6 +82,21 @@ pub fn run(gpa: std.mem.Allocator, mir: *const Mir, num_vregs: usize) !Result {
         }
     }
 
+    // Values live across a call must survive it.
+    // A call clobbers the caller-saved (and argument) registers, so any vreg
+    // whose interval strictly spans a call must be placed in a callee-saved register,
+    // or spilled.
+    const crosses = try gpa.alloc(bool, num_vregs);
+    defer gpa.free(crosses);
+    @memset(crosses, false);
+    for (mir.insts.items, 0..) |inst, idx| {
+        if (inst != .call) continue;
+        for (0..num_vregs) |v| {
+            if (!seen[v]) continue;
+            if (start[v] < idx and end[v] > idx) crosses[v] = true;
+        }
+    }
+
     // Order vregs by interval start.
     var order: std.ArrayList(usize) = .empty;
     defer order.deinit(gpa);
@@ -119,7 +134,8 @@ pub fn run(gpa: std.mem.Allocator, mir: *const Mir, num_vregs: usize) !Result {
             } else k += 1;
         }
 
-        if (free.pop()) |reg| {
+        const picked: ?Register = if (crosses[v]) popSaved(&free) else free.pop();
+        if (picked) |reg| {
             locs[v] = .{ .reg = reg };
             try active.append(gpa, .{ .end = end[v], .reg = reg });
             if (rv64.isSaved(reg) and !contains(used_saved.items, reg)) {
@@ -156,6 +172,17 @@ const LiveCtx = struct {
 
 fn lessByStart(start: []const usize, a: usize, b: usize) bool {
     return start[a] < start[b];
+}
+
+/// Removes and returns a callee-saved register from `free`, or null if none are
+/// avaiable.
+fn popSaved(free: *std.ArrayList(Register)) ?Register {
+    var i = free.items.len;
+    while (i > 0) {
+        i -= 1;
+        if (rv64.isSaved(free.items[i])) return free.orderedRemove(i);
+    }
+    return null;
 }
 
 fn labelIndex(mir: *const Mir, label: Mir.Label) ?usize {

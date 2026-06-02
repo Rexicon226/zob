@@ -120,10 +120,13 @@ pub fn main(init: std.process.Init) !void {
     var cg = try CodeGen.init(&oir, gpa, &tree);
     defer cg.deinit(gpa);
 
-    var recv = try cg.build(io, cmd.graphs);
-    defer recv.deinit(gpa);
+    const recvs = try cg.build(io, cmd.graphs);
+    defer {
+        for (recvs) |*recv| recv.deinit(gpa);
+        gpa.free(recvs);
+    }
 
-    try zob.rv64.generate(&recv, gpa, stdout_w);
+    try zob.rv64.generate(recvs, cg.fn_names.items, gpa, stdout_w);
 }
 
 fn fail(comptime fmt: []const u8, args: anytype) noreturn {

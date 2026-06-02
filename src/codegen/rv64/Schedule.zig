@@ -92,6 +92,7 @@ pub fn compute(gpa: std.mem.Allocator, recv: *const Recursive) !Schedule {
             .store, .start => true,
             .project => node.data.project.index == 0,
             .loopvar => node.data.loopvar.index == 0,
+            .param => node.data.param.index == 0,
             .gamma => is_mem[@intFromEnum(node.data.tri_op[1])],
             else => false,
         };
@@ -151,12 +152,18 @@ pub fn compute(gpa: std.mem.Allocator, recv: *const Recursive) !Schedule {
         }
     }
 
-    // Function arguemnts and the intial memory state are entry values.
+    // Function arguments and the initial memory state are entry values.
     // We pin them to the root region so they're materialized once, at entry,
-    // and never recomputed inside a branch where the source arg register may
-    // be gone.
+    // and never recomputed inside a branch where the source argument register
+    // may be gone.
     for (recv.nodes.items, 0..) |node, idx| {
-        if (node.tag == .project and node.data.project.tuple == .start) node_region[idx] = .root;
+        switch (node.tag) {
+            .param => node_region[idx] = .root,
+            .project => if (node.data.project.tuple == .start) {
+                node_region[idx] = .root;
+            },
+            else => {},
+        }
     }
 
     return .{

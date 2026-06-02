@@ -202,8 +202,28 @@ pub const Writer = struct {
             .project => try w.printProject(node, stream),
             .constant => try w.printConstant(node, stream),
             .start => try w.printStart(node, repr, stream),
+            .lambda => try w.printLambda(node, repr, stream),
+            .param => try w.printParam(node, stream),
+            .call => try w.printCall(node, repr, stream),
         }
         try stream.writeAll(")");
+    }
+
+    fn printLambda(_: *Writer, node: Oir.Node, repr: anytype, stream: *std.Io.Writer) !void {
+        const lambda = node.data.lambda;
+        try stream.print("#{d}, params {d}", .{ lambda.id, lambda.params });
+        for (lambda.results(repr)) |c| try stream.print(", result {f}", .{c});
+    }
+
+    fn printParam(_: *Writer, node: Oir.Node, stream: *std.Io.Writer) !void {
+        const p = node.data.param;
+        try stream.print("#{d}[{d}]", .{ p.lambda, p.index });
+    }
+
+    fn printCall(_: *Writer, node: Oir.Node, repr: anytype, stream: *std.Io.Writer) !void {
+        const c = node.data.call;
+        try stream.print("#{d}, mem {f}", .{ c.callee, c.mem(repr) });
+        for (c.args(repr)) |a| try stream.print(", arg {f}", .{a});
     }
 
     fn printTheta(_: *Writer, node: Oir.Node, repr: anytype, stream: *std.Io.Writer) !void {

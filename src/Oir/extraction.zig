@@ -76,12 +76,12 @@ pub const CostStrategy = enum {
     pub const auto: CostStrategy = if (build_options.has_z3) .z3 else .simple_latency;
 };
 
-pub fn extract(oir: *Oir, strat: CostStrategy) !Recursive {
+pub fn extract(oir: *Oir, strat: CostStrategy) ![]Recursive {
     const trace = oir.trace.start(@src(), "extracting", .{});
     defer trace.end();
 
     switch (strat) {
         .simple_latency => return SimpleExtractor.extract(oir),
-        .z3 => return z3.extract(oir),
+        .z3 => @panic("TODO: z3 extractor doesn't support multi-function yet"),
     }
 }

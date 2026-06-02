@@ -89,6 +89,9 @@ pub fn run(oir: *Oir) !bool {
             .store => {}, // ^
             .start => {},
             .ret => {}, // volatile, handled above
+            .lambda => {}, // function definition, nothing to fold
+            .param => {}, // a leaf function argument / memory state
+            .call => {}, // TODO: constant-fold / inline calls
         }
     }
 

@@ -103,12 +103,11 @@ pub const NodeContext = struct {
 
         if (a.tag != b.tag) return false;
         if (std.meta.activeTag(a.data) != std.meta.activeTag(b.data)) return false;
-        // b.data would also be `constant` because of the above check
-        if (a.data == .constant) {
-            return a.data.constant == b.data.constant;
-        }
 
         switch (a.data) {
+            .constant => |p| {
+                return p == b.data.constant;
+            },
             .project => |p| {
                 if (p.index != b.data.project.index) return false;
                 if (p.type != b.data.project.type) return false;
@@ -120,6 +119,16 @@ pub const NodeContext = struct {
             .loop => |p| {
                 if (p.id != b.data.loop.id) return false;
                 if (p.count != b.data.loop.count) return false;
+            },
+            .lambda => |p| {
+                // Each function has a unique id; same id == same lambda.
+                return p.id == b.data.lambda.id;
+            },
+            .param => |p| {
+                return p.lambda == b.data.param.lambda and p.index == b.data.param.index;
+            },
+            .call => |p| {
+                if (p.callee != b.data.call.callee) return false;
             },
             else => {},
         }
@@ -188,6 +197,16 @@ pub const Node = struct {
         /// A leaf carrying `(loop id, slot index)`.
         loopvar,
 
+        /// A function definition. Uses the `lambda` payload, whose `body` span
+        /// holds the function's results.
+        lambda,
+        /// A function argument or incoming memory state.
+        param,
+        /// A function call. Uses the `call` payload, whose `body` span
+        /// is `(mem_state, args...)` and which produces a tuple `(mem_state', result)`.
+        /// `callee` is the id of the target `lambda`.
+        call,
+
         // Integer arthimatics.
         add,
         @"and",
@@ -246,6 +265,12 @@ pub const Node = struct {
                 => .loop,
                 .loopvar,
                 => .loopvar,
+                .lambda,
+                => .lambda,
+                .call,
+                => .call,
+                .param,
+                => .param,
                 .cmp_gt,
                 .cmp_lt,
                 .cmp_eq,
@@ -276,6 +301,36 @@ pub const Node = struct {
         list: Span,
         loop: Loop,
         loopvar: Loopvar,
+        lambda: Lambda,
+        call: Call,
+        param: Param,
+    };
+
+    pub const Lambda = struct {
+        id: u32,
+        params: u32,
+        body: Span,
+
+        pub fn results(l: Lambda, repr: anytype) []const Class.Index {
+            return @ptrCast(repr.extra.items[l.body.start..l.body.end]);
+        }
+    };
+
+    pub const Call = struct {
+        callee: u32,
+        body: Span,
+
+        pub fn mem(c: Call, repr: anytype) Class.Index {
+            return @enumFromInt(repr.extra.items[c.body.start]);
+        }
+        pub fn args(c: Call, repr: anytype) []const Class.Index {
+            return @ptrCast(repr.extra.items[c.body.start + 1 .. c.body.end]);
+        }
+    };
+
+    pub const Param = struct {
+        lambda: u32,
+        index: u32,
     };
 
     /// Payload for `theta`. `body` holds, in order: the N loop-arg classes,
@@ -349,26 +404,30 @@ pub const Node = struct {
     pub fn operands(node: *const Node, repr: anytype) []const Class.Index {
         if (node.tag == .start) return &.{}; // no real operands
         return switch (node.data) {
-            .none, .constant, .loopvar => &.{},
+            .none, .constant, .loopvar, .param => &.{},
             .bin_op => |*bin_op| bin_op,
             .tri_op => |*tri_op| tri_op,
             .un_op => |*un_op| un_op[0..1],
             .project => |*proj| (&proj.tuple)[0..1],
             .list => |span| @ptrCast(repr.extra.items[span.start..span.end]),
             .loop => |loop| @ptrCast(repr.extra.items[loop.body.start..loop.body.end]),
+            .lambda => |lam| @ptrCast(repr.extra.items[lam.body.start..lam.body.end]),
+            .call => |cl| @ptrCast(repr.extra.items[cl.body.start..cl.body.end]),
         };
     }
 
     pub fn mutableOperands(node: *Node, repr: anytype) []Class.Index {
         if (node.tag == .start) return &.{}; // no real operands
         return switch (node.data) {
-            .none, .constant, .loopvar => &.{},
+            .none, .constant, .loopvar, .param => &.{},
             .bin_op => |*bin_op| bin_op,
             .tri_op => |*tri_op| tri_op,
             .un_op => |*un_op| un_op[0..1],
             .project => |*proj| (&proj.tuple)[0..1],
             .list => |span| @ptrCast(repr.extra.items[span.start..span.end]),
             .loop => |loop| @ptrCast(repr.extra.items[loop.body.start..loop.body.end]),
+            .lambda => |lam| @ptrCast(repr.extra.items[lam.body.start..lam.body.end]),
+            .call => |cl| @ptrCast(repr.extra.items[cl.body.start..cl.body.end]),
         };
     }
 
@@ -391,19 +450,23 @@ pub const Node = struct {
             .gamma,
             .theta,
             .loopvar,
+            .call,
+            .param,
             => .data,
             .start,
             .ret,
+            .lambda,
             => .ctrl,
             .project => node.data.project.type,
         };
     }
 
     pub fn isVolatile(node: Node) bool {
-        // TODO: this isn't necessarily true, but just to be safe for now.
         return switch (node.tag) {
             .start,
             .ret,
+            .lambda,
+            .call,
             => true,
             else => false,
         };
@@ -446,6 +509,16 @@ pub const Node = struct {
     }
     pub fn loopvar(id: u32, index: u32) Node {
         return .{ .tag = .loopvar, .data = .{ .loopvar = .{ .loop = id, .index = index } } };
+    }
+
+    pub fn lambda(id: u32, params: u32, body: Span) Node {
+        return .{ .tag = .lambda, .data = .{ .lambda = .{ .id = id, .params = params, .body = body } } };
+    }
+    pub fn param(id: u32, index: u32) Node {
+        return .{ .tag = .param, .data = .{ .param = .{ .lambda = id, .index = index } } };
+    }
+    pub fn call(callee: u32, body: Span) Node {
+        return .{ .tag = .call, .data = .{ .call = .{ .callee = callee, .body = body } } };
     }
 
     pub fn project(index: u32, tuple: Class.Index, ty: Type) Node {
@@ -928,7 +1001,7 @@ fn verifyNodes(oir: *Oir) !void {
     }
 }
 
-pub fn extract(oir: *Oir, strat: extraction.CostStrategy) !extraction.Recursive {
+pub fn extract(oir: *Oir, strat: extraction.CostStrategy) ![]extraction.Recursive {
     return extraction.extract(oir, strat);
 }
 

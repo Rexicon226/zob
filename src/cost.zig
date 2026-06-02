@@ -31,6 +31,9 @@ pub fn getCost(tag: Oir.Node.Tag) u32 {
         .gamma => 6,
         .theta => 10,
 
+        // TODO: we'll need to price calls for real / inlining etc.
+        .call => 5,
+
         .start,
         .ret,
         // constants have zero latency so that we bias towards
@@ -39,6 +42,8 @@ pub fn getCost(tag: Oir.Node.Tag) u32 {
         .project,
         // a loop-carried reference is just a register, free to read.
         .loopvar,
+        .lambda,
+        .param,
         => 0,
     };
 }

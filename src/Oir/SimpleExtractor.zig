@@ -15,39 +15,43 @@ const assert = std.debug.assert;
 
 oir: *const Oir,
 
-start_class: ?Class.Index,
-
 /// The chosen lowest-cost node for each canonical class.
 best_node: std.AutoHashMapUnmanaged(Class.Index, Node.Index),
 map: std.AutoHashMapUnmanaged(Class.Index, Class.Index),
 
-exit_list: std.ArrayList(Class.Index),
-
 /// Sentinel cost for a class that has no finite-cost (acyclic) extraction yet.
 const infinite = std.math.maxInt(u32);
 
-/// Extracts the best pattern of Oir from the E-Graph given a cost model.
-pub fn extract(oir: *const Oir) !Recursive {
+/// Extracts the best program, producing one `Recursive` per function in
+/// `oir.exit_list`.
+pub fn extract(oir: *const Oir) ![]Recursive {
     var e: SimpleExtractor = .{
         .oir = oir,
         .best_node = .{},
         .map = .{},
-        .exit_list = .empty,
-        .start_class = null,
     };
     defer e.deinit();
 
     try e.computeBestNodes();
 
-    var recv: Recursive = .{};
+    var list: std.ArrayList(Recursive) = .empty;
+    errdefer {
+        for (list.items) |*recv| recv.deinit(oir.allocator);
+        list.deinit(oir.allocator);
+    }
+
     for (oir.exit_list.items) |exit| {
         const exit_class = oir.union_find.find(exit);
         _ = e.best_node.get(exit_class) orelse continue;
-        _ = try e.extractClass(exit, &recv);
-    }
-    recv.exit_list = try e.exit_list.clone(oir.allocator);
 
-    return recv;
+        var recv: Recursive = .{};
+        e.map.clearRetainingCapacity();
+        const idx = try e.extractClass(exit, &recv);
+        try recv.exit_list.append(oir.allocator, idx);
+        try list.append(oir.allocator, recv);
+    }
+
+    return list.toOwnedSlice(oir.allocator);
 }
 
 /// Computes the best (lowest-cost) node for every class via Bellman-Ford style
@@ -114,8 +118,6 @@ fn extractClass(e: *SimpleExtractor, class_idx: Class.Index, recv: *Recursive) !
         .start => {
             const new_node: Node = .{ .tag = .start, .data = .{ .list = .empty } };
             const idx = try recv.addNode(gpa, new_node);
-            if (e.start_class != null) @panic("found two start nodes?");
-            e.start_class = idx;
             try e.map.put(gpa, class_idx, idx);
             return idx;
         },
@@ -154,7 +156,6 @@ fn extractClass(e: *SimpleExtractor, class_idx: Class.Index, recv: *Recursive) !
             const new_node: Node = .ret(span);
             const new_node_idx = try recv.addNode(gpa, new_node);
             try e.map.put(gpa, class_idx, new_node_idx);
-            try e.exit_list.append(gpa, new_node_idx);
             return new_node_idx;
         },
         .gamma => {
@@ -188,6 +189,37 @@ fn extractClass(e: *SimpleExtractor, class_idx: Class.Index, recv: *Recursive) !
         .loopvar => {
             const lv = best_node.data.loopvar;
             const new_node_idx = try recv.addNode(gpa, .loopvar(lv.loop, lv.index));
+            try e.map.put(gpa, class_idx, new_node_idx);
+            return new_node_idx;
+        },
+        .lambda => {
+            const lambda = best_node.data.lambda;
+
+            var results: std.ArrayList(Class.Index) = .empty;
+            defer results.deinit(gpa);
+            for (lambda.results(oir)) |c| try results.append(gpa, try e.extractClass(c, recv));
+
+            const span = try recv.listToSpan(results.items, gpa);
+            const new_node_idx = try recv.addNode(gpa, .lambda(lambda.id, lambda.params, span));
+            try e.map.put(gpa, class_idx, new_node_idx);
+            return new_node_idx;
+        },
+        .param => {
+            const p = best_node.data.param;
+            const new_node_idx = try recv.addNode(gpa, .param(p.lambda, p.index));
+            try e.map.put(gpa, class_idx, new_node_idx);
+            return new_node_idx;
+        },
+        .call => {
+            const c = best_node.data.call;
+
+            var body: std.ArrayList(Class.Index) = .empty;
+            defer body.deinit(gpa);
+            try body.append(gpa, try e.extractClass(c.mem(oir), recv));
+            for (c.args(oir)) |a| try body.append(gpa, try e.extractClass(a, recv));
+
+            const span = try recv.listToSpan(body.items, gpa);
+            const new_node_idx = try recv.addNode(gpa, .call(c.callee, span));
             try e.map.put(gpa, class_idx, new_node_idx);
             return new_node_idx;
         },
@@ -226,5 +258,4 @@ pub fn deinit(e: *SimpleExtractor) void {
     const allocator = e.oir.allocator;
     e.best_node.deinit(allocator);
     e.map.deinit(allocator);
-    e.exit_list.deinit(allocator);
 }

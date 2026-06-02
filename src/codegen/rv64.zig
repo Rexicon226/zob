@@ -73,26 +73,47 @@ pub fn isSaved(reg: Register) bool {
     };
 }
 
-pub fn generate(recv: *const Recursive, gpa: std.mem.Allocator, stream: *std.Io.Writer) !void {
-    var sched = try Schedule.compute(gpa, recv);
-    defer sched.deinit(gpa);
+/// Emits one function per `Recursive`. `names` is indexed by lambda id.
+/// This will likely all be tied in differently in the future.
+pub fn generate(
+    recvs: []const Recursive,
+    names: []const []const u8,
+    gpa: std.mem.Allocator,
+    stream: *std.Io.Writer,
+) !void {
+    for (recvs) |*recv| {
+        const lambda = recv.getNode(recv.exit_list.items[0]).data.lambda;
 
-    var mir = try Mir.build(gpa, recv, &sched);
-    defer mir.deinit(gpa);
+        var sched = try Schedule.compute(gpa, recv);
+        defer sched.deinit(gpa);
 
-    var regalloc = try RegAlloc.run(gpa, &mir, recv.nodes.items.len);
-    defer regalloc.deinit(gpa);
+        var mir = try Mir.build(gpa, recv, &sched);
+        defer mir.deinit(gpa);
 
-    var emitter: Emitter = .{ .w = stream, .mir = &mir, .ra = &regalloc };
-    try emitter.run("foo");
+        var regalloc = try RegAlloc.run(gpa, &mir, recv.nodes.items.len);
+        defer regalloc.deinit(gpa);
+
+        var emitter: Emitter = .{ .w = stream, .mir = &mir, .ra = &regalloc, .names = names };
+        try emitter.run(names[lambda.id]);
+    }
 }
 
 const Emitter = struct {
     w: *std.Io.Writer,
     mir: *const Mir,
     ra: *const RegAlloc.Result,
+    names: []const []const u8,
+    /// Whether this function makes any call.
+    has_call: bool = false,
+    /// Name of the function being emitted.
+    func: []const u8 = "",
 
     fn run(e: *Emitter, name: []const u8) !void {
+        e.func = name;
+        e.has_call = for (e.mir.insts.items) |inst| {
+            if (inst == .call) break true;
+        } else false;
+
         const frame = e.frameSize();
 
         try e.w.print(".text\n", .{});
@@ -105,6 +126,7 @@ const Emitter = struct {
             for (e.ra.used_saved, 0..) |reg, j| {
                 try e.emitLine("sd {t}, {d}(sp)", .{ reg, e.savedOffset(j) });
             }
+            if (e.has_call) try e.emitLine("sd ra, {d}(sp)", .{e.raOffset()});
         }
 
         for (e.mir.insts.items) |inst| try e.emitInst(inst, frame);
@@ -143,16 +165,27 @@ const Emitter = struct {
             },
             .beqz => |a| {
                 const src = try e.useReg(a.src, scratch_src0);
-                try e.emitLine("beqz {t}, .Lbb{d}", .{ src, a.target });
+                try e.emitLine("beqz {t}, .L{s}_{d}", .{ src, e.func, a.target });
             },
-            .j => |target| try e.emitLine("j .Lbb{d}", .{target}),
-            .label => |id| try e.w.print(".Lbb{d}:\n", .{id}),
+            .j => |target| try e.emitLine("j .L{s}_{d}", .{ e.func, target }),
+            .label => |id| try e.w.print(".L{s}_{d}:\n", .{ e.func, id }),
             .set_ret => |v| {
                 const src = try e.useReg(v, scratch_src0);
                 try e.emitLine("mv a0, {t}", .{src});
             },
+            .set_arg => |a| {
+                const src = try e.useReg(a.src, scratch_src0);
+                try e.emitLine("mv {t}, {t}", .{ arg_regs[a.index], src });
+            },
+            .call => |c| {
+                try e.emitLine("call {s}", .{e.names[c.callee]});
+                const dst, const slot = e.defReg(c.dst);
+                try e.emitLine("mv {t}, a0", .{dst});
+                try e.finishDef(dst, slot);
+            },
             .ret => {
                 if (frame != 0) {
+                    if (e.has_call) try e.emitLine("ld ra, {d}(sp)", .{e.raOffset()});
                     for (e.ra.used_saved, 0..) |reg, j| {
                         try e.emitLine("ld {t}, {d}(sp)", .{ reg, e.savedOffset(j) });
                     }
@@ -196,8 +229,14 @@ const Emitter = struct {
         return (@as(u64, e.ra.num_spills) + j) * slot_size;
     }
 
+    /// `ra` is saved just above the spill slots and callee-saved registers.
+    fn raOffset(e: *Emitter) u64 {
+        return (@as(u64, e.ra.num_spills) + e.ra.used_saved.len) * slot_size;
+    }
+
     fn frameSize(e: *Emitter) u64 {
-        const bytes = (@as(u64, e.ra.num_spills) + e.ra.used_saved.len) * slot_size;
+        const ra_slots: u64 = if (e.has_call) 1 else 0;
+        const bytes = (@as(u64, e.ra.num_spills) + e.ra.used_saved.len + ra_slots) * slot_size;
         return std.mem.alignForward(u64, bytes, 16);
     }
 
