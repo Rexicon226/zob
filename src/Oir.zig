@@ -723,6 +723,10 @@ const passes: []const Pass = &.{
         .name = "loop-opt",
         .func = @import("passes/loop.zig").run,
     },
+    .{
+        .name = "known-bits",
+        .func = @import("passes/known_bits.zig").run,
+    },
 };
 
 pub fn optimize(
