@@ -20,6 +20,7 @@ pub const BinOp = enum {
     sub,
     mul,
     @"and",
+    @"or",
     sll,
     srl,
     sra,
@@ -166,6 +167,34 @@ const Builder = struct {
         return @enumFromInt(b.next_vreg);
     }
 
+    /// Emit, ahead of an aliasing side effect, every not-yet-emitted `load` in
+    /// `region` that observes memory token `token`. As there's no alias analysis
+    /// yet, a load reading the state a later store/call overwrites must be
+    /// scheduled before it.
+    fn emitObserversOf(b: *Builder, token: NodeIdx, region: Schedule.Region.Id) std.mem.Allocator.Error!void {
+        for (b.recv.nodes.items, 0..) |node, i| {
+            if (node.tag != .load) continue;
+            if (b.emitted[i]) continue;
+            if (b.sched.node_region[i] != region) continue;
+            if (node.data.load.ops[0] != token) continue;
+            try b.emitValue(@enumFromInt(i));
+        }
+    }
+
+    fn emitValue(b: *Builder, n: NodeIdx) std.mem.Allocator.Error!void {
+        if (b.emitted[@intFromEnum(n)]) return;
+        const node = b.recv.nodes.items[@intFromEnum(n)];
+        switch (node.tag) {
+            .store, .call, .gamma, .theta, .ret, .start => return,
+            else => {},
+        }
+        for (node.operands(b.recv), 0..) |op, i| {
+            if (node.tag == .load and i == 0) continue;
+            try b.emitValue(op);
+        }
+        try b.emitNode(n);
+    }
+
     /// Emit every node assigned to a `region`, in topological order.
     /// Nodes belonging to nested regions are skipped here and emitted when their
     /// owning `gamma` is reached.
@@ -198,6 +227,9 @@ const Builder = struct {
     }
 
     fn emitNode(b: *Builder, n: NodeIdx) std.mem.Allocator.Error!void {
+        if (b.emitted[@intFromEnum(n)]) return;
+        b.emitted[@intFromEnum(n)] = true;
+
         const node = b.recv.nodes.items[@intFromEnum(n)];
         switch (node.tag) {
             .start => {}, // abstract entry, nothing to emit
@@ -220,7 +252,7 @@ const Builder = struct {
                 }
             },
             .constant => try b.add(.{ .li = .{ .dst = n, .imm = node.data.constant } }),
-            .add, .sub, .mul, .@"and", .shl, .shr, .sar, .div_trunc, .udiv, .div_exact => {
+            .add, .sub, .mul, .@"and", .@"or", .shl, .shr, .sar, .div_trunc, .udiv, .div_exact => {
                 const ops = node.data.bin_op;
                 const width = b.recv.typeOf(ops[0]);
                 try b.add(.binOp(switch (node.tag) {
@@ -228,6 +260,7 @@ const Builder = struct {
                     .sub => .sub,
                     .mul => .mul,
                     .@"and" => .@"and",
+                    .@"or" => .@"or",
                     .shl => .sll,
                     .shr => .srl,
                     .sar => .sra,
@@ -278,14 +311,11 @@ const Builder = struct {
                 try b.add(.{ .load = .{ .dst = n, .addr = l.ops[1], .bits = l.bits } });
             },
             .store => {
-                // (mem, address, value)
-                const ops = node.data.tri_op;
-                try b.add(.{ .store = .{ .value = ops[2], .addr = ops[1], .bits = b.recv.typeOf(ops[2]) } });
+                const s = node.data.store;
+                try b.emitObserversOf(s.ops[0], b.sched.node_region[@intFromEnum(n)]);
+                try b.add(.{ .store = .{ .value = s.ops[2], .addr = s.ops[1], .bits = s.bits } });
             },
             .gamma => {
-                // Lowered as part of a fused branch group already.
-                if (b.emitted[@intFromEnum(n)]) return;
-
                 const region = b.sched.node_region[@intFromEnum(n)];
                 const pred = node.data.tri_op[0];
                 const arms = b.sched.gamma_regions.get(n).?;
@@ -374,6 +404,7 @@ const Builder = struct {
             .param => {},
             .call => {
                 const c = node.data.call;
+                try b.emitObserversOf(c.mem(b.recv), b.sched.node_region[@intFromEnum(n)]);
                 for (c.args(b.recv), 0..) |arg, i| {
                     try b.add(.{ .set_arg = .{ .index = @intCast(i), .src = arg } });
                 }

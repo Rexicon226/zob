@@ -38,6 +38,7 @@ pub fn run(oir: *Oir) !bool {
             .cmp_ult,
             .cmp_ugt,
             .@"and",
+            .@"or",
             => {
                 // The class has already been solved for a constant, no need to do anything else!
                 if (oir.classContains(class_idx, .constant) != null) continue;

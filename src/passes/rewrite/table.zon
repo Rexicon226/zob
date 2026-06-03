@@ -142,17 +142,6 @@
         .to = "(shl ?x 1)",
     },
 
-    // Testing with store and DDG stuff.
-    .{
-        .name = "dead-store",
-        .from = "(store (store ?m ?a ?v) ?a ?w)",
-        .to = "(store ?m ?a ?w)",
-    },
-    .{
-        .name = "load-after-store",
-        .from = "(load (store ?m ?a ?v) ?a)",
-        .to = "?v",
-    },
     .{
         .name = "same-gamma",
         .from = "(gamma ?p ?x ?x)",

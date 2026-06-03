@@ -6,7 +6,9 @@ int foo(int x) {
         case 1: r = 10; break;
         case 3: {
           r = 20;
-          while (r > 0) r--;
+          while (r > 0) {
+               r--;
+          }
         }
     }
     return r;

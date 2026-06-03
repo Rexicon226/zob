@@ -181,6 +181,7 @@ pub const Writer = struct {
         try stream.print("{s}(", .{@tagName(node.tag)});
         switch (node.tag) {
             .@"and",
+            .@"or",
             .sub,
             .shl,
             .shr,
@@ -202,8 +203,9 @@ pub const Writer = struct {
             => try w.printCast(node, stream),
             .load,
             => try w.printLoad(node, stream),
-            .gamma,
             .store,
+            => try w.printStore(node, stream),
+            .gamma,
             => try w.printTriOp(node, stream),
             .theta => try w.printTheta(node, repr, stream),
             .loopvar => try w.printLoopvar(node, stream),
@@ -287,6 +289,11 @@ pub const Writer = struct {
     fn printTriOp(_: *Writer, node: Oir.Node, stream: *std.Io.Writer) !void {
         const tri_op = node.data.tri_op;
         try stream.print("{f}, {f}, {f}", .{ tri_op[0], tri_op[1], tri_op[2] });
+    }
+
+    fn printStore(_: *Writer, node: Oir.Node, stream: *std.Io.Writer) !void {
+        const s = node.data.store;
+        try stream.print("{f}, {f}, {f} : i{d}", .{ s.ops[0], s.ops[1], s.ops[2], s.bits });
     }
 
     fn printStart(_: *Writer, _: Oir.Node, repr: anytype, stream: *std.Io.Writer) !void {

@@ -132,13 +132,13 @@ fn extractClass(e: *SimpleExtractor, class_idx: Class.Index, recv: *Recursive) !
             return new_node_idx;
         },
         .store => {
-            const tri_op = best_node.data.tri_op;
+            const ops = best_node.data.store.ops;
 
-            const mem_state = try e.extractClass(tri_op[0], recv);
-            const address = try e.extractClass(tri_op[1], recv);
-            const value = try e.extractClass(tri_op[2], recv);
+            const mem_state = try e.extractClass(ops[0], recv);
+            const address = try e.extractClass(ops[1], recv);
+            const value = try e.extractClass(ops[2], recv);
 
-            const new_node: Node = .store(mem_state, address, value);
+            const new_node: Node = .store(mem_state, address, value, best_node.data.store.bits);
             const new_node_idx = try recv.addNode(gpa, new_node);
             try e.map.put(gpa, class_idx, new_node_idx);
             return new_node_idx;
@@ -232,6 +232,7 @@ fn extractClass(e: *SimpleExtractor, class_idx: Class.Index, recv: *Recursive) !
         .sub,
         .mul,
         .@"and",
+        .@"or",
         .shl,
         .shr,
         .sar,

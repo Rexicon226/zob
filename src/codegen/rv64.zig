@@ -78,6 +78,7 @@ fn mnemonic(op: Mir.BinOp, width: u16) []const u8 {
         .div => if (w32) "divw" else "div",
         .divu => if (w32) "divuw" else "divu",
         .@"and" => "and",
+        .@"or" => "or",
         .xor => "xor",
         .slt => "slt",
         .sltu => "sltu",

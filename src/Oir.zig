@@ -124,6 +124,9 @@ pub const NodeContext = struct {
             .load => |p| {
                 if (p.bits != b.data.load.bits) return false;
             },
+            .store => |p| {
+                if (p.bits != b.data.store.bits) return false;
+            },
             .alloca => |p| {
                 // Unique allocation id: distinct allocas never compare equal.
                 return p.id == b.data.alloca.id;
@@ -223,6 +226,7 @@ pub const Node = struct {
         // Integer arthimatics.
         add,
         @"and",
+        @"or",
         sub,
         mul,
         shl,
@@ -269,6 +273,7 @@ pub const Node = struct {
                 .add,
                 .mul,
                 .@"and",
+                .@"or",
                 .cmp_eq,
                 => true,
                 else => false,
@@ -285,8 +290,9 @@ pub const Node = struct {
                 .project,
                 => .project,
                 .gamma,
-                .store,
                 => .tri_op,
+                .store,
+                => .store,
                 .theta,
                 => .loop,
                 .loopvar,
@@ -311,6 +317,7 @@ pub const Node = struct {
                 .cmp_ugt,
                 .cmp_eq,
                 .@"and",
+                .@"or",
                 .add,
                 .sub,
                 .mul,
@@ -343,6 +350,7 @@ pub const Node = struct {
         param: Param,
         cast: Cast,
         load: Load,
+        store: Store,
         alloca: Alloca,
     };
 
@@ -359,6 +367,11 @@ pub const Node = struct {
 
     pub const Load = struct {
         ops: [2]Class.Index,
+        bits: u16,
+    };
+
+    pub const Store = struct {
+        ops: [3]Class.Index,
         bits: u16,
     };
 
@@ -469,6 +482,7 @@ pub const Node = struct {
             .un_op => |*un_op| un_op[0..1],
             .cast => |*c| (&c.operand)[0..1],
             .load => |*l| &l.ops,
+            .store => |*s| &s.ops,
             .project => |*proj| (&proj.tuple)[0..1],
             .list => |span| @ptrCast(repr.extra.items[span.start..span.end]),
             .loop => |loop| @ptrCast(repr.extra.items[loop.body.start..loop.body.end]),
@@ -486,6 +500,7 @@ pub const Node = struct {
             .un_op => |*un_op| un_op[0..1],
             .cast => |*c| (&c.operand)[0..1],
             .load => |*l| &l.ops,
+            .store => |*s| &s.ops,
             .project => |*proj| (&proj.tuple)[0..1],
             .list => |span| @ptrCast(repr.extra.items[span.start..span.end]),
             .loop => |loop| @ptrCast(repr.extra.items[loop.body.start..loop.body.end]),
@@ -505,6 +520,7 @@ pub const Node = struct {
             .cmp_ult,
             .cmp_ugt,
             .@"and",
+            .@"or",
             .add,
             .sub,
             .mul,
@@ -575,9 +591,9 @@ pub const Node = struct {
         return .{ .tag = .zext, .data = .{ .cast = .{ .operand = operand, .bits = bits } } };
     }
 
-    /// Memory store: `(mem_state, address, value)` -> new memory state.
-    pub fn store(mem_state: Class.Index, address: Class.Index, value: Class.Index) Node {
-        return .{ .tag = .store, .data = .{ .tri_op = .{ mem_state, address, value } } };
+    // Memory store: `(mem_state, address, value)` -> new memory state.
+    pub fn store(mem_state: Class.Index, address: Class.Index, value: Class.Index, bits: u16) Node {
+        return .{ .tag = .store, .data = .{ .store = .{ .ops = .{ mem_state, address, value }, .bits = bits } } };
     }
 
     pub fn alloca(id: u32, size: u32, alignment: u32) Node {
@@ -861,7 +877,7 @@ fn typeOfDepth(oir: *const Oir, idx: Class.Index, depth: u8) ?u16 {
     for (class.bag.items) |node_idx| {
         const node = oir.getNode(node_idx);
         switch (node.tag) {
-            .add, .sub, .mul, .@"and", .shl, .shr, .sar, .div_trunc, .udiv, .div_exact => {
+            .add, .sub, .mul, .@"and", .@"or", .shl, .shr, .sar, .div_trunc, .udiv, .div_exact => {
                 const ops = node.data.bin_op;
                 if (oir.typeOfDepth(ops[0], depth + 1)) |w| return w;
                 if (oir.typeOfDepth(ops[1], depth + 1)) |w| return w;

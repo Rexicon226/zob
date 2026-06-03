@@ -4,6 +4,7 @@ pub fn getCost(tag: Oir.Node.Tag) u32 {
     return switch (tag) {
         // ALU operations
         .@"and",
+        .@"or",
         .shl,
         .shr,
         .sar,

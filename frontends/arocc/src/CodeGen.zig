@@ -26,6 +26,9 @@ fn_names: std.ArrayList([]const u8),
 cur_fn: u32 = 0,
 /// Return-value width of the function currently being lowereed (0 if void).
 cur_ret_bits: u16 = 0,
+cur_sret: ?Oir.Class.Index = null,
+/// Names whose address is taken somewhere in the current function.
+addressed: std.StringHashMapUnmanaged(void),
 /// Monotonic source of unique `alloca` ids.
 next_alloca: u32 = 0,
 /// Locals backed by a stack slot rather than an SSA value. We always put
@@ -119,6 +122,7 @@ pub fn init(
         .fn_ids = .empty,
         .labels = .empty,
         .mem_vars = .empty,
+        .addressed = .empty,
         .frames = .empty,
         .fn_names = .empty,
     };
@@ -143,10 +147,18 @@ pub fn build(cg: *CodeGen, io: std.Io, graphs: ?[]const u8) ![]Recursive {
     }
 
     for (cg.tree.root_decls.items) |node| {
-        switch (node_tags[@intFromEnum(node)]) {
-            .fn_def => try cg.buildFn(node),
-            .fn_proto, .typedef => {},
-            else => std.debug.panic("TODO: {s}", .{@tagName(node_tags[@intFromEnum(node)])}),
+        switch (node.get(tree)) {
+            .function => |func| if (func.body != null) try cg.buildFn(node),
+            // Type defintions
+            .typedef,
+            .struct_decl,
+            .union_decl,
+            .enum_decl,
+            .struct_forward_decl,
+            .union_forward_decl,
+            .enum_forward_decl,
+            => {},
+            else => std.debug.panic("TODO: root decl {s}", .{@tagName(node_tags[@intFromEnum(node)])}),
         }
     }
 
@@ -182,7 +194,9 @@ fn buildFn(cg: *CodeGen, decl: Tree.Node.Index) !void {
             const func_ty = func.qt.base(tree.comp).type.func;
             const id = cg.fn_ids.get(tree.tokSlice(func.name_tok)).?;
             cg.cur_fn = id;
-            cg.cur_ret_bits = if (func_ty.return_type.is(tree.comp, .void))
+            const returns_aggregate = !func_ty.return_type.is(tree.comp, .void) and
+                cg.isAggregate(func_ty.return_type);
+            cg.cur_ret_bits = if (func_ty.return_type.is(tree.comp, .void) or returns_aggregate)
                 0
             else
                 cg.widthOf(func_ty.return_type);
@@ -191,33 +205,57 @@ fn buildFn(cg: *CodeGen, decl: Tree.Node.Index) !void {
             cg.symbol_table.clearRetainingCapacity();
             try cg.symbol_table.append(cg.gpa, .{});
             cg.node_to_class.clearRetainingCapacity();
+            cg.returns.clearRetainingCapacity();
+            cg.clearLabels();
+            cg.mem_vars.clearRetainingCapacity();
+            cg.addressed.clearRetainingCapacity();
+
+            const body = func.body.?;
+            try cg.scanAddressed(body);
 
             // param(id, 0) is the input memory state (width 0); arguments follow at 1..n.
             cg.mem_state = try cg.oir.add(.param(id, 0, 0));
             for (func_ty.params, 0..) |param, i| {
                 const name = cg.tree.tokSlice(param.name_tok);
-                const node = try cg.oir.add(.param(id, @intCast(i + 1), cg.widthOf(param.qt)));
-
-                const latest = &cg.symbol_table.items[cg.symbol_table.items.len - 1];
-                try latest.put(cg.gpa, name, node);
+                if (cg.isAggregate(param.qt)) {
+                    // Binds the name to the pointer of the copy the caller passed in.
+                    const ptr = try cg.oir.add(.param(id, @intCast(i + 1), 64));
+                    try cg.bindVar(name, ptr);
+                    const elem_bits: u16 = if (param.qt.get(tree.comp, .array)) |arr| cg.widthOf(arr.elem) else 0;
+                    try cg.mem_vars.put(cg.gpa, name, .{ .bits = elem_bits, .aggregate = true });
+                    continue;
+                }
+                const incoming = try cg.oir.add(.param(id, @intCast(i + 1), cg.widthOf(param.qt)));
+                if (cg.addressed.contains(name)) {
+                    const bits = cg.widthOf(param.qt);
+                    const id_a = cg.next_alloca;
+                    cg.next_alloca += 1;
+                    const addr = try cg.oir.add(.alloca(id_a, @intCast(param.qt.sizeof(tree.comp)), param.qt.alignof(tree.comp)));
+                    cg.mem_state = try cg.oir.add(.store(cg.mem_state, addr, incoming, bits));
+                    try cg.bindVar(name, addr);
+                    try cg.mem_vars.put(cg.gpa, name, .{ .bits = bits, .aggregate = false });
+                } else {
+                    try cg.bindVar(name, incoming);
+                }
             }
+
+            cg.cur_sret = if (returns_aggregate)
+                try cg.oir.add(.param(id, @intCast(func_ty.params.len + 1), 64))
+            else
+                null;
 
             // The function body produces an optional return value plus the final
             // memory state.
             cg.active = try cg.oir.add(.constant(1));
-            cg.returns.clearRetainingCapacity();
-            cg.clearLabels();
-            cg.mem_vars.clearRetainingCapacity();
-            const body = func.body.?;
             const falls_through = switch (body.get(tree)) {
                 .compound_stmt => |c| try cg.buildSeq(c.body),
                 else => try cg.buildSeq(&.{body}),
             };
-            const is_void = func_ty.return_type.is(tree.comp, .void);
+            const produces_value = !func_ty.return_type.is(tree.comp, .void) and !returns_aggregate;
 
-            // A fall-through end of the body is an implicit `return`.
             if (falls_through) {
-                const value: ?Oir.Class.Index = if (is_void) null else try cg.oir.add(.constant(0));
+                const value: ?Oir.Class.Index =
+                    if (produces_value) try cg.oir.add(.constant(0)) else null;
                 try cg.returns.append(cg.gpa, .{
                     .pred = cg.active,
                     .mem = cg.mem_state,
@@ -229,7 +267,7 @@ fn buildFn(cg: *CodeGen, decl: Tree.Node.Index) !void {
             var results: std.ArrayList(Oir.Class.Index) = .empty;
             defer results.deinit(cg.gpa);
             try results.append(cg.gpa, mem);
-            if (!is_void) try results.append(cg.gpa, value.?);
+            if (produces_value) try results.append(cg.gpa, value.?);
 
             const span = try cg.oir.listToSpan(results.items);
             const lambda = try cg.oir.add(.lambda(id, @intCast(func_ty.params.len), span));
@@ -268,7 +306,10 @@ fn buildStmt(cg: *CodeGen, stmt: Tree.Node.Index) Error!bool {
     switch (stmt.get(tree)) {
         .return_stmt => |ret| {
             const value: ?Oir.Class.Index = switch (ret.operand) {
-                .expr => |idx| try cg.buildExpr(idx),
+                .expr => |idx| if (cg.cur_sret) |sret| copy: {
+                    try cg.copyAggregate(sret, try cg.buildExpr(idx), idx.qt(tree));
+                    break :copy null;
+                } else try cg.buildExpr(idx),
                 .none, .implicit => null,
             };
             const r: Return = .{ .pred = cg.active, .mem = cg.mem_state, .value = value };
@@ -313,13 +354,16 @@ fn buildStmt(cg: *CodeGen, stmt: Tree.Node.Index) Error!bool {
             _ = try cg.buildAssign(assign.lhs, assign.rhs);
             return true;
         },
-        .call_expr => {
+        .call_expr,
+        .pre_inc_expr,
+        .pre_dec_expr,
+        .post_inc_expr,
+        .post_dec_expr,
+        => {
             _ = try cg.buildExpr(stmt);
             return true;
         },
-        .labeled_stmt => |l| {
-            return cg.buildStmt(l.body);
-        },
+        .labeled_stmt => |l| return cg.buildStmt(l.body),
         else => std.debug.panic("TODO: {s}", .{@tagName(node_tags[@intFromEnum(stmt)])}),
     }
 }
@@ -416,8 +460,6 @@ fn buildLoop(
 
     const loop_id = cg.next_loop;
     cg.next_loop += 1;
-
-    // TODO: terrible memory stuff, idc, cleanup later
 
     const inits = try gpa.alloc(Oir.Class.Index, count);
     defer gpa.free(inits);
@@ -942,7 +984,6 @@ fn buildExprStmt(cg: *CodeGen, expr: Tree.Node.Index) Error!void {
     }
 }
 
-/// Collects every in-scope variable name (innermost scope first, deduped).
 fn collectScopeNames(cg: *CodeGen, out: *std.ArrayList([]const u8)) !void {
     var i = cg.symbol_table.items.len;
     while (i > 0) {
@@ -962,10 +1003,35 @@ fn collectScopeNames(cg: *CodeGen, out: *std.ArrayList([]const u8)) !void {
 /// its SSA value in the symbol table.
 fn buildAssign(cg: *CodeGen, lhs: Tree.Node.Index, rhs: Tree.Node.Index) !Oir.Class.Index {
     const tree = cg.tree;
-    const node_tags = tree.nodes.items(.tag);
     const value = try cg.buildExpr(rhs);
 
+    const lhs_qt = lhs.qt(tree);
+    if (cg.isAggregate(lhs_qt)) {
+        const dst = try cg.buildAddress(lhs);
+        try cg.copyAggregate(dst, value, lhs_qt);
+        return value;
+    }
+
+    try cg.storeToScalarLval(lhs, value);
+    return value;
+}
+
+fn storeToScalarLval(cg: *CodeGen, lhs: Tree.Node.Index, value: Oir.Class.Index) Error!void {
+    const tree = cg.tree;
+    const node_tags = tree.nodes.items(.tag);
+
+    if (try cg.bitFieldOf(lhs)) |bf| {
+        try cg.storeBitField(bf, value);
+        return;
+    }
+
+    // Stores narrow the (possibly width-polymorphic) value to the destination
+    // width, so e.g. `s.f = 1` writes only the field's bytes rather than 8.
+    const store_bits = cg.widthOf(lhs.qt(tree));
+    const stored = try cg.coerceTo(value, store_bits);
+
     switch (lhs.get(tree)) {
+        // A scalar SSA local just rebinds its value; a stack-backed scalar is stored.
         .decl_ref_expr => |decl_ref| {
             const name = tree.tokSlice(decl_ref.name_tok);
             if (cg.mem_vars.get(name) == null) {
@@ -975,44 +1041,262 @@ fn buildAssign(cg: *CodeGen, lhs: Tree.Node.Index, rhs: Tree.Node.Index) !Oir.Cl
                     const latest = &cg.symbol_table.items[cg.symbol_table.items.len - 1];
                     try latest.put(cg.gpa, name, value);
                 }
-                return value;
+                return;
             }
             const address = try cg.buildAddress(lhs);
-            cg.mem_state = try cg.oir.add(.store(cg.mem_state, address, value));
+            cg.mem_state = try cg.oir.add(.store(cg.mem_state, address, stored, store_bits));
         },
-        .deref_expr, .array_access_expr, .paren_expr => {
+        // Stores through a computed address (`*p`, `a[i]`, `s.f`), advancing memory.
+        .deref_expr,
+        .array_access_expr,
+        .member_access_expr,
+        .member_access_ptr_expr,
+        .paren_expr,
+        => {
             const address = try cg.buildAddress(lhs);
-            cg.mem_state = try cg.oir.add(.store(cg.mem_state, address, value));
+            cg.mem_state = try cg.oir.add(.store(cg.mem_state, address, stored, store_bits));
         },
         else => std.debug.panic("TODO: assign to {s}", .{@tagName(node_tags[@intFromEnum(lhs)])}),
     }
-
-    return value;
 }
 
-/// Lowers a local variable declaration.
-/// We place arrays/structs into stack slots and bind scalars to an SSA value.
+fn buildIncDec(cg: *CodeGen, operand: Tree.Node.Index, is_inc: bool, is_pre: bool) Error!Oir.Class.Index {
+    const tree = cg.tree;
+    const qt = operand.qt(tree);
+
+    const old = try cg.buildLval(operand);
+
+    const step: i64 = if (qt.get(tree.comp, .pointer)) |p| @intCast(cg.sizeOfBytes(p.child)) else 1;
+    const delta = try cg.oir.add(.constant(step));
+    const new = try cg.oir.add(.binOp(if (is_inc) .add else .sub, old, delta));
+
+    try cg.storeToScalarLval(operand, new);
+    return if (is_pre) new else old;
+}
+
 fn buildVariable(cg: *CodeGen, variable: anytype) Error!void {
     const tree = cg.tree;
     const comp = cg.tree.comp;
     const ident = tree.tokSlice(variable.name_tok);
     const qt = variable.qt;
 
-    if (qt.get(comp, .array)) |arr| {
+    if (cg.isAggregate(qt)) {
         const total: u32 = @intCast(qt.sizeof(comp));
         const alignment: u32 = qt.alignof(comp);
-        const elem_bits = cg.widthOf(arr.elem);
+        const elem_bits: u16 = if (qt.get(comp, .array)) |arr| cg.widthOf(arr.elem) else 0;
         const id = cg.next_alloca;
         cg.next_alloca += 1;
         const addr = try cg.oir.add(.alloca(id, total, alignment));
         try cg.bindVar(ident, addr);
         try cg.mem_vars.put(cg.gpa, ident, .{ .bits = elem_bits, .aggregate = true });
-        if (variable.initializer) |init_node| try cg.buildArrayInit(addr, elem_bits, init_node);
+        if (variable.initializer) |init_node| try cg.buildAggregateInit(addr, qt, init_node);
+        return;
+    }
+
+    if (cg.addressed.contains(ident)) {
+        const bits = cg.widthOf(qt);
+        const id = cg.next_alloca;
+        cg.next_alloca += 1;
+        const addr = try cg.oir.add(.alloca(id, @intCast(qt.sizeof(comp)), qt.alignof(comp)));
+        try cg.bindVar(ident, addr);
+        try cg.mem_vars.put(cg.gpa, ident, .{ .bits = bits, .aggregate = false });
+        if (variable.initializer) |init_node| {
+            const v = try cg.coerceTo(try cg.buildExpr(init_node), bits);
+            cg.mem_state = try cg.oir.add(.store(cg.mem_state, addr, v, bits));
+        }
         return;
     }
 
     const rvalue = try cg.buildExpr(variable.initializer.?);
     try cg.bindVar(ident, rvalue);
+}
+
+fn scanAddressed(cg: *CodeGen, node: Tree.Node.Index) Error!void {
+    const tree = cg.tree;
+    switch (node.get(tree)) {
+        .addr_of_expr => |u| {
+            if (cg.lvalueName(u.operand)) |name| try cg.addressed.put(cg.gpa, name, {});
+            try cg.scanAddressed(u.operand);
+        },
+        .compound_stmt => |c| for (c.body) |s| try cg.scanAddressed(s),
+        .if_stmt => |i| {
+            try cg.scanAddressed(i.cond);
+            try cg.scanAddressed(i.then_body);
+            if (i.else_body) |e| try cg.scanAddressed(e);
+        },
+        .while_stmt => |w| {
+            try cg.scanAddressed(w.cond);
+            try cg.scanAddressed(w.body);
+        },
+        .do_while_stmt => |d| {
+            try cg.scanAddressed(d.cond);
+            try cg.scanAddressed(d.body);
+        },
+        .for_stmt => |f| {
+            switch (f.init) {
+                .decls => |ds| for (ds) |d| try cg.scanAddressed(d),
+                .expr => |m| if (m) |e| try cg.scanAddressed(e),
+            }
+            if (f.cond) |c| try cg.scanAddressed(c);
+            if (f.incr) |i| try cg.scanAddressed(i);
+            try cg.scanAddressed(f.body);
+        },
+        .switch_stmt => |s| {
+            try cg.scanAddressed(s.cond);
+            try cg.scanAddressed(s.body);
+        },
+        .case_stmt => |c| {
+            try cg.scanAddressed(c.body);
+        },
+        .default_stmt => |d| try cg.scanAddressed(d.body),
+        .labeled_stmt => |l| try cg.scanAddressed(l.body),
+        .return_stmt => |r| switch (r.operand) {
+            .expr => |e| try cg.scanAddressed(e),
+            else => {},
+        },
+        .variable => |v| if (v.initializer) |i| try cg.scanAddressed(i),
+        .assign_expr => |a| {
+            try cg.scanAddressed(a.lhs);
+            try cg.scanAddressed(a.rhs);
+        },
+        .call_expr => |c| {
+            try cg.scanAddressed(c.callee);
+            for (c.args) |a| try cg.scanAddressed(a);
+        },
+        .cast => |c| try cg.scanAddressed(c.operand),
+        .paren_expr,
+        .deref_expr,
+        .plus_expr,
+        .negate_expr,
+        .bit_not_expr,
+        .bool_not_expr,
+        .pre_inc_expr,
+        .pre_dec_expr,
+        .post_inc_expr,
+        .post_dec_expr,
+        => |u| try cg.scanAddressed(u.operand),
+        .array_access_expr => |acc| {
+            try cg.scanAddressed(acc.base);
+            try cg.scanAddressed(acc.index);
+        },
+        .member_access_expr, .member_access_ptr_expr => |m| try cg.scanAddressed(m.base),
+        .add_expr,
+        .sub_expr,
+        .mul_expr,
+        .div_expr,
+        .bit_and_expr,
+        .shl_expr,
+        .shr_expr,
+        .equal_expr,
+        .not_equal_expr,
+        .less_than_expr,
+        .less_than_equal_expr,
+        .greater_than_expr,
+        .greater_than_equal_expr,
+        => |b| {
+            try cg.scanAddressed(b.lhs);
+            try cg.scanAddressed(b.rhs);
+        },
+        else => {},
+    }
+}
+
+fn lvalueName(cg: *CodeGen, node: Tree.Node.Index) ?[]const u8 {
+    return switch (node.get(cg.tree)) {
+        .decl_ref_expr => |d| cg.tree.tokSlice(d.name_tok),
+        .paren_expr => |p| cg.lvalueName(p.operand),
+        else => null,
+    };
+}
+
+fn isAggregate(cg: *CodeGen, qt: aro.QualType) bool {
+    const comp = cg.tree.comp;
+    return qt.is(comp, .array) or qt.is(comp, .@"struct") or qt.is(comp, .@"union");
+}
+
+fn recordOf(cg: *CodeGen, qt: aro.QualType) aro.Type.Record {
+    return switch (qt.base(cg.tree.comp).type) {
+        .@"struct", .@"union" => |r| r,
+        else => std.debug.panic("not a record type", .{}),
+    };
+}
+
+fn fieldByteOffset(cg: *CodeGen, record_qt: aro.QualType, member_index: u32) u64 {
+    const field = cg.recordOf(record_qt).fields[member_index];
+    if (field.bit_width.unpack() != null) std.debug.panic("TODO: bit-field member", .{});
+    return field.layout.offset_bits / 8;
+}
+
+fn addByteOffset(cg: *CodeGen, base: Oir.Class.Index, byte_offset: u64) Error!Oir.Class.Index {
+    if (byte_offset == 0) return base;
+    return cg.oir.add(.binOp(.add, base, try cg.oir.add(.constant(@intCast(byte_offset)))));
+}
+
+const BitField = struct {
+    container: Oir.Class.Index,
+    cbits: u16,
+    shift: u6,
+    width: u16,
+    signed: bool,
+};
+
+fn makeBitField(cg: *CodeGen, struct_addr: Oir.Class.Index, record_qt: aro.QualType, member_index: u32) Error!BitField {
+    const field = cg.recordOf(record_qt).fields[member_index];
+    const width = field.bit_width.unpack().?;
+    const cbits = cg.widthOf(field.qt);
+    const off = field.layout.offset_bits;
+    const unit = off / cbits;
+    return .{
+        .container = try cg.addByteOffset(struct_addr, unit * (cbits / 8)),
+        .cbits = cbits,
+        .shift = @intCast(off - unit * cbits),
+        .width = @intCast(width),
+        .signed = !cg.unsignedQt(field.qt),
+    };
+}
+
+/// If `idx` is a member access naming a bit-field, returns its descriptor.
+fn bitFieldOf(cg: *CodeGen, idx: Tree.Node.Index) Error!?BitField {
+    const tree = cg.tree;
+    switch (idx.get(tree)) {
+        .member_access_expr => |m| {
+            const rec_qt = m.base.qt(tree);
+            if (cg.recordOf(rec_qt).fields[m.member_index].bit_width.unpack() == null) return null;
+            return try cg.makeBitField(try cg.buildAddress(m.base), rec_qt, m.member_index);
+        },
+        .member_access_ptr_expr => |m| {
+            const rec_qt = m.base.qt(tree).childType(tree.comp);
+            if (cg.recordOf(rec_qt).fields[m.member_index].bit_width.unpack() == null) return null;
+            return try cg.makeBitField(try cg.buildExpr(m.base), rec_qt, m.member_index);
+        },
+        .paren_expr => |p| return cg.bitFieldOf(p.operand),
+        else => return null,
+    }
+}
+
+fn widen64(cg: *CodeGen, value: Oir.Class.Index) Error!Oir.Class.Index {
+    if (cg.oir.typeOf(value) == 64) return value;
+    return cg.oir.add(.sext(value, 64));
+}
+
+fn loadBitField(cg: *CodeGen, bf: BitField) Error!Oir.Class.Index {
+    const raw = try cg.widen64(try cg.oir.add(.load(cg.mem_state, bf.container, bf.cbits)));
+    const left = try cg.oir.add(.constant(64 - @as(i64, bf.shift) - bf.width));
+    const right = try cg.oir.add(.constant(64 - @as(i64, bf.width)));
+    const hi = try cg.oir.add(.binOp(.shl, raw, left));
+    const ext = try cg.oir.add(.binOp(if (bf.signed) .sar else .shr, hi, right));
+    return cg.coerceTo(ext, bf.cbits);
+}
+
+fn storeBitField(cg: *CodeGen, bf: BitField, value: Oir.Class.Index) Error!void {
+    const field_mask: u64 = if (bf.width >= 64) ~@as(u64, 0) else (@as(u64, 1) << @intCast(bf.width)) - 1;
+    const old = try cg.widen64(try cg.oir.add(.load(cg.mem_state, bf.container, bf.cbits)));
+    const clear = try cg.oir.add(.constant(@bitCast(~(field_mask << bf.shift))));
+    const cleared = try cg.oir.add(.binOp(.@"and", old, clear));
+    const masked = try cg.oir.add(.binOp(.@"and", try cg.widen64(value), try cg.oir.add(.constant(@bitCast(field_mask)))));
+    const shifted = try cg.oir.add(.binOp(.shl, masked, try cg.oir.add(.constant(bf.shift))));
+    const merged = try cg.oir.add(.binOp(.@"or", cleared, shifted));
+    cg.mem_state = try cg.oir.add(.store(cg.mem_state, bf.container, merged, bf.cbits));
 }
 
 /// Binds `ident` to `value`, rebinding an existing scope entry or adding a new one.
@@ -1023,6 +1307,83 @@ fn bindVar(cg: *CodeGen, ident: []const u8, value: Oir.Class.Index) !void {
         const latest = &cg.symbol_table.items[cg.symbol_table.items.len - 1];
         try latest.put(cg.gpa, ident, value);
     }
+}
+
+fn buildAggregateInit(cg: *CodeGen, base: Oir.Class.Index, qt: aro.QualType, init_node: Tree.Node.Index) Error!void {
+    switch (init_node.get(cg.tree)) {
+        .array_init_expr => return cg.buildArrayInit(base, cg.widthOf(qt.get(cg.tree.comp, .array).?.elem), init_node),
+        .struct_init_expr => return cg.buildStructInit(base, qt, init_node),
+        else => {
+            const src = try cg.buildExpr(init_node);
+            return cg.copyAggregate(base, src, qt);
+        },
+    }
+}
+
+fn copyToTemp(cg: *CodeGen, src: Oir.Class.Index, qt: aro.QualType) Error!Oir.Class.Index {
+    const id = cg.next_alloca;
+    cg.next_alloca += 1;
+    const tmp = try cg.oir.add(.alloca(id, @intCast(qt.sizeof(cg.tree.comp)), qt.alignof(cg.tree.comp)));
+    try cg.copyAggregate(tmp, src, qt);
+    return tmp;
+}
+
+fn copyAggregate(cg: *CodeGen, dst: Oir.Class.Index, src: Oir.Class.Index, qt: aro.QualType) Error!void {
+    var off: u64 = 0;
+    var remaining: u64 = qt.sizeof(cg.tree.comp);
+    while (remaining > 0) {
+        const bytes: u16 = if (remaining >= 8) 8 else if (remaining >= 4) 4 else if (remaining >= 2) 2 else 1;
+        const bits: u16 = bytes * 8;
+        const v = try cg.oir.add(.load(cg.mem_state, try cg.addByteOffset(src, off), bits));
+        cg.mem_state = try cg.oir.add(.store(cg.mem_state, try cg.addByteOffset(dst, off), v, bits));
+        off += bytes;
+        remaining -= bytes;
+    }
+}
+
+/// Lowers a `struct`/`union` initializer, storing each field at its offset.
+fn buildStructInit(cg: *CodeGen, base: Oir.Class.Index, record_qt: aro.QualType, init_node: Tree.Node.Index) Error!void {
+    const tree = cg.tree;
+    switch (init_node.get(tree)) {
+        .struct_init_expr => |ci| {
+            const rec = cg.recordOf(record_qt);
+            for (ci.items, 0..) |item, i| {
+                const field = rec.fields[i];
+                if (field.bit_width.unpack() != null) {
+                    const bf = try cg.makeBitField(base, record_qt, @intCast(i));
+                    const v = switch (item.get(tree)) {
+                        .default_init_expr => try cg.oir.add(.constant(0)),
+                        else => try cg.buildExpr(item),
+                    };
+                    try cg.storeBitField(bf, v);
+                    continue;
+                }
+                const off = field.layout.offset_bits / 8;
+                const addr = try cg.addByteOffset(base, off);
+                const fbits = cg.widthOf(field.qt);
+                switch (item.get(tree)) {
+                    .default_init_expr => {
+                        const v = try cg.coerceTo(try cg.oir.add(.constant(0)), fbits);
+                        cg.mem_state = try cg.oir.add(.store(cg.mem_state, addr, v, fbits));
+                    },
+                    else => {
+                        if (cg.isAggregate(field.qt)) {
+                            try cg.buildAggregateInit(addr, field.qt, item);
+                        } else {
+                            const v = try cg.coerceTo(try cg.buildExpr(item), fbits);
+                            cg.mem_state = try cg.oir.add(.store(cg.mem_state, addr, v, fbits));
+                        }
+                    },
+                }
+            }
+        },
+        else => std.debug.panic("TODO: struct initializer {s}", .{@tagName(init_node.get(tree))}),
+    }
+}
+
+fn coerceTo(cg: *CodeGen, value: Oir.Class.Index, bits: u16) Error!Oir.Class.Index {
+    if (cg.oir.typeOf(value) == bits) return value;
+    return cg.oir.add(.trunc(value, bits));
 }
 
 /// Lowers an array initializer by storing each element into the stack slot.
@@ -1063,7 +1424,7 @@ fn storeElem(cg: *CodeGen, base: Oir.Class.Index, elem_bits: u16, index: u64, va
     else
         try cg.oir.add(.binOp(.add, base, try cg.oir.add(.constant(@intCast(off)))));
     const v = if (cg.oir.typeOf(value) == elem_bits) value else try cg.oir.add(.trunc(value, elem_bits));
-    cg.mem_state = try cg.oir.add(.store(cg.mem_state, addr, v));
+    cg.mem_state = try cg.oir.add(.store(cg.mem_state, addr, v, elem_bits));
 }
 
 fn buildExpr(cg: *CodeGen, expr: Tree.Node.Index) Error!Oir.Class.Index {
@@ -1079,6 +1440,10 @@ fn buildExpr(cg: *CodeGen, expr: Tree.Node.Index) Error!Oir.Class.Index {
     // normalizes the `call_expr`/`call_expr_one` raw tags into one `.call_expr`.
     switch (node_tags[@intFromEnum(expr)]) {
         .call_expr, .call_expr_one => return cg.buildCall(expr.get(tree).call_expr),
+        .pre_inc_expr => return cg.buildIncDec(expr.get(tree).pre_inc_expr.operand, true, true),
+        .pre_dec_expr => return cg.buildIncDec(expr.get(tree).pre_dec_expr.operand, false, true),
+        .post_inc_expr => return cg.buildIncDec(expr.get(tree).post_inc_expr.operand, true, false),
+        .post_dec_expr => return cg.buildIncDec(expr.get(tree).post_dec_expr.operand, false, false),
         else => {},
     }
 
@@ -1131,6 +1496,13 @@ fn buildExpr(cg: *CodeGen, expr: Tree.Node.Index) Error!Oir.Class.Index {
         .bool_not_expr => |un| try cg.notPred(try cg.buildExpr(un.operand)),
         .addr_of_expr => |un| try cg.buildAddress(un.operand),
         .paren_expr => |p| try cg.buildExpr(p.operand),
+        .decl_ref_expr,
+        .member_access_expr,
+        .member_access_ptr_expr,
+        .deref_expr,
+        .array_access_expr,
+        .compound_literal_expr,
+        => try cg.buildLval(expr),
         .int_literal => unreachable, // handled in the value_map above
         .cast => |cast| try cg.buildCast(cast),
         else => std.debug.panic("TODO: {s}", .{@tagName(node_tags[@intFromEnum(expr)])}),
@@ -1147,23 +1519,36 @@ fn buildCall(cg: *CodeGen, call: Tree.Node.Call) Error!Oir.Class.Index {
     const callee = cg.fn_ids.get(cg.calleeName(call.callee)) orelse
         std.debug.panic("TODO: call to unknown function", .{});
 
+    const returns_aggregate = !call.qt.is(cg.tree.comp, .void) and cg.isAggregate(call.qt);
+
     var body: std.ArrayList(Oir.Class.Index) = .empty;
     defer body.deinit(cg.gpa);
     try body.append(cg.gpa, undefined); // slot 0 reserved for the memory state
-    for (call.args) |arg| try body.append(cg.gpa, try cg.buildExpr(arg));
-    body.items[0] = cg.mem_state; // captured after args are evaluated
+    for (call.args) |arg| {
+        const aqt = arg.qt(cg.tree);
+        if (cg.isAggregate(aqt)) {
+            try body.append(cg.gpa, try cg.copyToTemp(try cg.buildExpr(arg), aqt));
+        } else {
+            try body.append(cg.gpa, try cg.buildExpr(arg));
+        }
+    }
+    const sret: ?Oir.Class.Index = if (returns_aggregate) sret: {
+        const id_a = cg.next_alloca;
+        cg.next_alloca += 1;
+        const slot = try cg.oir.add(.alloca(id_a, @intCast(call.qt.sizeof(cg.tree.comp)), call.qt.alignof(cg.tree.comp)));
+        try body.append(cg.gpa, slot);
+        break :sret slot;
+    } else null;
+    body.items[0] = cg.mem_state; // captured after args (and their copies) are evaluated
 
     const span = try cg.oir.listToSpan(body.items);
     const node = try cg.oir.add(.call(callee, span));
-    const ret_bits: u16 = if (call.qt.is(cg.tree.comp, .void)) 0 else cg.widthOf(call.qt);
     cg.mem_state = try cg.oir.add(.project(0, node, .data, 0));
+    if (sret) |slot| return slot;
+    const ret_bits: u16 = if (call.qt.is(cg.tree.comp, .void)) 0 else cg.widthOf(call.qt);
     return cg.oir.add(.project(1, node, .data, ret_bits));
 }
 
-/// Lowers an aro `cast` node. Integer conversions become explicit `trunc`/`sext`/
-/// `zext` per the source/target widths and the source signedness (C semantics are
-/// emulated here; the IR itself is C-agnostic).
-///
 /// Lowers the aro `cast` into `trunc`/`sext`/`zext` for the target.
 fn buildCast(cg: *CodeGen, cast: Tree.Node.Cast) Error!Oir.Class.Index {
     const tree = cg.tree;
@@ -1251,14 +1636,28 @@ fn buildLval(cg: *CodeGen, idx: Tree.Node.Index) Error!Oir.Class.Index {
             }
             @panic("TODO: unknown identifier");
         },
-        // `*p` / `a[i]` load from a computed address. Never memoized: the value
-        // depends on the current memory state, which a later store may advance.
-        .deref_expr, .array_access_expr => {
+        .deref_expr, .array_access_expr, .member_access_expr, .member_access_ptr_expr => {
+            if (try cg.bitFieldOf(idx)) |bf| return cg.loadBitField(bf);
             const address = try cg.buildAddress(idx);
-            const bits = cg.widthOf(idx.qt(tree));
-            return cg.oir.add(.load(cg.mem_state, address, bits));
+            const fqt = idx.qt(tree);
+            if (cg.isAggregate(fqt)) return address;
+            return cg.oir.add(.load(cg.mem_state, address, cg.widthOf(fqt)));
         },
         .paren_expr => |p| return cg.buildLval(p.operand),
+        .compound_literal_expr => |lit| {
+            const comp = cg.tree.comp;
+            const id = cg.next_alloca;
+            cg.next_alloca += 1;
+            const slot = try cg.oir.add(.alloca(id, @intCast(lit.qt.sizeof(comp)), lit.qt.alignof(comp)));
+            if (cg.isAggregate(lit.qt)) {
+                try cg.buildAggregateInit(slot, lit.qt, lit.initializer);
+                return slot;
+            }
+            const bits = cg.widthOf(lit.qt);
+            const v = try cg.coerceTo(try cg.buildExpr(lit.initializer), bits);
+            cg.mem_state = try cg.oir.add(.store(cg.mem_state, slot, v, bits));
+            return cg.oir.add(.load(cg.mem_state, slot, bits));
+        },
         else => std.debug.panic("TODO: lval {s}", .{@tagName(idx.get(tree))}),
     }
 }
@@ -1280,7 +1679,20 @@ fn buildAddress(cg: *CodeGen, idx: Tree.Node.Index) Error!Oir.Class.Index {
             const index = try cg.buildExpr(acc.index);
             return cg.scaleAdd(base, index, cg.sizeOfBytes(idx.qt(tree)));
         },
+        // `s.f`, the struct is an lvalue
+        .member_access_expr => |m| {
+            const base = try cg.buildAddress(m.base);
+            return cg.addByteOffset(base, cg.fieldByteOffset(m.base.qt(tree), m.member_index));
+        },
+        // `p->f`, the base is a pointer value
+        .member_access_ptr_expr => |m| {
+            const base = try cg.buildExpr(m.base);
+            const rec_qt = m.base.qt(tree).childType(cg.tree.comp);
+            return cg.addByteOffset(base, cg.fieldByteOffset(rec_qt, m.member_index));
+        },
         .paren_expr => |p| return cg.buildAddress(p.operand),
+        .compound_literal_expr => return cg.buildLval(idx),
+        .call_expr => return cg.buildExpr(idx),
         else => std.debug.panic("TODO: address of {s}", .{@tagName(idx.get(tree))}),
     }
 }
@@ -1382,6 +1794,7 @@ pub fn deinit(cg: *CodeGen, allocator: std.mem.Allocator) void {
     cg.clearLabels();
     cg.labels.deinit(allocator);
     cg.mem_vars.deinit(allocator);
+    cg.addressed.deinit(allocator);
     cg.frames.deinit(allocator);
     cg.fn_ids.deinit(allocator);
     cg.fn_names.deinit(allocator);
