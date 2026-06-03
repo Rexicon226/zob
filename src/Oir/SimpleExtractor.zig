@@ -126,7 +126,7 @@ fn extractClass(e: *SimpleExtractor, class_idx: Class.Index, recv: *Recursive) !
 
             const tuple = try e.extractClass(project.tuple, recv);
 
-            const new_node: Node = .project(project.index, tuple, project.type);
+            const new_node: Node = .project(project.index, tuple, project.type, project.bits);
             const new_node_idx = try recv.addNode(gpa, new_node);
             try e.map.put(gpa, class_idx, new_node_idx);
             return new_node_idx;
@@ -188,7 +188,7 @@ fn extractClass(e: *SimpleExtractor, class_idx: Class.Index, recv: *Recursive) !
         },
         .loopvar => {
             const lv = best_node.data.loopvar;
-            const new_node_idx = try recv.addNode(gpa, .loopvar(lv.loop, lv.index));
+            const new_node_idx = try recv.addNode(gpa, .loopvar(lv.loop, lv.index, lv.bits));
             try e.map.put(gpa, class_idx, new_node_idx);
             return new_node_idx;
         },
@@ -206,7 +206,7 @@ fn extractClass(e: *SimpleExtractor, class_idx: Class.Index, recv: *Recursive) !
         },
         .param => {
             const p = best_node.data.param;
-            const new_node_idx = try recv.addNode(gpa, .param(p.lambda, p.index));
+            const new_node_idx = try recv.addNode(gpa, .param(p.lambda, p.index, p.bits));
             try e.map.put(gpa, class_idx, new_node_idx);
             return new_node_idx;
         },
@@ -226,15 +226,18 @@ fn extractClass(e: *SimpleExtractor, class_idx: Class.Index, recv: *Recursive) !
         .cmp_eq,
         .cmp_gt,
         .cmp_lt,
+        .cmp_ult,
+        .cmp_ugt,
         .add,
         .sub,
         .mul,
         .@"and",
         .shl,
         .shr,
+        .sar,
         .div_trunc,
+        .udiv,
         .div_exact,
-        .load,
         => {
             const bin_op = best_node.data.bin_op;
 
@@ -246,7 +249,32 @@ fn extractClass(e: *SimpleExtractor, class_idx: Class.Index, recv: *Recursive) !
             try e.map.put(gpa, class_idx, new_node_idx);
             return new_node_idx;
         },
-        .constant => {
+        .trunc,
+        .sext,
+        .zext,
+        => {
+            const cast = best_node.data.cast;
+            const operand = try e.extractClass(cast.operand, recv);
+            const new_node: Node = switch (best_node.tag) {
+                .trunc => .trunc(operand, cast.bits),
+                .sext => .sext(operand, cast.bits),
+                .zext => .zext(operand, cast.bits),
+                else => unreachable,
+            };
+            const new_node_idx = try recv.addNode(gpa, new_node);
+            try e.map.put(gpa, class_idx, new_node_idx);
+            return new_node_idx;
+        },
+        .load => {
+            const load = best_node.data.load;
+            const mem_state = try e.extractClass(load.ops[0], recv);
+            const address = try e.extractClass(load.ops[1], recv);
+            const new_node: Node = .load(mem_state, address, load.bits);
+            const new_node_idx = try recv.addNode(gpa, new_node);
+            try e.map.put(gpa, class_idx, new_node_idx);
+            return new_node_idx;
+        },
+        .constant, .alloca => {
             const idx = try recv.addNode(gpa, best_node);
             try e.map.put(gpa, class_idx, idx);
             return idx;

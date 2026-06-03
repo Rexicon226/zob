@@ -66,6 +66,24 @@ const scratch_src1: Register = .t6;
 
 const slot_size = 8;
 
+fn mnemonic(op: Mir.BinOp, width: u16) []const u8 {
+    const w32 = width == 32;
+    return switch (op) {
+        .add => if (w32) "addw" else "add",
+        .sub => if (w32) "subw" else "sub",
+        .mul => if (w32) "mulw" else "mul",
+        .sll => if (w32) "sllw" else "sll",
+        .srl => if (w32) "srlw" else "srl",
+        .sra => if (w32) "sraw" else "sra",
+        .div => if (w32) "divw" else "div",
+        .divu => if (w32) "divuw" else "divu",
+        .@"and" => "and",
+        .xor => "xor",
+        .slt => "slt",
+        .sltu => "sltu",
+    };
+}
+
 pub fn isSaved(reg: Register) bool {
     return switch (reg) {
         .s2, .s3, .s4, .s5, .s6, .s7, .s8, .s9, .s10, .s11 => true,
@@ -90,7 +108,7 @@ pub fn generate(
         var mir = try Mir.build(gpa, recv, &sched);
         defer mir.deinit(gpa);
 
-        var regalloc = try RegAlloc.run(gpa, &mir, recv.nodes.items.len);
+        var regalloc = try RegAlloc.run(gpa, &mir, mir.num_vregs);
         defer regalloc.deinit(gpa);
 
         var emitter: Emitter = .{ .w = stream, .mir = &mir, .ra = &regalloc, .names = names };
@@ -146,21 +164,51 @@ const Emitter = struct {
                 try e.emitLine("li {t}, {d}", .{ dst, a.imm });
                 try e.finishDef(dst, slot);
             },
+            .frame_addr => |a| {
+                const dst, const slot = e.defReg(a.dst);
+                try e.emitLine("addi {t}, sp, {d}", .{ dst, e.allocaBase() + a.offset });
+                try e.finishDef(dst, slot);
+            },
             .un => |a| {
                 const src = try e.useReg(a.src, scratch_src0);
                 const dst, const slot = e.defReg(a.dst);
-                switch (a.op) {
-                    .load => try e.emitLine("lw {t}, 0({t})", .{ dst, src }),
-                    .store => try e.emitLine("sw {t}, 0({t})", .{ dst, src }),
-                    else => try e.emitLine("{s} {t}, {t}", .{ @tagName(a.op), dst, src }),
-                }
+                try e.emitLine("{s} {t}, {t}", .{ @tagName(a.op), dst, src });
                 try e.finishDef(dst, slot);
             },
             .bin => |a| {
                 const lhs = try e.useReg(a.lhs, scratch_src0);
                 const rhs = try e.useReg(a.rhs, scratch_src1);
                 const dst, const slot = e.defReg(a.dst);
-                try e.emitLine("{s} {t}, {t}, {t}", .{ @tagName(a.op), dst, lhs, rhs });
+                try e.emitLine("{s} {t}, {t}, {t}", .{ mnemonic(a.op, a.width), dst, lhs, rhs });
+                try e.finishDef(dst, slot);
+            },
+            .load => |a| {
+                const addr = try e.useReg(a.addr, scratch_src0);
+                const dst, const slot = e.defReg(a.dst);
+                const mn: []const u8 = switch (a.bits) {
+                    8 => "lb",
+                    16 => "lh",
+                    32 => "lw",
+                    else => "ld",
+                };
+                try e.emitLine("{s} {t}, 0({t})", .{ mn, dst, addr });
+                try e.finishDef(dst, slot);
+            },
+            .store => |a| {
+                const value = try e.useReg(a.value, scratch_src0);
+                const addr = try e.useReg(a.addr, scratch_src1);
+                const mn: []const u8 = switch (a.bits) {
+                    8 => "sb",
+                    16 => "sh",
+                    32 => "sw",
+                    else => "sd",
+                };
+                try e.emitLine("{s} {t}, 0({t})", .{ mn, value, addr });
+            },
+            .cast => |a| {
+                const src = try e.useReg(a.src, scratch_src0);
+                const dst, const slot = e.defReg(a.dst);
+                try e.emitCast(a.kind, dst, src, a.src_bits, a.dst_bits);
                 try e.finishDef(dst, slot);
             },
             .beqz => |a| {
@@ -202,7 +250,7 @@ const Emitter = struct {
         switch (e.ra.locs[@intFromEnum(v)]) {
             .reg => |r| return r,
             .spill => |slot| {
-                try e.emitLine("lw {t}, {d}(sp)", .{ scratch, e.spillOffset(slot) });
+                try e.emitLine("ld {t}, {d}(sp)", .{ scratch, e.spillOffset(slot) });
                 return scratch;
             },
         }
@@ -218,7 +266,33 @@ const Emitter = struct {
     }
 
     fn finishDef(e: *Emitter, dst: Register, slot: ?u32) !void {
-        if (slot) |s| try e.emitLine("sw {t}, {d}(sp)", .{ dst, e.spillOffset(s) });
+        if (slot) |s| try e.emitLine("sd {t}, {d}(sp)", .{ dst, e.spillOffset(s) });
+    }
+
+    fn emitCast(e: *Emitter, kind: Mir.CastKind, dst: Register, src: Register, src_bits: u16, dst_bits: u16) !void {
+        switch (kind) {
+            .sext => try e.emitLine("mv {t}, {t}", .{ dst, src }),
+            .trunc => switch (dst_bits) {
+                1 => try e.emitLine("andi {t}, {t}, 1", .{ dst, src }),
+                32 => try e.emitLine("sext.w {t}, {t}", .{ dst, src }),
+                64 => try e.emitLine("mv {t}, {t}", .{ dst, src }),
+                else => {
+                    const sh = 64 - dst_bits;
+                    try e.emitLine("slli {t}, {t}, {d}", .{ dst, src, sh });
+                    try e.emitLine("srai {t}, {t}, {d}", .{ dst, dst, sh });
+                },
+            },
+            .zext => switch (src_bits) {
+                1 => try e.emitLine("andi {t}, {t}, 1", .{ dst, src }),
+                8 => try e.emitLine("andi {t}, {t}, 255", .{ dst, src }),
+                64 => try e.emitLine("mv {t}, {t}", .{ dst, src }),
+                else => {
+                    const sh = 64 - src_bits;
+                    try e.emitLine("slli {t}, {t}, {d}", .{ dst, src, sh });
+                    try e.emitLine("srli {t}, {t}, {d}", .{ dst, dst, sh });
+                },
+            },
+        }
     }
 
     fn spillOffset(_: *Emitter, slot: u32) u64 {
@@ -234,10 +308,13 @@ const Emitter = struct {
         return (@as(u64, e.ra.num_spills) + e.ra.used_saved.len) * slot_size;
     }
 
-    fn frameSize(e: *Emitter) u64 {
+    fn allocaBase(e: *Emitter) u64 {
         const ra_slots: u64 = if (e.has_call) 1 else 0;
-        const bytes = (@as(u64, e.ra.num_spills) + e.ra.used_saved.len + ra_slots) * slot_size;
-        return std.mem.alignForward(u64, bytes, 16);
+        return (@as(u64, e.ra.num_spills) + e.ra.used_saved.len + ra_slots) * slot_size;
+    }
+
+    fn frameSize(e: *Emitter) u64 {
+        return std.mem.alignForward(u64, e.allocaBase() + e.mir.alloca_bytes, 16);
     }
 
     fn emitLine(e: *Emitter, comptime fmt: []const u8, args: anytype) !void {

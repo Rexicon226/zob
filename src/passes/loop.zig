@@ -309,7 +309,7 @@ fn evaluateConstantLoops(oir: *Oir) !bool {
         var changed = false;
         for (1..count) |s| {
             const cst = try oir.add(.constant(state[s]));
-            const proj = try oir.add(.project(@intCast(s), loop.class, .data));
+            const proj = try oir.add(.project(@intCast(s), loop.class, .data, oir.typeOf(loop.args[s])));
             if (try oir.@"union"(proj, cst)) changed = true;
         }
         if (changed) {
@@ -338,7 +338,7 @@ fn affineClosedForms(oir: *Oir) !bool {
                 .add, .sub => (try closedExit(oir, a.loop, s, a.steps, a.part, trip)) orelse
                     (try secondOrderExit(oir, a, s, trip_count)) orelse continue,
             };
-            const proj = try oir.add(.project(@intCast(s), a.loop.class, .data));
+            const proj = try oir.add(.project(@intCast(s), a.loop.class, .data, oir.typeOf(a.loop.args[s])));
             if (try oir.@"union"(proj, exit)) changed = true;
         }
         if (changed) {
@@ -441,7 +441,7 @@ fn symbolicClosedForms(oir: *Oir) !bool {
             else
                 (try closedExit(oir, a.loop, s, a.steps, a.part, ctrl.trip)) orelse continue;
             const g = try oir.add(.gamma(ctrl.entry, then_val, init_s));
-            const proj = try oir.add(.project(@intCast(s), a.loop.class, .data));
+            const proj = try oir.add(.project(@intCast(s), a.loop.class, .data, oir.typeOf(a.loop.args[s])));
             if (try oir.@"union"(proj, g)) changed = true;
         }
         if (changed) {
@@ -523,7 +523,8 @@ fn evalConst(
             const ops = node.data.bin_op;
             const a = (try evalConst(oir, ops[0], lv2slot, state, memo, depth + 1)) orelse break :v null;
             const b = (try evalConst(oir, ops[1], lv2slot, state, memo, depth + 1)) orelse break :v null;
-            break :v eval.binOp(node.tag, a, b);
+            const bits = oir.typeOfOpt(ops[0]) orelse oir.typeOfOpt(ops[1]) orelse 64;
+            break :v eval.binOp(node.tag, a, b, bits);
         } else null;
         if (value) |v| {
             try memo.put(oir.allocator, c, v);
@@ -657,8 +658,9 @@ fn eliminateDeadSlots(oir: *Oir) !bool {
 
         var did_union = false;
         for (kept.items, 0..) |orig, pos| {
-            const old_proj = try oir.add(.project(@intCast(orig), loop.class, .data));
-            const new_proj = try oir.add(.project(@intCast(pos), new_theta, .data));
+            const bits = oir.typeOf(loop.args[orig]);
+            const old_proj = try oir.add(.project(@intCast(orig), loop.class, .data, bits));
+            const new_proj = try oir.add(.project(@intCast(pos), new_theta, .data, bits));
             if (try oir.@"union"(old_proj, new_proj)) did_union = true;
         }
         if (did_union) {

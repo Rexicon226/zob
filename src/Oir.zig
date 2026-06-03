@@ -111,10 +111,22 @@ pub const NodeContext = struct {
             .project => |p| {
                 if (p.index != b.data.project.index) return false;
                 if (p.type != b.data.project.type) return false;
+                if (p.bits != b.data.project.bits) return false;
             },
             .loopvar => |p| {
                 return p.loop == b.data.loopvar.loop and
-                    p.index == b.data.loopvar.index;
+                    p.index == b.data.loopvar.index and
+                    p.bits == b.data.loopvar.bits;
+            },
+            .cast => |p| {
+                if (p.bits != b.data.cast.bits) return false;
+            },
+            .load => |p| {
+                if (p.bits != b.data.load.bits) return false;
+            },
+            .alloca => |p| {
+                // Unique allocation id: distinct allocas never compare equal.
+                return p.id == b.data.alloca.id;
             },
             .loop => |p| {
                 if (p.id != b.data.loop.id) return false;
@@ -125,7 +137,8 @@ pub const NodeContext = struct {
                 return p.id == b.data.lambda.id;
             },
             .param => |p| {
-                return p.lambda == b.data.param.lambda and p.index == b.data.param.index;
+                return p.lambda == b.data.param.lambda and p.index == b.data.param.index and
+                    p.bits == b.data.param.bits;
             },
             .call => |p| {
                 if (p.callee != b.data.call.callee) return false;
@@ -214,20 +227,33 @@ pub const Node = struct {
         mul,
         shl,
         shr,
+        sar,
         div_trunc,
+        udiv,
         div_exact,
 
-        // Compare
         cmp_eq,
         cmp_lt,
         cmp_gt,
+        cmp_ult,
+        cmp_ugt,
 
-        /// Memory load. Uses the `bin_op` payload `(mem_state, address)` and produces
+        /// Truncate to a narrower width (keeps the low bits).
+        trunc,
+        /// Sign-extend to a wider width.
+        sext,
+        /// Zero-extend to a wider width.
+        zext,
+
+        /// Memory load. Uses the `load` payload `(mem_state, address)` and produces
         /// the loaded value. Takes the memory state purely to order it against stores.
         load,
-        /// Memory store. Uses the `tri_op` payload `(mem_state, address, value)` and
+        /// Memory store. Uses the `store` payload `(mem_state, address, value)` and
         /// produces a new memory state.
         store,
+        /// Allocates a unique stack slot and produces its address.
+        /// Uses the `alloca` payload `(id, size, align)`.
+        alloca,
 
         pub fn isCanonical(tag: Tag) bool {
             return switch (tag) {
@@ -271,8 +297,18 @@ pub const Node = struct {
                 => .call,
                 .param,
                 => .param,
+                .trunc,
+                .sext,
+                .zext,
+                => .cast,
+                .load,
+                => .load,
+                .alloca,
+                => .alloca,
                 .cmp_gt,
                 .cmp_lt,
+                .cmp_ult,
+                .cmp_ugt,
                 .cmp_eq,
                 .@"and",
                 .add,
@@ -280,9 +316,10 @@ pub const Node = struct {
                 .mul,
                 .shl,
                 .shr,
+                .sar,
                 .div_trunc,
+                .udiv,
                 .div_exact,
-                .load,
                 => .bin_op,
             };
         }
@@ -304,6 +341,25 @@ pub const Node = struct {
         lambda: Lambda,
         call: Call,
         param: Param,
+        cast: Cast,
+        load: Load,
+        alloca: Alloca,
+    };
+
+    pub const Alloca = struct {
+        id: u32,
+        size: u32,
+        @"align": u32,
+    };
+
+    pub const Cast = struct {
+        operand: Class.Index,
+        bits: u16,
+    };
+
+    pub const Load = struct {
+        ops: [2]Class.Index,
+        bits: u16,
     };
 
     pub const Lambda = struct {
@@ -331,6 +387,7 @@ pub const Node = struct {
     pub const Param = struct {
         lambda: u32,
         index: u32,
+        bits: u16,
     };
 
     /// Payload for `theta`. `body` holds, in order: the N loop-arg classes,
@@ -362,6 +419,7 @@ pub const Node = struct {
     pub const Loopvar = struct {
         loop: u32,
         index: u32,
+        bits: u16,
     };
 
     /// A span in the Oir "extra" array.
@@ -380,6 +438,7 @@ pub const Node = struct {
         tuple: Class.Index,
         index: u32,
         type: Type,
+        bits: u16,
     };
 
     pub fn init(comptime tag: Tag, payload: anytype) Node {
@@ -404,10 +463,12 @@ pub const Node = struct {
     pub fn operands(node: *const Node, repr: anytype) []const Class.Index {
         if (node.tag == .start) return &.{}; // no real operands
         return switch (node.data) {
-            .none, .constant, .loopvar, .param => &.{},
+            .none, .constant, .loopvar, .param, .alloca => &.{},
             .bin_op => |*bin_op| bin_op,
             .tri_op => |*tri_op| tri_op,
             .un_op => |*un_op| un_op[0..1],
+            .cast => |*c| (&c.operand)[0..1],
+            .load => |*l| &l.ops,
             .project => |*proj| (&proj.tuple)[0..1],
             .list => |span| @ptrCast(repr.extra.items[span.start..span.end]),
             .loop => |loop| @ptrCast(repr.extra.items[loop.body.start..loop.body.end]),
@@ -419,10 +480,12 @@ pub const Node = struct {
     pub fn mutableOperands(node: *Node, repr: anytype) []Class.Index {
         if (node.tag == .start) return &.{}; // no real operands
         return switch (node.data) {
-            .none, .constant, .loopvar, .param => &.{},
+            .none, .constant, .loopvar, .param, .alloca => &.{},
             .bin_op => |*bin_op| bin_op,
             .tri_op => |*tri_op| tri_op,
             .un_op => |*un_op| un_op[0..1],
+            .cast => |*c| (&c.operand)[0..1],
+            .load => |*l| &l.ops,
             .project => |*proj| (&proj.tuple)[0..1],
             .list => |span| @ptrCast(repr.extra.items[span.start..span.end]),
             .loop => |loop| @ptrCast(repr.extra.items[loop.body.start..loop.body.end]),
@@ -439,19 +502,27 @@ pub const Node = struct {
             .cmp_gt,
             .cmp_eq,
             .cmp_lt,
+            .cmp_ult,
+            .cmp_ugt,
             .@"and",
             .add,
             .sub,
             .mul,
             .shl,
             .shr,
+            .sar,
             .div_trunc,
+            .udiv,
             .div_exact,
+            .trunc,
+            .sext,
+            .zext,
             .gamma,
             .theta,
             .loopvar,
             .call,
             .param,
+            .alloca,
             => .data,
             .start,
             .ret,
@@ -489,14 +560,28 @@ pub const Node = struct {
         return .{ .tag = .ret, .data = .{ .list = results } };
     }
 
-    /// Memory load: `(mem_state, address)` -> loaded value.
-    pub fn load(mem_state: Class.Index, address: Class.Index) Node {
-        return binOp(.load, mem_state, address);
+    /// Memory load: `(mem_state, address)` -> loaded value of width `bits`.
+    pub fn load(mem_state: Class.Index, address: Class.Index, bits: u16) Node {
+        return .{ .tag = .load, .data = .{ .load = .{ .ops = .{ mem_state, address }, .bits = bits } } };
+    }
+
+    pub fn trunc(operand: Class.Index, bits: u16) Node {
+        return .{ .tag = .trunc, .data = .{ .cast = .{ .operand = operand, .bits = bits } } };
+    }
+    pub fn sext(operand: Class.Index, bits: u16) Node {
+        return .{ .tag = .sext, .data = .{ .cast = .{ .operand = operand, .bits = bits } } };
+    }
+    pub fn zext(operand: Class.Index, bits: u16) Node {
+        return .{ .tag = .zext, .data = .{ .cast = .{ .operand = operand, .bits = bits } } };
     }
 
     /// Memory store: `(mem_state, address, value)` -> new memory state.
     pub fn store(mem_state: Class.Index, address: Class.Index, value: Class.Index) Node {
         return .{ .tag = .store, .data = .{ .tri_op = .{ mem_state, address, value } } };
+    }
+
+    pub fn alloca(id: u32, size: u32, alignment: u32) Node {
+        return .{ .tag = .alloca, .data = .{ .alloca = .{ .id = id, .size = size, .@"align" = alignment } } };
     }
 
     /// Conditional: selects `then` when `pred` is non-zero, else `els`.
@@ -507,27 +592,28 @@ pub const Node = struct {
     pub fn theta(id: u32, count: u32, body: Span) Node {
         return .{ .tag = .theta, .data = .{ .loop = .{ .id = id, .count = count, .body = body } } };
     }
-    pub fn loopvar(id: u32, index: u32) Node {
-        return .{ .tag = .loopvar, .data = .{ .loopvar = .{ .loop = id, .index = index } } };
+    pub fn loopvar(id: u32, index: u32, bits: u16) Node {
+        return .{ .tag = .loopvar, .data = .{ .loopvar = .{ .loop = id, .index = index, .bits = bits } } };
     }
 
     pub fn lambda(id: u32, params: u32, body: Span) Node {
         return .{ .tag = .lambda, .data = .{ .lambda = .{ .id = id, .params = params, .body = body } } };
     }
-    pub fn param(id: u32, index: u32) Node {
-        return .{ .tag = .param, .data = .{ .param = .{ .lambda = id, .index = index } } };
+    pub fn param(id: u32, index: u32, bits: u16) Node {
+        return .{ .tag = .param, .data = .{ .param = .{ .lambda = id, .index = index, .bits = bits } } };
     }
     pub fn call(callee: u32, body: Span) Node {
         return .{ .tag = .call, .data = .{ .call = .{ .callee = callee, .body = body } } };
     }
 
-    pub fn project(index: u32, tuple: Class.Index, ty: Type) Node {
+    pub fn project(index: u32, tuple: Class.Index, ty: Type, bits: u16) Node {
         return .{
             .tag = .project,
             .data = .{ .project = .{
                 .index = index,
                 .tuple = tuple,
                 .type = ty,
+                .bits = bits,
             } },
         };
     }
@@ -747,6 +833,48 @@ pub fn getClassType(oir: *const Oir, idx: Class.Index) Node.Type {
     const class = oir.classes.get(idx).?;
     const first = class.bag.items[0];
     return oir.getNode(first).nodeType();
+}
+
+pub fn typeOf(oir: *const Oir, idx: Class.Index) u16 {
+    return oir.typeOfDepth(idx, 0) orelse 64;
+}
+pub fn typeOfOpt(oir: *const Oir, idx: Class.Index) ?u16 {
+    return oir.typeOfDepth(idx, 0);
+}
+
+fn typeOfDepth(oir: *const Oir, idx: Class.Index, depth: u8) ?u16 {
+    if (depth > 32) return null;
+    const class = oir.classes.get(oir.union_find.find(idx)) orelse return null;
+    for (class.bag.items) |node_idx| {
+        const node = oir.getNode(node_idx);
+        switch (node.tag) {
+            .param => return node.data.param.bits,
+            .loopvar => return node.data.loopvar.bits,
+            .project => return node.data.project.bits,
+            .load => return node.data.load.bits,
+            .trunc, .sext, .zext => return node.data.cast.bits,
+            .cmp_eq, .cmp_lt, .cmp_gt, .cmp_ult, .cmp_ugt => return 1,
+            .alloca => return 64, // TODO: depends on the target
+            else => {},
+        }
+    }
+    for (class.bag.items) |node_idx| {
+        const node = oir.getNode(node_idx);
+        switch (node.tag) {
+            .add, .sub, .mul, .@"and", .shl, .shr, .sar, .div_trunc, .udiv, .div_exact => {
+                const ops = node.data.bin_op;
+                if (oir.typeOfDepth(ops[0], depth + 1)) |w| return w;
+                if (oir.typeOfDepth(ops[1], depth + 1)) |w| return w;
+            },
+            .gamma => {
+                const t = node.data.tri_op;
+                if (oir.typeOfDepth(t[1], depth + 1)) |w| return w;
+                if (oir.typeOfDepth(t[2], depth + 1)) |w| return w;
+            },
+            else => {},
+        }
+    }
+    return null;
 }
 
 /// Adds an ENode to the EGraph, giving the node its own class.

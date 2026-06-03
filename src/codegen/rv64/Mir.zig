@@ -22,24 +22,31 @@ pub const BinOp = enum {
     @"and",
     sll,
     srl,
+    sra,
     div,
+    divu,
     xor,
     slt,
+    sltu,
 };
 
 pub const UnOp = enum {
     seqz,
-    load,
-    store,
     mv,
 };
+
+pub const CastKind = enum { trunc, sext, zext };
 
 // TODO: uhh, this is ugly obviously,
 // will use a real Mir i wrote for riscv2.0 in Zig here prob
 pub const Inst = union(enum) {
-    bin: struct { op: BinOp, dst: VReg, lhs: VReg, rhs: VReg },
+    bin: struct { op: BinOp, dst: VReg, lhs: VReg, rhs: VReg, width: u16 },
     un: struct { op: UnOp, dst: VReg, src: VReg },
+    cast: struct { kind: CastKind, dst: VReg, src: VReg, src_bits: u16, dst_bits: u16 },
+    load: struct { dst: VReg, addr: VReg, bits: u16 },
+    store: struct { value: VReg, addr: VReg, bits: u16 },
     li: struct { dst: VReg, imm: i64 },
+    frame_addr: struct { dst: VReg, offset: u32 },
     beqz: struct { src: VReg, target: Label },
     j: Label,
     label: Label,
@@ -56,17 +63,23 @@ pub const Inst = union(enum) {
     /// Calls `f(ctx, vreg)` for each vreg this instruction defines.
     pub fn forEachDef(inst: Inst, ctx: anytype, comptime f: fn (@TypeOf(ctx), VReg) void) void {
         switch (inst) {
-            inline .arg, .li, .bin, .un => |p| f(ctx, p.dst),
+            inline .arg, .li, .frame_addr, .bin, .un, .cast, .load => |p| f(ctx, p.dst),
             .call => |p| f(ctx, p.dst),
-            .beqz, .j, .label, .set_ret, .set_arg, .ret => {},
+            .store, .beqz, .j, .label, .set_ret, .set_arg, .ret => {},
         }
     }
 
     /// Calls `f(ctx, vreg)` for each vreg this instruction uses.
     pub fn forEachUse(inst: Inst, ctx: anytype, comptime f: fn (@TypeOf(ctx), VReg) void) void {
         switch (inst) {
-            .arg, .li, .j, .label, .ret, .call => {},
+            .arg, .li, .frame_addr, .j, .label, .ret, .call => {},
             .un => |p| f(ctx, p.src),
+            .cast => |p| f(ctx, p.src),
+            .load => |p| f(ctx, p.addr),
+            .store => |p| {
+                f(ctx, p.value);
+                f(ctx, p.addr);
+            },
             .beqz => |p| f(ctx, p.src),
             .set_ret => |v| f(ctx, v),
             .set_arg => |p| f(ctx, p.src),
@@ -77,28 +90,25 @@ pub const Inst = union(enum) {
         }
     }
 
-    fn xor(dst: VReg, lhs: VReg, rhs: VReg) Inst {
-        return .{ .bin = .{ .op = .xor, .dst = dst, .lhs = lhs, .rhs = rhs } };
+    fn binOp(op: BinOp, dst: VReg, lhs: VReg, rhs: VReg, width: u16) Inst {
+        return .{ .bin = .{ .op = op, .dst = dst, .lhs = lhs, .rhs = rhs, .width = width } };
     }
-    fn slt(dst: VReg, lhs: VReg, rhs: VReg) Inst {
-        return .{ .bin = .{ .op = .slt, .dst = dst, .lhs = lhs, .rhs = rhs } };
-    }
-
     fn seqz(dst: VReg, src: VReg) Inst {
         return .{ .un = .{ .op = .seqz, .dst = dst, .src = src } };
     }
     fn mv(dst: VReg, src: VReg) Inst {
         return .{ .un = .{ .op = .mv, .dst = dst, .src = src } };
     }
-    fn load(dst: VReg, src: VReg) Inst {
-        return .{ .un = .{ .op = .load, .dst = dst, .src = src } };
-    }
-    fn store(dst: VReg, src: VReg) Inst {
-        return .{ .un = .{ .op = .store, .dst = dst, .src = src } };
-    }
 };
 
+fn aliasesArg(args: []const VReg, next: VReg) ?usize {
+    for (args, 0..) |arg, i| if (arg == next) return i;
+    return null;
+}
+
 insts: std.ArrayList(Inst),
+num_vregs: u32,
+alloca_bytes: u32,
 
 const Mir = @This();
 
@@ -107,7 +117,13 @@ pub fn build(gpa: std.mem.Allocator, recv: *const Recursive, sched: *const Sched
     defer gpa.free(emitted);
     @memset(emitted, false);
 
-    var b: Builder = .{ .gpa = gpa, .recv = recv, .sched = sched, .emitted = emitted };
+    var b: Builder = .{
+        .gpa = gpa,
+        .recv = recv,
+        .sched = sched,
+        .emitted = emitted,
+        .next_vreg = @intCast(recv.nodes.items.len),
+    };
 
     // Move incoming arguments out of a0..a7 at the very top of the function,
     // before any `call` can clobber them.
@@ -118,7 +134,7 @@ pub fn build(gpa: std.mem.Allocator, recv: *const Recursive, sched: *const Sched
     }
 
     try b.emitRegion(.root);
-    return .{ .insts = b.insts };
+    return .{ .insts = b.insts, .num_vregs = b.next_vreg, .alloca_bytes = b.alloca_off };
 }
 
 pub fn deinit(m: *Mir, gpa: std.mem.Allocator) void {
@@ -131,6 +147,8 @@ const Builder = struct {
     sched: *const Schedule,
     insts: std.ArrayList(Inst) = .empty,
     next_label: Label = 0,
+    next_vreg: u32,
+    alloca_off: u32 = 0,
     /// Gammas already lowered as part of a fused branch group, indexed by node.
     emitted: []bool,
 
@@ -141,6 +159,11 @@ const Builder = struct {
     fn new(b: *Builder) Label {
         defer b.next_label += 1;
         return b.next_label;
+    }
+
+    fn newReg(b: *Builder) VReg {
+        defer b.next_vreg += 1;
+        return @enumFromInt(b.next_vreg);
     }
 
     /// Emit every node assigned to a `region`, in topological order.
@@ -179,6 +202,12 @@ const Builder = struct {
         switch (node.tag) {
             .start => {}, // abstract entry, nothing to emit
             .loopvar => {},
+            .alloca => {
+                const a = node.data.alloca;
+                const off = std.mem.alignForward(u32, b.alloca_off, a.@"align");
+                b.alloca_off = off + a.size;
+                try b.add(.{ .frame_addr = .{ .dst = n, .offset = off } });
+            },
             .project => {
                 if (b.sched.is_mem[@intFromEnum(n)]) return; // memory state, no register
                 const project = node.data.project;
@@ -191,48 +220,67 @@ const Builder = struct {
                 }
             },
             .constant => try b.add(.{ .li = .{ .dst = n, .imm = node.data.constant } }),
-            .add, .sub, .mul, .@"and", .shl, .shr, .div_trunc, .div_exact => {
+            .add, .sub, .mul, .@"and", .shl, .shr, .sar, .div_trunc, .udiv, .div_exact => {
                 const ops = node.data.bin_op;
-                try b.add(.{ .bin = .{
-                    .op = switch (node.tag) {
-                        .add => .add,
-                        .sub => .sub,
-                        .mul => .mul,
-                        .@"and" => .@"and",
-                        .shl => .sll,
-                        .shr => .srl,
-                        .div_trunc, .div_exact => .div,
-                        else => unreachable,
-                    },
-                    .dst = n,
-                    .lhs = ops[0],
-                    .rhs = ops[1],
-                } });
+                const width = b.recv.typeOf(ops[0]);
+                try b.add(.binOp(switch (node.tag) {
+                    .add => .add,
+                    .sub => .sub,
+                    .mul => .mul,
+                    .@"and" => .@"and",
+                    .shl => .sll,
+                    .shr => .srl,
+                    .sar => .sra,
+                    .div_trunc, .div_exact => .div,
+                    .udiv => .divu,
+                    else => unreachable,
+                }, n, ops[0], ops[1], width));
             },
             .cmp_eq => {
-                // a == b <=> (a ^ b) == 0
+                // a == b <=> (a ^ b) == 0. Width-agnostic on canonical operands.
                 const ops = node.data.bin_op;
-                try b.add(.xor(n, ops[0], ops[1]));
+                try b.add(.binOp(.xor, n, ops[0], ops[1], 64));
                 try b.add(.seqz(n, n));
             },
             .cmp_gt => {
-                // a > b <=> b < a
-                const ops = node.data.bin_op;
-                try b.add(.slt(n, ops[1], ops[0]));
+                const ops = node.data.bin_op; // a > b <=> b < a
+                try b.add(.binOp(.slt, n, ops[1], ops[0], 64));
             },
             .cmp_lt => {
                 const ops = node.data.bin_op;
-                try b.add(.slt(n, ops[0], ops[1]));
+                try b.add(.binOp(.slt, n, ops[0], ops[1], 64));
+            },
+            .cmp_ugt => {
+                const ops = node.data.bin_op;
+                try b.add(.binOp(.sltu, n, ops[1], ops[0], 64));
+            },
+            .cmp_ult => {
+                const ops = node.data.bin_op;
+                try b.add(.binOp(.sltu, n, ops[0], ops[1], 64));
+            },
+            .trunc, .sext, .zext => {
+                const cast = node.data.cast;
+                try b.add(.{ .cast = .{
+                    .kind = switch (node.tag) {
+                        .trunc => .trunc,
+                        .sext => .sext,
+                        .zext => .zext,
+                        else => unreachable,
+                    },
+                    .dst = n,
+                    .src = cast.operand,
+                    .src_bits = b.recv.typeOf(cast.operand),
+                    .dst_bits = cast.bits,
+                } });
             },
             .load => {
-                // (mem, address)
-                const ops = node.data.bin_op;
-                try b.add(.load(n, ops[1]));
+                const l = node.data.load; // (mem, address)
+                try b.add(.{ .load = .{ .dst = n, .addr = l.ops[1], .bits = l.bits } });
             },
             .store => {
                 // (mem, address, value)
                 const ops = node.data.tri_op;
-                try b.add(.store(ops[2], ops[1]));
+                try b.add(.{ .store = .{ .value = ops[2], .addr = ops[1], .bits = b.recv.typeOf(ops[2]) } });
             },
             .gamma => {
                 // Lowered as part of a fused branch group already.
@@ -289,11 +337,23 @@ const Builder = struct {
                 try b.add(.{ .beqz = .{ .src = loop.pred(b.recv), .target = exit } });
                 try b.emitRegion(regions[1]); // body: compute next values (side effects)
 
-                // Advance the slot registers. The next values are already in their
-                // own vregs, so sequential copies are safe (no slot is read again).
+                // Advance the slot registers. Every `next` is read against the
+                // current iteration's slots. A computed `next` lives in its own
+                // vreg, but a `next` that is itself another slot's loopvar
+                // aliases that slot's register, so snapshot those into temps.
+                const temps = try b.gpa.alloc(VReg, args.len);
+                defer b.gpa.free(temps);
+                for (nexts, 0..) |next, slot| {
+                    if (slot == 0) continue;
+                    if (aliasesArg(args, next)) |_| {
+                        temps[slot] = b.newReg();
+                        try b.add(.mv(temps[slot], next));
+                    }
+                }
                 for (args, nexts, 0..) |arg, next, slot| {
                     if (slot == 0) continue;
-                    try b.add(.mv(arg, next));
+                    const src = if (aliasesArg(args, next) != null) temps[slot] else next;
+                    try b.add(.mv(arg, src));
                 }
                 try b.add(.{ .j = head });
                 try b.add(.{ .label = exit });

@@ -28,11 +28,15 @@ pub fn run(oir: *Oir) !bool {
             .mul,
             .div_exact,
             .div_trunc,
+            .udiv,
             .shl,
             .shr,
+            .sar,
             .cmp_eq,
             .cmp_gt,
             .cmp_lt,
+            .cmp_ult,
+            .cmp_ugt,
             .@"and",
             => {
                 // The class has already been solved for a constant, no need to do anything else!
@@ -49,8 +53,9 @@ pub fn run(oir: *Oir) !bool {
                 const lhs, const rhs = constants.items[0..2].*;
                 const lhs_value = oir.getNode(lhs).data.constant;
                 const rhs_value = oir.getNode(rhs).data.constant;
+                const bits = oir.typeOf(node.operands(oir)[0]);
 
-                if (eval.binOp(node.tag, lhs_value, rhs_value)) |value| {
+                if (eval.binOp(node.tag, lhs_value, rhs_value, bits)) |value| {
                     const new_class = try oir.add(.{
                         .tag = .constant,
                         .data = .{ .constant = value },
@@ -60,6 +65,28 @@ pub fn run(oir: *Oir) !bool {
 
                     // We can't continue this iteration since the rebuild could have modified
                     // the `nodes` list.
+                    return true;
+                }
+            },
+
+            .trunc,
+            .sext,
+            .zext,
+            => {
+                if (oir.classContains(class_idx, .constant) != null) continue;
+                const operand = node.data.cast.operand;
+                const src = oir.classContains(operand, .constant) orelse continue;
+                const src_value = oir.getNode(src).data.constant;
+                const src_bits = oir.typeOf(operand);
+                const dst_bits = node.data.cast.bits;
+
+                if (eval.castOp(node.tag, src_value, src_bits, dst_bits)) |value| {
+                    const new_class = try oir.add(.{
+                        .tag = .constant,
+                        .data = .{ .constant = value },
+                    });
+                    _ = try oir.@"union"(new_class, class_idx);
+                    try oir.rebuild();
                     return true;
                 }
             },
@@ -87,6 +114,7 @@ pub fn run(oir: *Oir) !bool {
             .project => {}, // function arguments, nothing to fold
             .load => {}, // TODO: GVN load elision
             .store => {}, // ^
+            .alloca => {}, // a unique stack-slot address, nothing to fold
             .start => {},
             .ret => {}, // volatile, handled above
             .lambda => {}, // function definition, nothing to fold

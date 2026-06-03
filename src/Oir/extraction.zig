@@ -27,6 +27,33 @@ pub const Recursive = struct {
         return r.nodes.items[@intFromEnum(idx)];
     }
 
+    pub fn typeOf(r: *const Recursive, idx: Class.Index) u16 {
+        return r.typeOfRec(idx, 0) orelse 64;
+    }
+
+    fn typeOfRec(r: *const Recursive, idx: Class.Index, depth: u8) ?u16 {
+        if (depth > 64) return null;
+        const node = r.getNode(idx);
+        return switch (node.tag) {
+            .param => node.data.param.bits,
+            .loopvar => node.data.loopvar.bits,
+            .project => node.data.project.bits,
+            .load => node.data.load.bits,
+            .trunc, .sext, .zext => node.data.cast.bits,
+            .cmp_eq, .cmp_lt, .cmp_gt, .cmp_ult, .cmp_ugt => 1,
+            .alloca => 64,
+            .add, .sub, .mul, .@"and", .shl, .shr, .sar, .div_trunc, .udiv, .div_exact => {
+                const ops = node.data.bin_op;
+                return r.typeOfRec(ops[0], depth + 1) orelse r.typeOfRec(ops[1], depth + 1);
+            },
+            .gamma => {
+                const t = node.data.tri_op;
+                return r.typeOfRec(t[1], depth + 1) orelse r.typeOfRec(t[2], depth + 1);
+            },
+            else => null,
+        };
+    }
+
     pub fn getNodes(r: *const Recursive) []const Node {
         return r.nodes.items;
     }

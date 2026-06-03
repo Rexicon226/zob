@@ -3,16 +3,23 @@
 pub fn getCost(tag: Oir.Node.Tag) u32 {
     return switch (tag) {
         // ALU operations
-        .add,
-        .sub,
-        .mul,
-        .div_trunc,
-        .div_exact,
-        => 2,
-
         .@"and",
         .shl,
         .shr,
+        .sar,
+        => 1,
+        .add,
+        .sub,
+        .mul,
+        => 2,
+        .div_trunc,
+        .udiv,
+        .div_exact,
+        => 8,
+
+        .trunc,
+        .sext,
+        .zext,
         => 1,
 
         // Basic memory operations
@@ -20,10 +27,16 @@ pub fn getCost(tag: Oir.Node.Tag) u32 {
         .store,
         => 1,
 
+        // A stack-slot address materializes as a single `addi sp`.
+        .alloca,
+        => 1,
+
         // Compare
         .cmp_eq,
         .cmp_gt,
         .cmp_lt,
+        .cmp_ult,
+        .cmp_ugt,
         => 1,
 
         // We want to bias towards folding away if there exists an equivalent

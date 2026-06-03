@@ -184,15 +184,24 @@ pub const Writer = struct {
             .sub,
             .shl,
             .shr,
+            .sar,
             .mul,
             .div_exact,
             .div_trunc,
+            .udiv,
             .add,
             .cmp_gt,
             .cmp_lt,
+            .cmp_ult,
+            .cmp_ugt,
             .cmp_eq,
-            .load,
             => try w.printBinOp(node, stream),
+            .trunc,
+            .sext,
+            .zext,
+            => try w.printCast(node, stream),
+            .load,
+            => try w.printLoad(node, stream),
             .gamma,
             .store,
             => try w.printTriOp(node, stream),
@@ -205,6 +214,7 @@ pub const Writer = struct {
             .lambda => try w.printLambda(node, repr, stream),
             .param => try w.printParam(node, stream),
             .call => try w.printCall(node, repr, stream),
+            .alloca => try w.printAlloca(node, stream),
         }
         try stream.writeAll(")");
     }
@@ -247,6 +257,21 @@ pub const Writer = struct {
     fn printBinOp(_: *Writer, node: Oir.Node, stream: *std.Io.Writer) !void {
         const bin_op = node.data.bin_op;
         try stream.print("{f}, {f}", .{ bin_op[0], bin_op[1] });
+    }
+
+    fn printCast(_: *Writer, node: Oir.Node, stream: *std.Io.Writer) !void {
+        const cast = node.data.cast;
+        try stream.print("{f} -> i{d}", .{ cast.operand, cast.bits });
+    }
+
+    fn printLoad(_: *Writer, node: Oir.Node, stream: *std.Io.Writer) !void {
+        const load = node.data.load;
+        try stream.print("{f}, {f} : i{d}", .{ load.ops[0], load.ops[1], load.bits });
+    }
+
+    fn printAlloca(_: *Writer, node: Oir.Node, stream: *std.Io.Writer) !void {
+        const a = node.data.alloca;
+        try stream.print("#{d}, {d} bytes", .{ a.id, a.size });
     }
 
     fn printProject(_: *Writer, node: Oir.Node, stream: *std.Io.Writer) !void {

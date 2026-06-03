@@ -24,17 +24,30 @@ fn_ids: std.StringHashMapUnmanaged(u32),
 fn_names: std.ArrayList([]const u8),
 /// The id of the `lambda` currently being lowered, used to build its `param`s.
 cur_fn: u32 = 0,
-/// Predicate under which the currently-lowering path executes, relative to the
-/// enclosing function/loop entry. Branches refine it. `return`/`break`/`continue`
-/// capture it so multiple exists can be merged with gammas.
+/// Return-value width of the function currently being lowereed (0 if void).
+cur_ret_bits: u16 = 0,
+/// Monotonic source of unique `alloca` ids.
+next_alloca: u32 = 0,
+/// Locals backed by a stack slot rather than an SSA value. We always put
+/// arrays/structs in here. Their `symbol_table` binding is the slot address.
+mem_vars: std.StringHashMapUnmanaged(MemVar),
+/// Predicate under which the currently-lowering path executes.
 active: Oir.Class.Index,
 /// Function-return exits captured during lowering.
 returns: std.ArrayList(Return),
-/// Stack of enclosing loops, holding their `break`/`continue` exits.
-loops: std.ArrayList(LoopFrame),
+/// Pending `goto` arrivals keyed by label name.
+labels: std.StringHashMapUnmanaged(LabelInfo),
+/// Stack of enclosing breadkable scopes. `break` targets the innermost
+/// frame, `continue` the inner most loop frame.
+frames: std.ArrayList(Frame),
 
 const Error = error{OutOfMemory};
 const SymbolTable = std.ArrayList(std.StringHashMapUnmanaged(Oir.Class.Index));
+
+const MemVar = struct {
+    bits: u16,
+    aggregate: bool,
+};
 
 /// A `return` reached under path predicate `pred`, with its memory state and value.
 const Return = struct {
@@ -51,10 +64,33 @@ const Exit = struct {
     vals: []Oir.Class.Index,
 };
 
-const LoopFrame = struct {
+const Frame = struct {
+    kind: enum { loop, @"switch" },
     names: []const []const u8,
     breaks: std.ArrayList(Exit),
     continues: std.ArrayList(Exit),
+    returns: std.ArrayList(Return) = .empty,
+};
+
+const SwitchLabel = struct { start: Tree.Node.Index, end: ?Tree.Node.Index };
+
+const SwitchGroup = struct {
+    labels: std.ArrayList(SwitchLabel) = .empty,
+    is_default: bool = false,
+    stmts: std.ArrayList(Tree.Node.Index) = .empty,
+};
+
+const GotoArrival = struct {
+    pred: Oir.Class.Index,
+    mem: Oir.Class.Index,
+    env: SymbolTable,
+    depth: usize,
+};
+
+const LabelInfo = struct {
+    arrivals: std.ArrayList(GotoArrival) = .empty,
+    /// Set once the label is reached.
+    resolved: bool = false,
 };
 
 pub fn init(
@@ -68,20 +104,22 @@ pub fn init(
     });
 
     var symbol_table: SymbolTable = .empty;
-    try symbol_table.append(gpa, .{});
+    try symbol_table.append(gpa, .empty);
 
     return .{
         .gpa = gpa,
         .oir = oir,
         .tree = tree,
-        .node_to_class = .{},
+        .node_to_class = .empty,
         .exits = &oir.exit_list,
         .symbol_table = symbol_table,
         .mem_state = .start, // just a placeholder, we set per-function in buildFn
         .active = .start, // placeholder, set per-function in buildFn
         .returns = .empty,
-        .loops = .empty,
         .fn_ids = .empty,
+        .labels = .empty,
+        .mem_vars = .empty,
+        .frames = .empty,
         .fn_names = .empty,
     };
 }
@@ -144,17 +182,21 @@ fn buildFn(cg: *CodeGen, decl: Tree.Node.Index) !void {
             const func_ty = func.qt.base(tree.comp).type.func;
             const id = cg.fn_ids.get(tree.tokSlice(func.name_tok)).?;
             cg.cur_fn = id;
+            cg.cur_ret_bits = if (func_ty.return_type.is(tree.comp, .void))
+                0
+            else
+                cg.widthOf(func_ty.return_type);
 
             for (cg.symbol_table.items) |*s| s.deinit(cg.gpa);
             cg.symbol_table.clearRetainingCapacity();
             try cg.symbol_table.append(cg.gpa, .{});
             cg.node_to_class.clearRetainingCapacity();
 
-            // param(id, 0) is the input memory state; arguments follow at 1..n.
-            cg.mem_state = try cg.oir.add(.param(id, 0));
+            // param(id, 0) is the input memory state (width 0); arguments follow at 1..n.
+            cg.mem_state = try cg.oir.add(.param(id, 0, 0));
             for (func_ty.params, 0..) |param, i| {
                 const name = cg.tree.tokSlice(param.name_tok);
-                const node = try cg.oir.add(.param(id, @intCast(i + 1)));
+                const node = try cg.oir.add(.param(id, @intCast(i + 1), cg.widthOf(param.qt)));
 
                 const latest = &cg.symbol_table.items[cg.symbol_table.items.len - 1];
                 try latest.put(cg.gpa, name, node);
@@ -164,6 +206,8 @@ fn buildFn(cg: *CodeGen, decl: Tree.Node.Index) !void {
             // memory state.
             cg.active = try cg.oir.add(.constant(1));
             cg.returns.clearRetainingCapacity();
+            cg.clearLabels();
+            cg.mem_vars.clearRetainingCapacity();
             const body = func.body.?;
             const falls_through = switch (body.get(tree)) {
                 .compound_stmt => |c| try cg.buildSeq(c.body),
@@ -173,12 +217,11 @@ fn buildFn(cg: *CodeGen, decl: Tree.Node.Index) !void {
 
             // A fall-through end of the body is an implicit `return`.
             if (falls_through) {
-                if (!is_void and cg.returns.items.len == 0)
-                    @panic("TODO: non-void function falls through");
-                if (is_void) try cg.returns.append(cg.gpa, .{
+                const value: ?Oir.Class.Index = if (is_void) null else try cg.oir.add(.constant(0));
+                try cg.returns.append(cg.gpa, .{
                     .pred = cg.active,
                     .mem = cg.mem_state,
-                    .value = null,
+                    .value = value,
                 });
             }
 
@@ -202,55 +245,83 @@ fn buildFn(cg: *CodeGen, decl: Tree.Node.Index) !void {
 /// breaks or continues.
 fn buildSeq(cg: *CodeGen, stmts: []const Tree.Node.Index) Error!bool {
     const tree = cg.tree;
+    var reachable = true;
+    for (stmts) |stmt| {
+        // Peel any leading labels (`A: B: real_stmt`), merging arrivals at each.
+        var node = stmt;
+        while (node.get(tree) == .labeled_stmt) {
+            const l = node.get(tree).labeled_stmt;
+            reachable = try cg.resolveLabel(l.label_tok, reachable);
+            node = l.body;
+        }
+        if (!reachable) continue; // unreachable, non-labelled code is dropped
+        reachable = try cg.buildStmt(node);
+    }
+    return reachable;
+}
+
+/// Lowers a single statement, returning whether control falls through past it.
+fn buildStmt(cg: *CodeGen, stmt: Tree.Node.Index) Error!bool {
+    const tree = cg.tree;
     const node_tags = tree.nodes.items(.tag);
 
-    for (stmts) |stmt| {
-        switch (stmt.get(tree)) {
-            .return_stmt => |ret| {
-                if (cg.loops.items.len != 0) @panic("TODO: return inside a loop");
-                const value: ?Oir.Class.Index = switch (ret.operand) {
-                    .expr => |idx| try cg.buildExpr(idx),
-                    .none, .implicit => null,
-                };
-                try cg.returns.append(cg.gpa, .{ .pred = cg.active, .mem = cg.mem_state, .value = value });
-                return false;
-            },
-            .break_stmt => {
-                const frame = &cg.loops.items[cg.loops.items.len - 1];
-                try frame.breaks.append(cg.gpa, try cg.captureExit(frame.names));
-                return false;
-            },
-            .continue_stmt => {
-                const frame = &cg.loops.items[cg.loops.items.len - 1];
-                try frame.continues.append(cg.gpa, try cg.captureExit(frame.names));
-                return false;
-            },
-            .compound_stmt => |compound| if (!try cg.buildSeq(compound.body)) return false,
-            .if_stmt => |cond_br| if (!try cg.buildIf(cond_br)) return false,
-            .while_stmt => |w| if (!try cg.buildLoop(w.cond, w.body, null)) return false,
-            .for_stmt => |f| {
-                // The init clause runs once, in the current scope, before the loop.
-                switch (f.init) {
-                    .decls => |decls| _ = try cg.buildSeq(decls),
-                    .expr => |maybe| if (maybe) |e| try cg.buildExprStmt(e),
-                }
-                if (!try cg.buildLoop(f.cond, f.body, f.incr)) return false;
-            },
-            .variable => |variable| {
-                const rvalue = try cg.buildExpr(variable.initializer.?);
-                const ident = tree.tokSlice(variable.name_tok);
-                if (cg.findIdentifier(ident)) |existing| {
-                    existing.* = rvalue;
-                } else {
-                    const latest = &cg.symbol_table.items[cg.symbol_table.items.len - 1];
-                    try latest.put(cg.gpa, ident, rvalue);
-                }
-            },
-            .assign_expr => |assign| _ = try cg.buildAssign(assign.lhs, assign.rhs),
-            else => std.debug.panic("TODO: {s}", .{@tagName(node_tags[@intFromEnum(stmt)])}),
-        }
+    switch (stmt.get(tree)) {
+        .return_stmt => |ret| {
+            const value: ?Oir.Class.Index = switch (ret.operand) {
+                .expr => |idx| try cg.buildExpr(idx),
+                .none, .implicit => null,
+            };
+            const r: Return = .{ .pred = cg.active, .mem = cg.mem_state, .value = value };
+            if (cg.innermostLoop()) |loop|
+                try loop.returns.append(cg.gpa, r)
+            else
+                try cg.returns.append(cg.gpa, r);
+            return false;
+        },
+        .break_stmt => {
+            const frame = &cg.frames.items[cg.frames.items.len - 1];
+            try frame.breaks.append(cg.gpa, try cg.captureExit(frame.names));
+            return false;
+        },
+        .continue_stmt => {
+            const frame = cg.innermostLoop().?;
+            try frame.continues.append(cg.gpa, try cg.captureExit(frame.names));
+            return false;
+        },
+        .goto_stmt => |g| {
+            try cg.recordGoto(g.label_tok);
+            return false;
+        },
+        .switch_stmt => |s| return cg.buildSwitch(s),
+        .compound_stmt => |compound| return cg.buildSeq(compound.body),
+        .if_stmt => |cond_br| return cg.buildIf(cond_br),
+        .while_stmt => |w| return cg.buildLoop(w.cond, w.body, null, false),
+        .do_while_stmt => |d| return cg.buildLoop(d.cond, d.body, null, true),
+        .for_stmt => |f| {
+            // The init clause runs once, in the current scope, before the loop.
+            switch (f.init) {
+                .decls => |decls| _ = try cg.buildSeq(decls),
+                .expr => |maybe| if (maybe) |e| try cg.buildExprStmt(e),
+            }
+            return cg.buildLoop(f.cond, f.body, f.incr, false);
+        },
+        .variable => |variable| {
+            try cg.buildVariable(variable);
+            return true;
+        },
+        .assign_expr => |assign| {
+            _ = try cg.buildAssign(assign.lhs, assign.rhs);
+            return true;
+        },
+        .call_expr => {
+            _ = try cg.buildExpr(stmt);
+            return true;
+        },
+        .labeled_stmt => |l| {
+            return cg.buildStmt(l.body);
+        },
+        else => std.debug.panic("TODO: {s}", .{@tagName(node_tags[@intFromEnum(stmt)])}),
     }
-    return true;
 }
 
 /// Lowers a single statement that may be a `{ ... }` block.
@@ -317,6 +388,7 @@ fn buildLoop(
     cond: ?Tree.Node.Index,
     body: Tree.Node.Index,
     incr: ?Tree.Node.Index,
+    post_test: bool,
 ) Error!bool {
     const gpa = cg.gpa;
 
@@ -325,23 +397,49 @@ fn buildLoop(
     try cg.collectScopeNames(&name_list);
     const names = name_list.items;
     const nvars = names.len;
-    const count: u32 = @intCast(nvars + 2); // memory (0), vars (1..nvars), exited (last)
-    const exited = count - 1;
+    // A loop that can `return` (itself, or a nested loop) carries the early
+    // return out flag, plus for a value-returning function, a `retval` slot.
+    const has_return = cg.containsReturn(body);
+    const has_retval = has_return and cg.cur_ret_bits != 0;
+
+    // TODO: cleanup bad slot logic, getting really messy
+    var next_slot: u32 = @intCast(nvars + 1);
+    const exited = next_slot;
+    next_slot += 1;
+    const returned = next_slot;
+    if (has_return) next_slot += 1;
+    const retval_slot = next_slot;
+    if (has_retval) next_slot += 1;
+    const first_slot = next_slot;
+    if (post_test) next_slot += 1;
+    const count = next_slot;
 
     const loop_id = cg.next_loop;
     cg.next_loop += 1;
 
     // TODO: terrible memory stuff, idc, cleanup later
 
-    const args = try gpa.alloc(Oir.Class.Index, count);
-    defer gpa.free(args);
-    for (args, 0..) |*a, slot| a.* = try cg.oir.add(.loopvar(loop_id, @intCast(slot)));
-
     const inits = try gpa.alloc(Oir.Class.Index, count);
     defer gpa.free(inits);
     inits[0] = cg.mem_state;
     for (names, 0..) |name, j| inits[j + 1] = cg.findIdentifier(name).?.*;
     inits[exited] = try cg.oir.add(.constant(0));
+    if (has_return) inits[returned] = try cg.oir.add(.constant(0));
+    if (has_retval) inits[retval_slot] = try cg.oir.add(.constant(0));
+    if (post_test) inits[first_slot] = try cg.oir.add(.constant(1));
+
+    const widths = try gpa.alloc(u16, count);
+    defer gpa.free(widths);
+    widths[0] = 0;
+    for (names, 0..) |_, j| widths[j + 1] = cg.oir.typeOf(inits[j + 1]);
+    widths[exited] = 1;
+    if (has_return) widths[returned] = 1;
+    if (has_retval) widths[retval_slot] = cg.cur_ret_bits;
+    if (post_test) widths[first_slot] = 1;
+
+    const args = try gpa.alloc(Oir.Class.Index, count);
+    defer gpa.free(args);
+    for (args, 0..) |*a, slot| a.* = try cg.oir.add(.loopvar(loop_id, @intCast(slot), widths[slot]));
 
     // Rebind every carried slot to its loopvar for the body and predicate.
     cg.mem_state = args[0];
@@ -350,9 +448,14 @@ fn buildLoop(
     // Predicate continues while non-zero, and only while not yet broken.
     cg.node_to_class.clearRetainingCapacity();
     const cond_pred = if (cond) |c| try cg.buildExpr(c) else try cg.oir.add(.constant(1));
-    const pred = try cg.andNot(cond_pred, args[exited]);
+    const gated = if (post_test)
+        try cg.oir.add(.gamma(args[first_slot], try cg.oir.add(.constant(1)), cond_pred))
+    else
+        cond_pred;
+    var pred = try cg.andNot(gated, args[exited]);
+    if (has_return) pred = try cg.andNot(pred, args[returned]);
 
-    try cg.loops.append(gpa, .{ .names = names, .breaks = .empty, .continues = .empty });
+    try cg.frames.append(gpa, .{ .kind = .loop, .names = names, .breaks = .empty, .continues = .empty });
 
     // The body's path predicate is relative to the iteration's start.
     cg.node_to_class.clearRetainingCapacity();
@@ -360,10 +463,10 @@ fn buildLoop(
     cg.active = try cg.oir.add(.constant(1));
     const body_falls = try cg.buildBlock(body);
 
-    const frame = &cg.loops.items[cg.loops.items.len - 1];
+    const frame = &cg.frames.items[cg.frames.items.len - 1];
     // Falling off the body bottom loops back, exactly like `continue`.
     if (body_falls) try frame.continues.append(gpa, try cg.captureExit(names));
-    var popped = cg.loops.pop().?;
+    var popped = cg.frames.pop().?;
     defer cg.freeFrame(&popped);
     cg.active = saved_active;
 
@@ -400,6 +503,19 @@ fn buildLoop(
         for (next_vals, brk_vals, cont_vals) |*n, b, c| n.* = try cg.gammaIfNe(broke, b, c);
     }
 
+    var returned_flag = try cg.oir.add(.constant(0));
+    var retval_value = if (has_retval) try cg.oir.add(.constant(0)) else undefined;
+    if (popped.returns.items.len > 0) {
+        const ret_mem, const ret_value = try cg.mergeReturnList(popped.returns.items);
+        returned_flag = popped.returns.items[0].pred;
+        for (popped.returns.items[1..]) |r| {
+            returned_flag = try cg.oir.add(.binOp(.add, returned_flag, r.pred));
+        }
+        next_mem = try cg.gammaIfNe(returned_flag, ret_mem, next_mem);
+        if (has_retval) retval_value = ret_value.?;
+    }
+
+    // theta body = args ++ inits ++ [pred] ++ nexts.
     const buf = try gpa.alloc(Oir.Class.Index, count * 3 + 1);
     defer gpa.free(buf);
     @memcpy(buf[0..count], args);
@@ -409,16 +525,201 @@ fn buildLoop(
     nexts[0] = next_mem;
     @memcpy(nexts[1 .. 1 + nvars], next_vals);
     nexts[exited] = broke;
+    if (has_return) nexts[returned] = returned_flag;
+    if (has_retval) nexts[retval_slot] = retval_value;
+    if (post_test) nexts[first_slot] = try cg.oir.add(.constant(0));
 
     const span = try cg.oir.listToSpan(buf);
     const theta = try cg.oir.add(.theta(loop_id, count, span));
 
-    cg.mem_state = try cg.oir.add(.project(0, theta, .data));
+    cg.mem_state = try cg.oir.add(.project(0, theta, .data, 0));
     for (names, 0..) |name, j| {
-        cg.findIdentifier(name).?.* = try cg.oir.add(.project(@intCast(j + 1), theta, .data));
+        cg.findIdentifier(name).?.* = try cg.oir.add(.project(@intCast(j + 1), theta, .data, widths[j + 1]));
     }
     cg.node_to_class.clearRetainingCapacity();
+
+    if (popped.returns.items.len > 0) {
+        const proj_returned = try cg.oir.add(.project(returned, theta, .data, 1));
+        const proj_retval: ?Oir.Class.Index = if (has_retval)
+            try cg.oir.add(.project(retval_slot, theta, .data, cg.cur_ret_bits))
+        else
+            null;
+        const ret = Return{
+            .pred = try cg.andPred(saved_active, proj_returned),
+            .mem = cg.mem_state,
+            .value = proj_retval,
+        };
+        if (cg.innermostLoop()) |outer|
+            try outer.returns.append(gpa, ret)
+        else
+            try cg.returns.append(gpa, ret);
+        cg.active = try cg.andNot(saved_active, proj_returned);
+    }
     return true;
+}
+
+/// Lowers a `switch` as a set of mutally-exlusive predicated arms.
+///
+/// The controlling value is compared against each case label, the matching arm
+/// runs on its own copy of the environment, and the arms' fall-through ends
+/// plus every captured `break` are merged into this contiuation.
+///
+/// TODO: doesn't support fallthrough between non-empty cases, they must all
+/// break or be the last group. unsure how to do cleanly yet.
+fn buildSwitch(cg: *CodeGen, sw: anytype) Error!bool {
+    const gpa = cg.gpa;
+    const value = try cg.buildExpr(sw.cond);
+    const uns = cg.unsignedQt(sw.cond.qt(cg.tree));
+
+    var groups: std.ArrayList(SwitchGroup) = .empty;
+    defer {
+        for (groups.items) |*g| {
+            g.labels.deinit(gpa);
+            g.stmts.deinit(gpa);
+        }
+        groups.deinit(gpa);
+    }
+    switch (sw.body.get(cg.tree)) {
+        .compound_stmt => |c| for (c.body) |item| try cg.flattenSwitch(item, &groups),
+        else => try cg.flattenSwitch(sw.body, &groups),
+    }
+
+    var name_list: std.ArrayList([]const u8) = .empty;
+    defer name_list.deinit(gpa);
+    try cg.collectScopeNames(&name_list);
+    const names = name_list.items;
+
+    // In the first pass, each group's match predicate plus the disjunction of
+    // all case labels, which we use for the `default` and the no-match fall-through.
+    const preds = try gpa.alloc(Oir.Class.Index, groups.items.len);
+    defer gpa.free(preds);
+    var any_case = try cg.oir.add(.constant(0));
+    for (groups.items, preds) |g, *p| {
+        var acc = try cg.oir.add(.constant(0));
+        for (g.labels.items) |label| {
+            const m = try cg.switchLabelPred(value, label, uns);
+            acc = try cg.oir.add(.binOp(.add, acc, m));
+            any_case = try cg.oir.add(.binOp(.add, any_case, m));
+        }
+        p.* = acc;
+    }
+    const not_any = try cg.notPred(any_case);
+
+    // Snapshot that each arm will be running on.
+    var env0 = try cg.snapshotEnv();
+    defer cg.freeEnv(&env0);
+    const mem0 = cg.mem_state;
+    const active0 = cg.active;
+
+    try cg.frames.append(gpa, .{ .kind = .@"switch", .names = names, .breaks = .empty, .continues = .empty });
+
+    // Lower each arm under its predicate on a copy of the environment.
+    for (groups.items, preds, 0..) |g, p, i| {
+        const arm_pred = if (g.is_default)
+            try cg.oir.add(.binOp(.add, p, not_any))
+        else
+            p;
+
+        cg.freeEnv(&cg.symbol_table);
+        cg.symbol_table = try cg.cloneEnv(env0);
+        cg.node_to_class.clearRetainingCapacity();
+        cg.mem_state = mem0;
+        cg.active = try cg.andPred(active0, arm_pred);
+
+        const falls = try cg.buildSeq(g.stmts.items);
+        if (falls) {
+            if (i + 1 != groups.items.len) @panic("TODO: switch case fall-through");
+            const frame = &cg.frames.items[cg.frames.items.len - 1];
+            try frame.breaks.append(gpa, try cg.captureExit(names));
+        }
+    }
+
+    var popped = cg.frames.pop().?;
+    defer cg.freeFrame(&popped);
+
+    const has_default = blk: {
+        for (groups.items) |g| if (g.is_default) break :blk true;
+        break :blk false;
+    };
+    // Without a `default`, values matching no case skip the switch entirely,
+    // carrying the entry state through unchanged.
+    if (!has_default) {
+        const vals = try gpa.alloc(Oir.Class.Index, names.len);
+        for (names, vals) |name, *v| v.* = findIn(&env0, name).?;
+        try popped.breaks.append(gpa, .{
+            .pred = try cg.andPred(active0, not_any),
+            .mem = mem0,
+            .vals = vals,
+        });
+    }
+
+    // Merge every exit (breaks + fall-throughs + no-match) into the continuation.
+    cg.freeEnv(&cg.symbol_table);
+    cg.symbol_table = try cg.cloneEnv(env0);
+    if (popped.breaks.items.len == 0) {
+        cg.mem_state = mem0;
+        cg.active = active0;
+        return false; // every path returns; nothing leaves the switch
+    }
+    const out_vals = try gpa.alloc(Oir.Class.Index, names.len);
+    defer gpa.free(out_vals);
+    cg.mem_state = try cg.chainMerge(popped.breaks.items, out_vals);
+    for (names, out_vals) |name, v| cg.findIdentifier(name).?.* = v;
+    cg.active = try cg.sumPreds(popped.breaks.items);
+    cg.node_to_class.clearRetainingCapacity();
+    return true;
+}
+
+/// Recursively flattens a switch-body statement into `groups`: `case`/`default`
+/// labels open (or extend) the current group, and any other statement is appended
+/// to it. Consecutive labels with no intervening statements share one group.
+fn flattenSwitch(cg: *CodeGen, node: Tree.Node.Index, groups: *std.ArrayList(SwitchGroup)) Error!void {
+    switch (node.get(cg.tree)) {
+        .case_stmt => |c| {
+            try cg.openLabel(groups, .{ .start = c.start, .end = c.end }, false);
+            try cg.flattenSwitch(c.body, groups);
+        },
+        .default_stmt => |d| {
+            try cg.openLabel(groups, undefined, true);
+            try cg.flattenSwitch(d.body, groups);
+        },
+        else => {
+            const g = try cg.currentGroup(groups);
+            try g.stmts.append(cg.gpa, node);
+        },
+    }
+}
+
+/// Opens a new group when the current one already has statements (a new label run
+/// begins), else extends it (consecutive labels share a body).
+fn openLabel(cg: *CodeGen, groups: *std.ArrayList(SwitchGroup), label: SwitchLabel, is_default: bool) !void {
+    const need_new = groups.items.len == 0 or groups.items[groups.items.len - 1].stmts.items.len > 0;
+    if (need_new) try groups.append(cg.gpa, .{});
+    const g = &groups.items[groups.items.len - 1];
+    if (is_default) g.is_default = true else try g.labels.append(cg.gpa, label);
+}
+
+fn currentGroup(cg: *CodeGen, groups: *std.ArrayList(SwitchGroup)) !*SwitchGroup {
+    if (groups.items.len == 0) try groups.append(cg.gpa, .{}); // statements before any label
+    return &groups.items[groups.items.len - 1];
+}
+
+/// The (0/1) predicate that `value` matches a single case label or `lo ... hi` range.
+fn switchLabelPred(cg: *CodeGen, value: Oir.Class.Index, label: SwitchLabel, uns: bool) !Oir.Class.Index {
+    const lo = try cg.buildExpr(label.start);
+    if (label.end) |end_node| {
+        const hi = try cg.buildExpr(end_node);
+        const lt = try cg.oir.add(.binOp(if (uns) .cmp_ult else .cmp_lt, value, lo));
+        const gt = try cg.oir.add(.binOp(if (uns) .cmp_ugt else .cmp_gt, value, hi));
+        return cg.andPred(try cg.notPred(lt), try cg.notPred(gt)); // lo <= value <= hi
+    }
+    return cg.oir.add(.binOp(.cmp_eq, value, lo));
+}
+
+/// Logical negation of a boolean class: `p == 0`.
+fn notPred(cg: *CodeGen, p: Oir.Class.Index) !Oir.Class.Index {
+    const zero = try cg.oir.add(.constant(0));
+    return cg.oir.add(.binOp(.cmp_eq, p, zero));
 }
 
 fn captureExit(cg: *CodeGen, names: []const []const u8) !Exit {
@@ -427,11 +728,12 @@ fn captureExit(cg: *CodeGen, names: []const []const u8) !Exit {
     return .{ .pred = cg.active, .mem = cg.mem_state, .vals = vals };
 }
 
-fn freeFrame(cg: *CodeGen, frame: *LoopFrame) void {
+fn freeFrame(cg: *CodeGen, frame: *Frame) void {
     for (frame.breaks.items) |e| cg.gpa.free(e.vals);
     for (frame.continues.items) |e| cg.gpa.free(e.vals);
     frame.breaks.deinit(cg.gpa);
     frame.continues.deinit(cg.gpa);
+    frame.returns.deinit(cg.gpa);
 }
 
 /// Merges a list of exits into one state by chaining gammas on their path
@@ -470,6 +772,92 @@ fn gammaIfNe(cg: *CodeGen, pred: Oir.Class.Index, a: Oir.Class.Index, b: Oir.Cla
     return if (a == b) a else cg.oir.add(.gamma(pred, a, b));
 }
 
+/// The innermost enclosing loop frame (skipping switches), or null. `continue`
+/// targets this; the `return`-in-loop guard checks it.
+fn innermostLoop(cg: *CodeGen) ?*Frame {
+    var i = cg.frames.items.len;
+    while (i > 0) {
+        i -= 1;
+        if (cg.frames.items[i].kind == .loop) return &cg.frames.items[i];
+    }
+    return null;
+}
+
+/// Records a `goto`: captures the live state under the current predicate as an
+/// arrival at the target label. A jump to an already-resolved label is backward
+/// (would form a loop) and is not yet supported.
+fn recordGoto(cg: *CodeGen, label_tok: anytype) !void {
+    const name = cg.tree.tokSlice(label_tok);
+    const gop = try cg.labels.getOrPut(cg.gpa, name);
+    if (!gop.found_existing) gop.value_ptr.* = .{};
+    if (gop.value_ptr.resolved) @panic("TODO: backward goto");
+    try gop.value_ptr.arrivals.append(cg.gpa, .{
+        .pred = cg.active,
+        .mem = cg.mem_state,
+        .env = try cg.snapshotEnv(),
+        .depth = cg.frames.items.len,
+    });
+}
+
+/// Resolves a label: merges every `goto` arrival (and the fall-through path, if
+/// `reachable`) into the live state, and returns whether the label is reachable.
+/// Gotos crossing a loop/switch boundary (different frame depth) are unsupported.
+fn resolveLabel(cg: *CodeGen, label_tok: anytype, reachable: bool) !bool {
+    const gpa = cg.gpa;
+    const name = cg.tree.tokSlice(label_tok);
+    // Ensure an entry exists and mark it resolved, so a later `goto` to this label
+    // is recognized as a backward jump even if nothing targeted it yet.
+    const gop = try cg.labels.getOrPut(gpa, name);
+    if (!gop.found_existing) gop.value_ptr.* = .{};
+    const info = gop.value_ptr;
+    info.resolved = true;
+    const arrivals = info.arrivals.items;
+    for (arrivals) |a| {
+        if (a.depth != cg.frames.items.len) @panic("TODO: goto across a loop/switch boundary");
+    }
+    if (arrivals.len == 0) return reachable;
+
+    var name_list: std.ArrayList([]const u8) = .empty;
+    defer name_list.deinit(gpa);
+    try cg.collectScopeNames(&name_list);
+    const names = name_list.items;
+
+    // Build a contributor per incoming edge (fall-through + each arrival), then
+    // chain-merge them. The edges are mutually exclusive control paths.
+    var exits: std.ArrayList(Exit) = .empty;
+    defer {
+        for (exits.items) |e| gpa.free(e.vals);
+        exits.deinit(gpa);
+    }
+    if (reachable) try exits.append(gpa, try cg.captureExit(names));
+    for (arrivals) |a| {
+        const vals = try gpa.alloc(Oir.Class.Index, names.len);
+        for (names, vals) |nm, *v| v.* = findIn(&a.env, nm) orelse cg.findIdentifier(nm).?.*;
+        try exits.append(gpa, .{ .pred = a.pred, .mem = a.mem, .vals = vals });
+    }
+
+    const out = try gpa.alloc(Oir.Class.Index, names.len);
+    defer gpa.free(out);
+    cg.mem_state = try cg.chainMerge(exits.items, out);
+    for (names, out) |nm, v| cg.findIdentifier(nm).?.* = v;
+    cg.active = try cg.sumPreds(exits.items);
+    cg.node_to_class.clearRetainingCapacity();
+
+    for (info.arrivals.items) |*a| cg.freeEnv(&a.env);
+    info.arrivals.clearRetainingCapacity();
+    return true;
+}
+
+/// Frees and clears all pending label arrivals (per-function reset / teardown).
+fn clearLabels(cg: *CodeGen) void {
+    var it = cg.labels.iterator();
+    while (it.next()) |entry| {
+        for (entry.value_ptr.arrivals.items) |*a| cg.freeEnv(&a.env);
+        entry.value_ptr.arrivals.deinit(cg.gpa);
+    }
+    cg.labels.clearRetainingCapacity();
+}
+
 fn andPred(cg: *CodeGen, a: Oir.Class.Index, b: Oir.Class.Index) !Oir.Class.Index {
     const one = try cg.oir.add(.constant(1));
     if (a == one) return b;
@@ -483,7 +871,10 @@ fn andNot(cg: *CodeGen, a: Oir.Class.Index, pred: Oir.Class.Index) !Oir.Class.In
 }
 
 fn mergeReturns(cg: *CodeGen) !struct { Oir.Class.Index, ?Oir.Class.Index } {
-    const rs = cg.returns.items;
+    return cg.mergeReturnList(cg.returns.items);
+}
+
+fn mergeReturnList(cg: *CodeGen, rs: []const Return) !struct { Oir.Class.Index, ?Oir.Class.Index } {
     var mem = rs[rs.len - 1].mem;
     var value = rs[rs.len - 1].value;
     var i = rs.len - 1;
@@ -495,13 +886,47 @@ fn mergeReturns(cg: *CodeGen) !struct { Oir.Class.Index, ?Oir.Class.Index } {
     return .{ mem, value };
 }
 
+/// Whether a statement subtree contains a `return`.
+fn containsReturn(cg: *CodeGen, node: Tree.Node.Index) bool {
+    return switch (node.get(cg.tree)) {
+        .return_stmt => true,
+        .compound_stmt => |c| {
+            for (c.body) |s| if (cg.containsReturn(s)) return true;
+            return false;
+        },
+        .if_stmt => |i| cg.containsReturn(i.then_body) or
+            (i.else_body != null and cg.containsReturn(i.else_body.?)),
+        .while_stmt => |w| cg.containsReturn(w.body),
+        .do_while_stmt => |d| cg.containsReturn(d.body),
+        .for_stmt => |f| cg.containsReturn(f.body),
+        .switch_stmt => |s| cg.containsReturn(s.body),
+        .case_stmt => |c| cg.containsReturn(c.body),
+        .default_stmt => |d| cg.containsReturn(d.body),
+        .labeled_stmt => |l| cg.containsReturn(l.body),
+        else => false,
+    };
+}
+
 fn snapshotEnv(cg: *CodeGen) !SymbolTable {
+    return cg.cloneEnv(cg.symbol_table);
+}
+
+fn cloneEnv(cg: *CodeGen, src: SymbolTable) !SymbolTable {
     var copy: SymbolTable = .empty;
     errdefer freeEnv(cg, &copy);
-    for (cg.symbol_table.items) |scope| {
+    for (src.items) |scope| {
         try copy.append(cg.gpa, try scope.clone(cg.gpa));
     }
     return copy;
+}
+
+fn findIn(env: *const SymbolTable, name: []const u8) ?Oir.Class.Index {
+    var i = env.items.len;
+    while (i > 0) {
+        i -= 1;
+        if (env.items[i].get(name)) |c| return c;
+    }
+    return null;
 }
 
 fn freeEnv(cg: *CodeGen, env: *SymbolTable) void {
@@ -541,26 +966,104 @@ fn buildAssign(cg: *CodeGen, lhs: Tree.Node.Index, rhs: Tree.Node.Index) !Oir.Cl
     const value = try cg.buildExpr(rhs);
 
     switch (lhs.get(tree)) {
-        .deref_expr => |deref| {
-            // `*p = value`, store through the pointer, advancing the memory state.
-            const address = try cg.buildExpr(deref.operand);
-            const new_state = try cg.oir.add(.store(cg.mem_state, address, value));
-            cg.mem_state = new_state;
-        },
         .decl_ref_expr => |decl_ref| {
-            // A scalar assignment just rebinds the SSA value.
             const name = tree.tokSlice(decl_ref.name_tok);
-            if (cg.findIdentifier(name)) |existing| {
-                existing.* = value;
-            } else {
-                const latest = &cg.symbol_table.items[cg.symbol_table.items.len - 1];
-                try latest.put(cg.gpa, name, value);
+            if (cg.mem_vars.get(name) == null) {
+                if (cg.findIdentifier(name)) |existing| {
+                    existing.* = value;
+                } else {
+                    const latest = &cg.symbol_table.items[cg.symbol_table.items.len - 1];
+                    try latest.put(cg.gpa, name, value);
+                }
+                return value;
             }
+            const address = try cg.buildAddress(lhs);
+            cg.mem_state = try cg.oir.add(.store(cg.mem_state, address, value));
+        },
+        .deref_expr, .array_access_expr, .paren_expr => {
+            const address = try cg.buildAddress(lhs);
+            cg.mem_state = try cg.oir.add(.store(cg.mem_state, address, value));
         },
         else => std.debug.panic("TODO: assign to {s}", .{@tagName(node_tags[@intFromEnum(lhs)])}),
     }
 
     return value;
+}
+
+/// Lowers a local variable declaration.
+/// We place arrays/structs into stack slots and bind scalars to an SSA value.
+fn buildVariable(cg: *CodeGen, variable: anytype) Error!void {
+    const tree = cg.tree;
+    const comp = cg.tree.comp;
+    const ident = tree.tokSlice(variable.name_tok);
+    const qt = variable.qt;
+
+    if (qt.get(comp, .array)) |arr| {
+        const total: u32 = @intCast(qt.sizeof(comp));
+        const alignment: u32 = qt.alignof(comp);
+        const elem_bits = cg.widthOf(arr.elem);
+        const id = cg.next_alloca;
+        cg.next_alloca += 1;
+        const addr = try cg.oir.add(.alloca(id, total, alignment));
+        try cg.bindVar(ident, addr);
+        try cg.mem_vars.put(cg.gpa, ident, .{ .bits = elem_bits, .aggregate = true });
+        if (variable.initializer) |init_node| try cg.buildArrayInit(addr, elem_bits, init_node);
+        return;
+    }
+
+    const rvalue = try cg.buildExpr(variable.initializer.?);
+    try cg.bindVar(ident, rvalue);
+}
+
+/// Binds `ident` to `value`, rebinding an existing scope entry or adding a new one.
+fn bindVar(cg: *CodeGen, ident: []const u8, value: Oir.Class.Index) !void {
+    if (cg.findIdentifier(ident)) |existing| {
+        existing.* = value;
+    } else {
+        const latest = &cg.symbol_table.items[cg.symbol_table.items.len - 1];
+        try latest.put(cg.gpa, ident, value);
+    }
+}
+
+/// Lowers an array initializer by storing each element into the stack slot.
+fn buildArrayInit(cg: *CodeGen, base: Oir.Class.Index, elem_bits: u16, init_node: Tree.Node.Index) Error!void {
+    const tree = cg.tree;
+    switch (init_node.get(tree)) {
+        .array_init_expr => |ci| {
+            var index: u64 = 0;
+            for (ci.items) |item| switch (item.get(tree)) {
+                // A trailing `{...}` filler zeroes the remaining elements.
+                .array_filler_expr => |f| {
+                    const zero = try cg.oir.add(.constant(0));
+                    var k: u64 = 0;
+                    while (k < f.count) : (k += 1) {
+                        try cg.storeElem(base, elem_bits, index, zero);
+                        index += 1;
+                    }
+                },
+                .default_init_expr => {
+                    try cg.storeElem(base, elem_bits, index, try cg.oir.add(.constant(0)));
+                    index += 1;
+                },
+                else => {
+                    try cg.storeElem(base, elem_bits, index, try cg.buildExpr(item));
+                    index += 1;
+                },
+            };
+        },
+        else => std.debug.panic("TODO: array initializer {s}", .{@tagName(init_node.get(tree))}),
+    }
+}
+
+/// Stores `value` (coerced to `elem_bits`) into element `index` of an array slot.
+fn storeElem(cg: *CodeGen, base: Oir.Class.Index, elem_bits: u16, index: u64, value: Oir.Class.Index) Error!void {
+    const off = index * (elem_bits / 8);
+    const addr = if (off == 0)
+        base
+    else
+        try cg.oir.add(.binOp(.add, base, try cg.oir.add(.constant(@intCast(off)))));
+    const v = if (cg.oir.typeOf(value) == elem_bits) value else try cg.oir.add(.trunc(value, elem_bits));
+    cg.mem_state = try cg.oir.add(.store(cg.mem_state, addr, v));
 }
 
 fn buildExpr(cg: *CodeGen, expr: Tree.Node.Index) Error!Oir.Class.Index {
@@ -569,7 +1072,7 @@ fn buildExpr(cg: *CodeGen, expr: Tree.Node.Index) Error!Oir.Class.Index {
 
     if (cg.node_to_class.get(expr)) |c| return c;
     if (tree.value_map.get(expr)) |val| {
-        return cg.buildConstant(expr, val);
+        if (tree.comp.interner.get(val.ref()) == .int) return cg.buildConstant(expr, val);
     }
 
     // Calls advance the memory state, so they must never be memoized. `.get`
@@ -580,38 +1083,56 @@ fn buildExpr(cg: *CodeGen, expr: Tree.Node.Index) Error!Oir.Class.Index {
     }
 
     const class = switch (expr.get(tree)) {
-        .add_expr,
-        .sub_expr,
+        // Handled seperately, as they may be scaled by the pointee size.
+        .add_expr, .sub_expr => |bin, t| try cg.buildAddSub(t, bin),
         .mul_expr,
         .div_expr,
         .bit_and_expr,
         .shl_expr,
         .shr_expr,
         .equal_expr,
+        .not_equal_expr,
         .greater_than_expr,
+        .greater_than_equal_expr,
         .less_than_expr,
+        .less_than_equal_expr,
         => |bin, t| bin: {
             const lhs = try cg.buildExpr(bin.lhs);
             const rhs = try cg.buildExpr(bin.rhs);
+            const uns = cg.unsignedQt(bin.lhs.qt(tree));
             break :bin switch (t) {
-                .add_expr => try cg.oir.add(.binOp(.add, lhs, rhs)),
-                .sub_expr => try cg.oir.add(.binOp(.sub, lhs, rhs)),
                 .mul_expr => try cg.oir.add(.binOp(.mul, lhs, rhs)),
-                .div_expr => try cg.oir.add(.binOp(.div_trunc, lhs, rhs)),
+                .div_expr => try cg.oir.add(.binOp(if (uns) .udiv else .div_trunc, lhs, rhs)),
                 .bit_and_expr => try cg.oir.add(.binOp(.@"and", lhs, rhs)),
                 .shl_expr => try cg.oir.add(.binOp(.shl, lhs, rhs)),
-                .shr_expr => try cg.oir.add(.binOp(.shr, lhs, rhs)),
+                .shr_expr => try cg.oir.add(.binOp(if (uns) .shr else .sar, lhs, rhs)),
                 .equal_expr => try cg.oir.add(.binOp(.cmp_eq, lhs, rhs)),
-                .greater_than_expr => try cg.oir.add(.binOp(.cmp_gt, lhs, rhs)),
-                .less_than_expr => try cg.oir.add(.binOp(.cmp_lt, lhs, rhs)),
+                .not_equal_expr => try cg.notPred(try cg.oir.add(.binOp(.cmp_eq, lhs, rhs))),
+                .greater_than_expr => try cg.oir.add(.binOp(if (uns) .cmp_ugt else .cmp_gt, lhs, rhs)),
+                .less_than_expr => try cg.oir.add(.binOp(if (uns) .cmp_ult else .cmp_lt, lhs, rhs)),
+                .greater_than_equal_expr => try cg.notPred(try cg.oir.add(.binOp(if (uns) .cmp_ult else .cmp_lt, lhs, rhs))),
+                .less_than_equal_expr => try cg.notPred(try cg.oir.add(.binOp(if (uns) .cmp_ugt else .cmp_gt, lhs, rhs))),
                 else => unreachable,
             };
         },
-        .int_literal => unreachable, // handled in the value_map above
-        .cast => |cast| switch (cast.kind) {
-            .lval_to_rval => try cg.buildLval(cast.operand),
-            else => std.debug.panic("TODO: cast {s}", .{@tagName(cast.kind)}),
+        .plus_expr => |un| try cg.buildExpr(un.operand),
+        // TODO: add binary/bitwise negate variants to IR?
+        .negate_expr => |un| neg: {
+            const v = try cg.buildExpr(un.operand);
+            const zero = try cg.oir.add(.constant(0));
+            break :neg try cg.oir.add(.binOp(.sub, zero, v));
         },
+        .bit_not_expr => |un| not: {
+            // ~x == -1 - x
+            const v = try cg.buildExpr(un.operand);
+            const ones = try cg.oir.add(.constant(-1));
+            break :not try cg.oir.add(.binOp(.sub, ones, v));
+        },
+        .bool_not_expr => |un| try cg.notPred(try cg.buildExpr(un.operand)),
+        .addr_of_expr => |un| try cg.buildAddress(un.operand),
+        .paren_expr => |p| try cg.buildExpr(p.operand),
+        .int_literal => unreachable, // handled in the value_map above
+        .cast => |cast| try cg.buildCast(cast),
         else => std.debug.panic("TODO: {s}", .{@tagName(node_tags[@intFromEnum(expr)])}),
     };
 
@@ -621,9 +1142,6 @@ fn buildExpr(cg: *CodeGen, expr: Tree.Node.Index) Error!Oir.Class.Index {
 
 /// Lowers `foo(args...)` into a `call` node. The call reads the current memory
 /// state and produces a tuple `(mem', result)`; we advance `mem_state` to `mem'`
-/// and return `result`.
-/// Lowers `foo(args...)` into a `call` node. The call reads the current memory
-/// state and produces a tuple `(mem', result)`. We advance `mem_state` to `mem'`
 /// and return `result`.
 fn buildCall(cg: *CodeGen, call: Tree.Node.Call) Error!Oir.Class.Index {
     const callee = cg.fn_ids.get(cg.calleeName(call.callee)) orelse
@@ -637,8 +1155,68 @@ fn buildCall(cg: *CodeGen, call: Tree.Node.Call) Error!Oir.Class.Index {
 
     const span = try cg.oir.listToSpan(body.items);
     const node = try cg.oir.add(.call(callee, span));
-    cg.mem_state = try cg.oir.add(.project(0, node, .data));
-    return cg.oir.add(.project(1, node, .data));
+    const ret_bits: u16 = if (call.qt.is(cg.tree.comp, .void)) 0 else cg.widthOf(call.qt);
+    cg.mem_state = try cg.oir.add(.project(0, node, .data, 0));
+    return cg.oir.add(.project(1, node, .data, ret_bits));
+}
+
+/// Lowers an aro `cast` node. Integer conversions become explicit `trunc`/`sext`/
+/// `zext` per the source/target widths and the source signedness (C semantics are
+/// emulated here; the IR itself is C-agnostic).
+///
+/// Lowers the aro `cast` into `trunc`/`sext`/`zext` for the target.
+fn buildCast(cg: *CodeGen, cast: Tree.Node.Cast) Error!Oir.Class.Index {
+    const tree = cg.tree;
+    return switch (cast.kind) {
+        .lval_to_rval => try cg.buildLval(cast.operand),
+        // Pointers are just 64-bit values, so these conversions are no-ops.
+        .no_op, .bitcast, .pointer_to_int, .int_to_pointer => try cg.buildExpr(cast.operand),
+        // Array decays to a pointer to its first element: its base address.
+        .array_to_pointer => try cg.buildAddress(cast.operand),
+        .pointer_to_bool => blk: {
+            const v = try cg.buildExpr(cast.operand);
+            break :blk try cg.notPred(try cg.oir.add(.binOp(.cmp_eq, v, try cg.oir.add(.constant(0)))));
+        },
+        .int_cast => blk: {
+            const v = try cg.buildExpr(cast.operand);
+            const src_qt = cast.operand.qt(tree);
+            const src_bits = cg.widthOf(src_qt);
+            const dst_bits = cg.widthOf(cast.qt);
+            if (dst_bits == src_bits) break :blk v;
+            if (dst_bits < src_bits) break :blk try cg.oir.add(.trunc(v, dst_bits));
+            break :blk if (cg.unsignedQt(src_qt))
+                try cg.oir.add(.zext(v, dst_bits))
+            else
+                try cg.oir.add(.sext(v, dst_bits));
+        },
+        .bool_to_int => blk: {
+            const v = try cg.buildExpr(cast.operand);
+            break :blk try cg.oir.add(.zext(v, cg.widthOf(cast.qt)));
+        },
+        .int_to_bool => blk: {
+            // (v != 0), as an i1, via the unsigned compare `0 < v`.
+            const v = try cg.buildExpr(cast.operand);
+            const zero = try cg.oir.add(.constant(0));
+            break :blk try cg.oir.add(.binOp(.cmp_ult, zero, v));
+        },
+        else => std.debug.panic("TODO: cast {s}", .{@tagName(cast.kind)}),
+    };
+}
+
+fn widthOf(cg: *CodeGen, qt: aro.QualType) u16 {
+    return @intCast(qt.bitSizeof(cg.tree.comp));
+}
+
+fn canonValue(value: i64, bits: u16) i64 {
+    if (bits == 1) return value & 1;
+    if (bits == 0 or bits >= 64) return value;
+    const s: u6 = @intCast(64 - bits);
+    const u: u64 = @bitCast(value);
+    return @as(i64, @bitCast(u << s)) >> s;
+}
+
+fn unsignedQt(cg: *CodeGen, qt: aro.QualType) bool {
+    return qt.signedness(cg.tree.comp) == .unsigned;
 }
 
 fn calleeName(cg: *CodeGen, idx: Tree.Node.Index) []const u8 {
@@ -651,35 +1229,122 @@ fn calleeName(cg: *CodeGen, idx: Tree.Node.Index) []const u8 {
     };
 }
 
+/// Reads an lvalue (the operand of `lval_to_rval`). A plain SSA local returns its
+/// bound value; everything backed by memory (stack-scalar, `*p`, `a[i]`) loads.
 fn buildLval(cg: *CodeGen, idx: Tree.Node.Index) Error!Oir.Class.Index {
     const tree = cg.tree;
-    const node_tags = tree.nodes.items(.tag);
 
-    if (cg.node_to_class.get(idx)) |c| return c;
-
-    const class = switch (idx.get(tree)) {
-        .decl_ref_expr => |decl_ref| ref: {
+    switch (idx.get(tree)) {
+        .decl_ref_expr => |decl_ref| {
             const name = tree.tokSlice(decl_ref.name_tok);
-            if (cg.findIdentifier(name)) |ref_idx| {
-                break :ref ref_idx.*;
-            } else {
-                @panic("TODO");
+            if (cg.mem_vars.get(name)) |info| {
+                // Stack-backed: a scalar loads its value; an aggregate yields its
+                // address (it decays rather than being loaded).
+                const addr = cg.findIdentifier(name).?.*;
+                if (info.aggregate) return addr;
+                return cg.oir.add(.load(cg.mem_state, addr, info.bits));
             }
+            if (cg.findIdentifier(name)) |ref_idx| {
+                const c = ref_idx.*;
+                try cg.node_to_class.put(cg.gpa, idx, c);
+                return c;
+            }
+            @panic("TODO: unknown identifier");
         },
-        .deref_expr => |deref| deref: {
-            // Reading `*p`, load from the pointer using the current memory state.
-            const address = try cg.buildExpr(deref.operand);
-            break :deref try cg.oir.add(.load(cg.mem_state, address));
+        // `*p` / `a[i]` load from a computed address. Never memoized: the value
+        // depends on the current memory state, which a later store may advance.
+        .deref_expr, .array_access_expr => {
+            const address = try cg.buildAddress(idx);
+            const bits = cg.widthOf(idx.qt(tree));
+            return cg.oir.add(.load(cg.mem_state, address, bits));
         },
-        else => std.debug.panic("TODO: {s}", .{@tagName(node_tags[@intFromEnum(idx)])}),
-    };
-
-    // Loads must not be memoized as their value depends on the memory state at
-    // the point of evaluation, which a later store may advance.
-    if (node_tags[@intFromEnum(idx)] != .deref_expr) {
-        try cg.node_to_class.put(cg.gpa, idx, class);
+        .paren_expr => |p| return cg.buildLval(p.operand),
+        else => std.debug.panic("TODO: lval {s}", .{@tagName(idx.get(tree))}),
     }
-    return class;
+}
+
+/// Computes the address of an lvalue as a 64-bit pointer.
+fn buildAddress(cg: *CodeGen, idx: Tree.Node.Index) Error!Oir.Class.Index {
+    const tree = cg.tree;
+    switch (idx.get(tree)) {
+        .decl_ref_expr => |decl_ref| {
+            const name = tree.tokSlice(decl_ref.name_tok);
+            // Only memory-backed locals have an address; the binding *is* it.
+            if (cg.mem_vars.get(name) != null) return cg.findIdentifier(name).?.*;
+            std.debug.panic("TODO: address of non-stack local '{s}'", .{name});
+        },
+        // `&*p` is just `p`.
+        .deref_expr => |deref| return cg.buildExpr(deref.operand),
+        .array_access_expr => |acc| {
+            const base = try cg.buildPointer(acc.base);
+            const index = try cg.buildExpr(acc.index);
+            return cg.scaleAdd(base, index, cg.sizeOfBytes(idx.qt(tree)));
+        },
+        .paren_expr => |p| return cg.buildAddress(p.operand),
+        else => std.debug.panic("TODO: address of {s}", .{@tagName(idx.get(tree))}),
+    }
+}
+
+/// Evaluates `node` to a pointer value, decaying an array operand to its address.
+fn buildPointer(cg: *CodeGen, node: Tree.Node.Index) Error!Oir.Class.Index {
+    if (node.qt(cg.tree).is(cg.tree.comp, .array)) return cg.buildAddress(node);
+    return cg.buildExpr(node);
+}
+
+/// `base + index * elem_bytes`, with the index widened to 64-bit pointer width.
+fn scaleAdd(cg: *CodeGen, base: Oir.Class.Index, index: Oir.Class.Index, elem_bytes: u64) Error!Oir.Class.Index {
+    const idx64 = try cg.to64(index);
+    const scaled = if (elem_bytes == 1)
+        idx64
+    else
+        try cg.oir.add(.binOp(.mul, idx64, try cg.oir.add(.constant(@intCast(elem_bytes)))));
+    return cg.oir.add(.binOp(.add, base, scaled));
+}
+
+/// Widens a value to 64-bit (pointer width) by sign extension, if narrower.
+fn to64(cg: *CodeGen, v: Oir.Class.Index) Error!Oir.Class.Index {
+    if (cg.oir.typeOf(v) >= 64) return v;
+    return cg.oir.add(.sext(v, 64));
+}
+
+fn sizeOfBytes(cg: *CodeGen, qt: aro.QualType) u64 {
+    return qt.sizeof(cg.tree.comp);
+}
+
+fn buildAddSub(cg: *CodeGen, t: anytype, bin: anytype) Error!Oir.Class.Index {
+    const tree = cg.tree;
+    const comp = cg.tree.comp;
+    const is_add = t == .add_expr;
+    const lptr = bin.lhs.qt(tree).get(comp, .pointer);
+    const rptr = bin.rhs.qt(tree).get(comp, .pointer);
+
+    if (lptr) |lp| {
+        if (rptr) |_| {
+            const a = try cg.buildExpr(bin.lhs);
+            const b = try cg.buildExpr(bin.rhs);
+            const diff = try cg.oir.add(.binOp(.sub, a, b));
+            const elem = cg.sizeOfBytes(lp.child);
+            return cg.oir.add(.binOp(.div_trunc, diff, try cg.oir.add(.constant(@intCast(elem)))));
+        }
+        const base = try cg.buildExpr(bin.lhs);
+        const index = try cg.buildExpr(bin.rhs);
+        const elem = cg.sizeOfBytes(lp.child);
+        const idx64 = try cg.to64(index);
+        const scaled = if (elem == 1)
+            idx64
+        else
+            try cg.oir.add(.binOp(.mul, idx64, try cg.oir.add(.constant(@intCast(elem)))));
+        return cg.oir.add(.binOp(if (is_add) .add else .sub, base, scaled));
+    }
+    if (rptr) |rp| {
+        const base = try cg.buildExpr(bin.rhs);
+        const index = try cg.buildExpr(bin.lhs);
+        return cg.scaleAdd(base, index, cg.sizeOfBytes(rp.child));
+    }
+
+    const lhs = try cg.buildExpr(bin.lhs);
+    const rhs = try cg.buildExpr(bin.rhs);
+    return cg.oir.add(.binOp(if (is_add) .add else .sub, lhs, rhs));
 }
 
 fn findIdentifier(cg: *CodeGen, ident: []const u8) ?*Oir.Class.Index {
@@ -695,12 +1360,12 @@ fn buildConstant(cg: *CodeGen, idx: Tree.Node.Index, val: aro.Value) !Oir.Class.
     const key = tree.comp.interner.get(val.ref());
 
     const class = switch (key) {
-        .int => if (val.toInt(i64, tree.comp)) |int|
-            try cg.oir.add(.constant(int))
-        else {
-            @panic("TODO");
+        .int => int: {
+            const raw: i64 = val.toInt(i64, tree.comp) orelse
+                @bitCast(val.toInt(u64, tree.comp) orelse @panic("TODO: huge literal"));
+            break :int try cg.oir.add(.constant(canonValue(raw, cg.widthOf(idx.qt(tree)))));
         },
-        else => @panic("TODO"),
+        else => std.debug.panic("TODO: constant {s} (node {s})", .{ @tagName(key), @tagName(idx.get(tree)) }),
     };
 
     try cg.node_to_class.put(cg.gpa, idx, class);
@@ -714,7 +1379,10 @@ pub fn deinit(cg: *CodeGen, allocator: std.mem.Allocator) void {
     }
     cg.symbol_table.deinit(allocator);
     cg.returns.deinit(allocator);
-    cg.loops.deinit(allocator);
+    cg.clearLabels();
+    cg.labels.deinit(allocator);
+    cg.mem_vars.deinit(allocator);
+    cg.frames.deinit(allocator);
     cg.fn_ids.deinit(allocator);
     cg.fn_names.deinit(allocator);
 }
