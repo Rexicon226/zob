@@ -5,6 +5,7 @@ pub fn getCost(tag: Oir.Node.Tag) u32 {
         // ALU operations
         .@"and",
         .@"or",
+        .xor,
         .shl,
         .shr,
         .sar,
@@ -16,6 +17,8 @@ pub fn getCost(tag: Oir.Node.Tag) u32 {
         .div_trunc,
         .udiv,
         .div_exact,
+        .rem,
+        .urem,
         => 8,
 
         .trunc,

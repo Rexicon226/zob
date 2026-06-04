@@ -230,6 +230,7 @@ pub const Node = struct {
         add,
         @"and",
         @"or",
+        xor,
         sub,
         mul,
         shl,
@@ -238,6 +239,8 @@ pub const Node = struct {
         div_trunc,
         udiv,
         div_exact,
+        rem,
+        urem,
 
         cmp_eq,
         cmp_lt,
@@ -280,6 +283,7 @@ pub const Node = struct {
                 .mul,
                 .@"and",
                 .@"or",
+                .xor,
                 .cmp_eq,
                 => true,
                 else => false,
@@ -326,6 +330,7 @@ pub const Node = struct {
                 .cmp_eq,
                 .@"and",
                 .@"or",
+                .xor,
                 .add,
                 .sub,
                 .mul,
@@ -335,6 +340,8 @@ pub const Node = struct {
                 .div_trunc,
                 .udiv,
                 .div_exact,
+                .rem,
+                .urem,
                 => .bin_op,
             };
         }
@@ -534,6 +541,7 @@ pub const Node = struct {
             .cmp_ugt,
             .@"and",
             .@"or",
+            .xor,
             .add,
             .sub,
             .mul,
@@ -543,6 +551,8 @@ pub const Node = struct {
             .div_trunc,
             .udiv,
             .div_exact,
+            .rem,
+            .urem,
             .trunc,
             .sext,
             .zext,
@@ -911,7 +921,21 @@ fn typeOfDepth(oir: *const Oir, idx: Class.Index, depth: u8) ?u16 {
     for (class.bag.items) |node_idx| {
         const node = oir.getNode(node_idx);
         switch (node.tag) {
-            .add, .sub, .mul, .@"and", .@"or", .shl, .shr, .sar, .div_trunc, .udiv, .div_exact => {
+            .add,
+            .sub,
+            .mul,
+            .@"and",
+            .@"or",
+            .xor,
+            .shl,
+            .shr,
+            .sar,
+            .div_trunc,
+            .udiv,
+            .div_exact,
+            .rem,
+            .urem,
+            => {
                 const ops = node.data.bin_op;
                 if (oir.typeOfDepth(ops[0], depth + 1)) |w| return w;
                 if (oir.typeOfDepth(ops[1], depth + 1)) |w| return w;

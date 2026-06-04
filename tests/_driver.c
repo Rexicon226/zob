@@ -3,6 +3,7 @@
 extern uint64_t foo();
 
 int buf[64];
+char text[64];
 
 #ifndef CHECK
 #define CHECK 0

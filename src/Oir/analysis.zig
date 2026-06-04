@@ -94,6 +94,14 @@ fn transfer(oir: *const Oir, facts: *const Facts, node: Node) KnownBits {
             const b = factOf(oir, facts, node.data.bin_op[1]);
             break :blk .{ .zeros = a.zeros & b.zeros, .ones = a.ones | b.ones };
         },
+        .xor => blk: {
+            const a = factOf(oir, facts, node.data.bin_op[0]);
+            const b = factOf(oir, facts, node.data.bin_op[1]);
+            break :blk .{
+                .zeros = (a.zeros & b.zeros) | (a.ones & b.ones),
+                .ones = (a.zeros & b.ones) | (a.ones & b.zeros),
+            };
+        },
         .cmp_eq, .cmp_lt, .cmp_gt, .cmp_ult, .cmp_ugt => .boolean,
         // `sext` is a no-op on the canonical (already sign-extended) form.
         .sext => factOf(oir, facts, node.data.cast.operand),

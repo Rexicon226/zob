@@ -49,6 +49,9 @@ frames: std.ArrayList(Frame),
 globals: std.StringHashMapUnmanaged(GlobalInfo),
 // TODO: we need to store these in a non-backend specific way
 global_defs: std.ArrayList(zob.rv64.Global),
+compound_dummy: ?Oir.Class.Index = null,
+string_pool: std.AutoHashMapUnmanaged(u32, u32),
+string_names: std.ArrayList([]u8),
 
 const Error = error{OutOfMemory};
 const SymbolTable = std.ArrayList(std.StringHashMapUnmanaged(Oir.Class.Index));
@@ -141,6 +144,8 @@ pub fn init(
         .fn_names = .empty,
         .globals = .empty,
         .global_defs = .empty,
+        .string_pool = .empty,
+        .string_names = .empty,
     };
 }
 
@@ -164,6 +169,9 @@ pub fn deinit(cg: *CodeGen, allocator: std.mem.Allocator) void {
         else => {},
     };
     cg.global_defs.deinit(allocator);
+    cg.string_pool.deinit(allocator);
+    for (cg.string_names.items) |n| allocator.free(n);
+    cg.string_names.deinit(allocator);
 }
 
 pub fn build(
@@ -421,6 +429,17 @@ fn buildStmt(cg: *CodeGen, stmt: Tree.Node.Index) Error!bool {
         .pre_dec_expr,
         .post_inc_expr,
         .post_dec_expr,
+        .add_assign_expr,
+        .sub_assign_expr,
+        .mul_assign_expr,
+        .div_assign_expr,
+        .mod_assign_expr,
+        .shl_assign_expr,
+        .shr_assign_expr,
+        .bit_and_assign_expr,
+        .bit_or_assign_expr,
+        .bit_xor_assign_expr,
+        .comma_expr,
         => {
             _ = try cg.buildExpr(stmt);
             return true;
@@ -442,7 +461,7 @@ fn buildBlock(cg: *CodeGen, node: Tree.Node.Index) Error!bool {
 /// a refined `active` predicate, and the arms that fall through are merged with
 /// gammas. Returns whether control can fall through past the `if`.
 fn buildIf(cg: *CodeGen, cond_br: anytype) Error!bool {
-    const pred = try cg.buildExpr(cond_br.cond);
+    const pred = try cg.toBool(try cg.buildExpr(cond_br.cond));
     const outer = cg.active;
     const mem_before = cg.mem_state;
     const env_before = try cg.snapshotEnv();
@@ -551,7 +570,7 @@ fn buildLoop(
 
     // Predicate continues while non-zero, and only while not yet broken.
     cg.node_to_class.clearRetainingCapacity();
-    const cond_pred = if (cond) |c| try cg.buildExpr(c) else try cg.oir.add(.constant(1));
+    const cond_pred = if (cond) |c| try cg.toBool(try cg.buildExpr(c)) else try cg.oir.add(.constant(1));
     const gated = if (post_test)
         try cg.oir.add(.gamma(args[first_slot], try cg.oir.add(.constant(1)), cond_pred))
     else
@@ -824,6 +843,11 @@ fn switchLabelPred(cg: *CodeGen, value: Oir.Class.Index, label: SwitchLabel, uns
 fn notPred(cg: *CodeGen, p: Oir.Class.Index) !Oir.Class.Index {
     const zero = try cg.oir.add(.constant(0));
     return cg.oir.add(.binOp(.cmp_eq, p, zero));
+}
+
+fn toBool(cg: *CodeGen, v: Oir.Class.Index) !Oir.Class.Index {
+    const zero = try cg.oir.add(.constant(0));
+    return cg.oir.add(.binOp(.cmp_ult, zero, v));
 }
 
 fn captureExit(cg: *CodeGen, names: []const []const u8) !Exit {
@@ -1169,7 +1193,11 @@ fn buildVariable(cg: *CodeGen, variable: anytype) Error!void {
         return;
     }
 
-    const rvalue = try cg.buildExpr(variable.initializer.?);
+    const rvalue = if (variable.initializer) |init_node|
+        try cg.buildExpr(init_node)
+    else
+        // TODO: undefined here?
+        try cg.oir.add(.constantTyped(0, cg.widthOf(qt)));
     try cg.bindVar(ident, rvalue);
 }
 
@@ -1217,13 +1245,14 @@ fn scanAddressed(cg: *CodeGen, node: Tree.Node.Index) Error!void {
             else => {},
         },
         .variable => |v| if (v.initializer) |i| try cg.scanAddressed(i),
-        .assign_expr => |a| {
-            try cg.scanAddressed(a.lhs);
-            try cg.scanAddressed(a.rhs);
-        },
         .call_expr => |c| {
             try cg.scanAddressed(c.callee);
             for (c.args) |a| try cg.scanAddressed(a);
+        },
+        .cond_expr => |c| {
+            try cg.scanAddressed(c.cond);
+            try cg.scanAddressed(c.then_expr);
+            try cg.scanAddressed(c.else_expr);
         },
         .cast => |c| try cg.scanAddressed(c.operand),
         .paren_expr,
@@ -1246,7 +1275,10 @@ fn scanAddressed(cg: *CodeGen, node: Tree.Node.Index) Error!void {
         .sub_expr,
         .mul_expr,
         .div_expr,
+        .mod_expr,
         .bit_and_expr,
+        .bit_or_expr,
+        .bit_xor_expr,
         .shl_expr,
         .shr_expr,
         .equal_expr,
@@ -1255,6 +1287,20 @@ fn scanAddressed(cg: *CodeGen, node: Tree.Node.Index) Error!void {
         .less_than_equal_expr,
         .greater_than_expr,
         .greater_than_equal_expr,
+        .bool_and_expr,
+        .bool_or_expr,
+        .comma_expr,
+        .assign_expr,
+        .add_assign_expr,
+        .sub_assign_expr,
+        .mul_assign_expr,
+        .div_assign_expr,
+        .mod_assign_expr,
+        .shl_assign_expr,
+        .shr_assign_expr,
+        .bit_and_assign_expr,
+        .bit_or_assign_expr,
+        .bit_xor_assign_expr,
         => |b| {
             try cg.scanAddressed(b.lhs);
             try cg.scanAddressed(b.rhs);
@@ -1375,10 +1421,24 @@ fn buildAggregateInit(cg: *CodeGen, base: Oir.Class.Index, qt: aro.QualType, ini
     switch (init_node.get(cg.tree)) {
         .array_init_expr => return cg.buildArrayInit(base, cg.widthOf(qt.get(cg.tree.comp, .array).?.elem), init_node),
         .struct_init_expr => return cg.buildStructInit(base, qt, init_node),
+        .string_literal_expr => return cg.buildStringInit(base, qt, init_node),
         else => {
             const src = try cg.buildExpr(init_node);
             return cg.copyAggregate(base, src, qt);
         },
+    }
+}
+
+fn buildStringInit(cg: *CodeGen, base: Oir.Class.Index, qt: aro.QualType, init_node: Tree.Node.Index) Error!void {
+    const tree = cg.tree;
+    const val = tree.value_map.get(init_node).?;
+    const bytes = tree.comp.interner.get(val.ref()).bytes;
+    const size: u64 = qt.sizeof(tree.comp);
+    for (0..size) |i| {
+        const b: i64 = if (i < bytes.len) bytes[i] else 0;
+        const addr = try cg.addByteOffset(base, i);
+        const v = try cg.oir.add(.constantTyped(b, 8));
+        cg.mem_state = try cg.oir.add(.store(cg.mem_state, addr, v, 8));
     }
 }
 
@@ -1507,6 +1567,21 @@ fn buildExpr(cg: *CodeGen, expr: Tree.Node.Index) Error!Oir.Class.Index {
         .pre_dec_expr => return cg.buildIncDec(expr.get(tree).pre_dec_expr.operand, false, true),
         .post_inc_expr => return cg.buildIncDec(expr.get(tree).post_inc_expr.operand, true, false),
         .post_dec_expr => return cg.buildIncDec(expr.get(tree).post_dec_expr.operand, false, false),
+        .assign_expr => {
+            const a = expr.get(tree).assign_expr;
+            return cg.buildAssign(a.lhs, a.rhs);
+        },
+        .add_assign_expr,
+        .sub_assign_expr,
+        .mul_assign_expr,
+        .div_assign_expr,
+        .mod_assign_expr,
+        .shl_assign_expr,
+        .shr_assign_expr,
+        .bit_and_assign_expr,
+        .bit_or_assign_expr,
+        .bit_xor_assign_expr,
+        => return cg.buildCompoundAssign(expr),
         else => {},
     }
 
@@ -1515,7 +1590,10 @@ fn buildExpr(cg: *CodeGen, expr: Tree.Node.Index) Error!Oir.Class.Index {
         .add_expr, .sub_expr => |bin, t| try cg.buildAddSub(t, bin),
         .mul_expr,
         .div_expr,
+        .mod_expr,
         .bit_and_expr,
+        .bit_or_expr,
+        .bit_xor_expr,
         .shl_expr,
         .shr_expr,
         .equal_expr,
@@ -1524,7 +1602,6 @@ fn buildExpr(cg: *CodeGen, expr: Tree.Node.Index) Error!Oir.Class.Index {
         .greater_than_equal_expr,
         .less_than_expr,
         .less_than_equal_expr,
-        .bit_or_expr,
         => |bin, t| bin: {
             const lhs = try cg.buildExpr(bin.lhs);
             const rhs = try cg.buildExpr(bin.rhs);
@@ -1532,7 +1609,10 @@ fn buildExpr(cg: *CodeGen, expr: Tree.Node.Index) Error!Oir.Class.Index {
             break :bin switch (t) {
                 .mul_expr => try oir.add(.binOp(.mul, lhs, rhs)),
                 .div_expr => try oir.add(.binOp(if (uns) .udiv else .div_trunc, lhs, rhs)),
+                .mod_expr => try oir.add(.binOp(if (uns) .urem else .rem, lhs, rhs)),
                 .bit_and_expr => try oir.add(.binOp(.@"and", lhs, rhs)),
+                .bit_or_expr => try oir.add(.binOp(.@"or", lhs, rhs)),
+                .bit_xor_expr => try oir.add(.binOp(.xor, lhs, rhs)),
                 .shl_expr => try oir.add(.binOp(.shl, lhs, rhs)),
                 .shr_expr => try oir.add(.binOp(if (uns) .shr else .sar, lhs, rhs)),
                 .equal_expr => try oir.add(.binOp(.cmp_eq, lhs, rhs)),
@@ -1541,9 +1621,31 @@ fn buildExpr(cg: *CodeGen, expr: Tree.Node.Index) Error!Oir.Class.Index {
                 .less_than_expr => try oir.add(.binOp(if (uns) .cmp_ult else .cmp_lt, lhs, rhs)),
                 .greater_than_equal_expr => try cg.notPred(try oir.add(.binOp(if (uns) .cmp_ult else .cmp_lt, lhs, rhs))),
                 .less_than_equal_expr => try cg.notPred(try oir.add(.binOp(if (uns) .cmp_ugt else .cmp_gt, lhs, rhs))),
-                .bit_or_expr => try oir.add(.binOp(.@"or", lhs, rhs)),
                 else => unreachable,
             };
+        },
+        // TODO: make these short-circuiting
+        .bool_and_expr => |bin| try oir.add(.binOp(
+            .@"and",
+            try cg.toBool(try cg.buildExpr(bin.lhs)),
+            try cg.toBool(try cg.buildExpr(bin.rhs)),
+        )),
+        .bool_or_expr => |bin| try oir.add(.binOp(
+            .@"or",
+            try cg.toBool(try cg.buildExpr(bin.lhs)),
+            try cg.toBool(try cg.buildExpr(bin.rhs)),
+        )),
+        // `c ? a : b`
+        .cond_expr => |c| cond: {
+            const pred = try cg.toBool(try cg.buildExpr(c.cond));
+            const then = try cg.buildExpr(c.then_expr);
+            const els = try cg.buildExpr(c.else_expr);
+            break :cond try cg.gammaIfNe(pred, then, els);
+        },
+        // `a, b`. Evalute `a` for its side effects, yield `b`.
+        .comma_expr => |bin| comma: {
+            _ = try cg.buildExpr(bin.lhs);
+            break :comma try cg.buildExpr(bin.rhs);
         },
         .plus_expr => |un| try cg.buildExpr(un.operand),
         // TODO: add binary/bitwise negate variants to IR?
@@ -1568,6 +1670,8 @@ fn buildExpr(cg: *CodeGen, expr: Tree.Node.Index) Error!Oir.Class.Index {
         .deref_expr,
         .array_access_expr,
         .compound_literal_expr,
+        .compound_assign_dummy_expr,
+        .string_literal_expr,
         => try cg.buildLval(expr),
         .int_literal => unreachable, // handled in the value_map above
         .cast => |cast| try cg.buildCast(cast),
@@ -1791,6 +1895,9 @@ fn buildLval(cg: *CodeGen, idx: Tree.Node.Index) Error!Oir.Class.Index {
             return cg.oir.add(.load(cg.mem_state, address, cg.widthOf(fqt)));
         },
         .paren_expr => |p| return cg.buildLval(p.operand),
+        // A string literal is an array lvalue.
+        .string_literal_expr => return cg.oir.add(.globalAddr(try cg.internString(idx))),
+        .compound_assign_dummy_expr => return cg.compound_dummy.?,
         .compound_literal_expr => |lit| {
             const comp = cg.tree.comp;
             const id = cg.next_alloca;
@@ -1839,6 +1946,7 @@ fn buildAddress(cg: *CodeGen, idx: Tree.Node.Index) Error!Oir.Class.Index {
             return cg.addByteOffset(base, cg.fieldByteOffset(rec_qt, m.member_index));
         },
         .paren_expr => |p| return cg.buildAddress(p.operand),
+        .string_literal_expr => return cg.oir.add(.globalAddr(try cg.internString(idx))),
         .compound_literal_expr => return cg.buildLval(idx),
         .call_expr => return cg.buildExpr(idx),
         else => std.debug.panic("TODO: address of {s}", .{@tagName(idx.get(tree))}),
@@ -1962,6 +2070,32 @@ fn strength(data: zob.rv64.Global.Data) u8 {
     };
 }
 
+fn internString(cg: *CodeGen, node: Tree.Node.Index) Error!u32 {
+    const tree = cg.tree;
+    const comp = tree.comp;
+    const val = tree.value_map.get(node).?;
+    const ref: u32 = @intFromEnum(val.ref());
+    if (cg.string_pool.get(ref)) |id| return id;
+
+    const bytes = comp.interner.get(val.ref()).bytes;
+    const size: usize = @intCast(node.qt(tree).sizeof(comp));
+    const buf = try cg.gpa.alloc(u8, size);
+    @memset(buf, 0);
+    const n = @min(size, bytes.len);
+    @memcpy(buf[0..n], bytes[0..n]);
+
+    const id: u32 = @intCast(cg.global_defs.items.len);
+    const name = try std.fmt.allocPrint(cg.gpa, ".Lstr{d}", .{id});
+    try cg.string_names.append(cg.gpa, name);
+    try cg.global_defs.append(cg.gpa, .{
+        .name = name,
+        .external = false,
+        .data = .{ .bytes = .{ .bytes = buf, .@"align" = 1 } },
+    });
+    try cg.string_pool.put(cg.gpa, ref, id);
+    return id;
+}
+
 fn lowerInitBytes(cg: *CodeGen, buf: []u8, off: u64, qt: aro.QualType, init_node: Tree.Node.Index) Error!void {
     const tree = cg.tree;
     const comp = tree.comp;
@@ -1987,6 +2121,13 @@ fn lowerInitBytes(cg: *CodeGen, buf: []u8, off: u64, qt: aro.QualType, init_node
                 if (item.get(tree) == .default_init_expr) continue; // zero
                 try cg.lowerInitElem(buf, off + field.layout.offset_bits / 8, field.qt, item);
             }
+        },
+        // `char g[] = "abs"`. Copy the literal's bytes into the object.
+        .string_literal_expr => {
+            const val = tree.value_map.get(init_node).?;
+            const bytes = comp.interner.get(val.ref()).bytes;
+            const n = @min(buf.len - off, bytes.len);
+            @memcpy(buf[off..][0..n], bytes[0..n]);
         },
         else => try cg.writeScalarInit(buf, off, qt, init_node),
     }
@@ -2026,7 +2167,8 @@ fn buildConstant(cg: *CodeGen, idx: Tree.Node.Index, val: aro.Value) !Oir.Class.
         .int => int: {
             const raw: i64 = val.toInt(i64, tree.comp) orelse
                 @bitCast(val.toInt(u64, tree.comp) orelse @panic("TODO: huge literal"));
-            break :int try cg.oir.add(.constant(canonValue(raw, cg.widthOf(idx.qt(tree)))));
+            const bits = cg.widthOf(idx.qt(tree));
+            break :int try cg.oir.add(.constantTyped(canonValue(raw, bits), bits));
         },
         else => std.debug.panic("TODO: constant {s} (node {s})", .{ @tagName(key), @tagName(idx.get(tree)) }),
     };

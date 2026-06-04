@@ -1,8 +1,5 @@
-#include <stdlib.h>
 #include <stdio.h>
 
-int y;
-
-int foo( void ) {
-  return y;
+void foo( int x ) {
+  printf("something %d\n", x);
 }

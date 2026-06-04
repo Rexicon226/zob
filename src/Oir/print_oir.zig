@@ -182,6 +182,7 @@ pub const Writer = struct {
         switch (node.tag) {
             .@"and",
             .@"or",
+            .xor,
             .sub,
             .shl,
             .shr,
@@ -190,6 +191,8 @@ pub const Writer = struct {
             .div_exact,
             .div_trunc,
             .udiv,
+            .rem,
+            .urem,
             .add,
             .cmp_gt,
             .cmp_lt,

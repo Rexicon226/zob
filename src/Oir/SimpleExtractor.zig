@@ -252,12 +252,15 @@ fn extractClass(e: *SimpleExtractor, class_idx: Class.Index, recv: *Recursive) !
         .mul,
         .@"and",
         .@"or",
+        .xor,
         .shl,
         .shr,
         .sar,
         .div_trunc,
         .udiv,
         .div_exact,
+        .rem,
+        .urem,
         => {
             const bin_op = best_node.data.bin_op;
 

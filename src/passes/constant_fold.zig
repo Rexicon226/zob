@@ -29,6 +29,8 @@ pub fn run(oir: *Oir) !bool {
             .div_exact,
             .div_trunc,
             .udiv,
+            .rem,
+            .urem,
             .shl,
             .shr,
             .sar,
@@ -39,6 +41,7 @@ pub fn run(oir: *Oir) !bool {
             .cmp_ugt,
             .@"and",
             .@"or",
+            .xor,
             => {
                 // The class has already been solved for a constant, no need to do anything else!
                 if (oir.classContains(class_idx, .constant) != null) continue;

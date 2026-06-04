@@ -12,12 +12,15 @@ pub fn isScalarBinOp(tag: Node.Tag) bool {
         .mul,
         .@"and",
         .@"or",
+        .xor,
         .shl,
         .shr,
         .sar,
         .div_trunc,
         .udiv,
         .div_exact,
+        .rem,
+        .urem,
         .cmp_eq,
         .cmp_lt,
         .cmp_gt,
@@ -50,6 +53,7 @@ pub fn binOp(tag: Node.Tag, lhs: i64, rhs: i64, bits: u16) ?i64 {
         .mul => canon(lhs *% rhs, bits),
         .@"and" => canon(lhs & rhs, bits),
         .@"or" => canon(lhs | rhs, bits),
+        .xor => canon(lhs ^ rhs, bits),
         .shl => if (rhs >= 0 and rhs < bits)
             canon(@bitCast(ul << @intCast(rhs)), bits)
         else
@@ -68,6 +72,11 @@ pub fn binOp(tag: Node.Tag, lhs: i64, rhs: i64, bits: u16) ?i64 {
             null,
         .div_exact => if (divDefined(lhs, rhs) and @rem(lhs, rhs) == 0)
             canon(@divExact(lhs, rhs), bits)
+        else
+            null,
+        .rem => if (divDefined(lhs, rhs)) canon(@rem(lhs, rhs), bits) else null,
+        .urem => if (rhs & @as(i64, @bitCast(mask)) != 0)
+            canon(@bitCast((ul & mask) % (ur & mask)), bits)
         else
             null,
         .cmp_eq => @intFromBool(lhs == rhs),

@@ -26,6 +26,8 @@ pub const BinOp = enum {
     sra,
     div,
     divu,
+    rem,
+    remu,
     xor,
     slt,
     sltu,
@@ -254,7 +256,7 @@ const Builder = struct {
                 }
             },
             .constant => try b.add(.{ .li = .{ .dst = n, .imm = node.data.constant.val } }),
-            .add, .sub, .mul, .@"and", .@"or", .shl, .shr, .sar, .div_trunc, .udiv, .div_exact => {
+            .add, .sub, .mul, .@"and", .@"or", .xor, .shl, .shr, .sar, .div_trunc, .udiv, .div_exact, .rem, .urem => {
                 const ops = node.data.bin_op;
                 const width = b.recv.typeOf(ops[0]);
                 try b.add(.binOp(switch (node.tag) {
@@ -263,11 +265,14 @@ const Builder = struct {
                     .mul => .mul,
                     .@"and" => .@"and",
                     .@"or" => .@"or",
+                    .xor => .xor,
                     .shl => .sll,
                     .shr => .srl,
                     .sar => .sra,
                     .div_trunc, .div_exact => .div,
                     .udiv => .divu,
+                    .rem => .rem,
+                    .urem => .remu,
                     else => unreachable,
                 }, n, ops[0], ops[1], width));
             },
