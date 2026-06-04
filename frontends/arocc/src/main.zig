@@ -15,6 +15,7 @@ pub const std_options: std.Options = .{
 const Cmd = struct {
     file_path: ?[]const u8,
     graphs: ?[]const u8,
+    verbose_oir: bool,
 
     const cmd_info: cli.CommandInfo(Cmd) = .{
         .help = .{
@@ -37,6 +38,14 @@ const Cmd = struct {
                 .default_value = null,
                 .config = .string,
                 .help = "if specified, graphviz outputs are written to the provided directory",
+            },
+            .verbose_oir = .{
+                .kind = .named,
+                .name_override = "verbose-oir",
+                .alias = .none,
+                .default_value = false,
+                .config = {},
+                .help = "prints the unoptimized and saturated OIR state to stderr",
             },
         },
     };
@@ -132,14 +141,23 @@ pub fn main(init: std.process.Init) !void {
     var cg = try CodeGen.init(&oir, gpa, &tree, &comp);
     defer cg.deinit(gpa);
 
-    const recvs = try cg.build(io, cmd.graphs);
+    const recvs = try cg.build(io, .{
+        .graphs = cmd.graphs,
+        .verbose_oir = cmd.verbose_oir,
+    });
     defer {
         for (recvs) |*recv| recv.deinit(gpa);
         gpa.free(recvs);
     }
 
     // Codegen it into assembly.
-    try zob.rv64.generate(recvs, cg.fn_names.items, cg.global_defs.items, gpa, stdout_w);
+    try zob.rv64.generate(
+        recvs,
+        cg.fn_names.items,
+        cg.global_defs.items,
+        gpa,
+        stdout_w,
+    );
 }
 
 fn fail(comptime fmt: []const u8, args: anytype) noreturn {

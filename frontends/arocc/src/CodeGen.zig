@@ -166,7 +166,14 @@ pub fn deinit(cg: *CodeGen, allocator: std.mem.Allocator) void {
     cg.global_defs.deinit(allocator);
 }
 
-pub fn build(cg: *CodeGen, io: std.Io, graphs: ?[]const u8) ![]Recursive {
+pub fn build(
+    cg: *CodeGen,
+    io: std.Io,
+    config: struct {
+        graphs: ?[]const u8,
+        verbose_oir: bool,
+    },
+) ![]Recursive {
     var stderr_writer = std.Io.File.stderr().writer(io, &.{});
     const stderr = &stderr_writer.interface;
 
@@ -207,26 +214,36 @@ pub fn build(cg: *CodeGen, io: std.Io, graphs: ?[]const u8) ![]Recursive {
         }
     }
 
+    // After we've created the Oir graph, rebuild to ensure it's in a clean
+    // state before we start optimizing.
     try cg.oir.rebuild();
 
-    try stderr.writeAll("unoptimized OIR:\n");
-    try cg.oir.print(stderr);
-    try stderr.writeAll("end OIR\n");
+    if (config.verbose_oir) {
+        try stderr.writeAll("unoptimized OIR:\n");
+        try cg.oir.print(stderr);
+        try stderr.writeAll("end OIR\n");
+    }
 
-    try cg.oir.optimize(io, .saturate, graphs);
+    // Run optimization passes until no new changes can be found.
+    try cg.oir.optimize(io, .saturate, config.graphs);
 
-    try stderr.writeAll("before extraction OIR:\n");
-    try cg.oir.print(stderr);
-    try stderr.writeAll("end OIR\n");
+    if (config.verbose_oir) {
+        try stderr.writeAll("before extraction OIR:\n");
+        try cg.oir.print(stderr);
+        try stderr.writeAll("end OIR\n");
+    }
 
+    // Extract the close-to-optimal path from the E-Graph for each function.
     const recvs = try cg.oir.extract(.auto);
 
-    try stderr.writeAll("optimized OIR:\n");
-    for (recvs) |recv| {
-        try recv.print(stderr);
-        try stderr.writeAll("--\n");
+    if (config.verbose_oir) {
+        try stderr.writeAll("optimized OIR:\n");
+        for (recvs) |recv| {
+            try recv.print(stderr);
+            try stderr.writeAll("--\n");
+        }
+        try stderr.writeAll("end OIR\n");
     }
-    try stderr.writeAll("end OIR\n");
 
     return recvs;
 }
