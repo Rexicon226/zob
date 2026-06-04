@@ -105,6 +105,20 @@ pub fn main(init: std.process.Init) !void {
         .environ_map = init.environ_map,
     });
     defer comp.deinit();
+    comp.target = .{
+        .cpu = .{
+            .arch = .riscv64,
+            .model = .generic(.riscv64),
+            .features = .empty,
+        },
+        .vendor = .unknown,
+        .os = .{
+            .tag = .linux,
+            .version_range = .default(.riscv64, .linux, .musl),
+        },
+        .abi = .musl,
+        .ofmt = .elf,
+    };
 
     var driver: aro.Driver = .{
         .comp = &comp,

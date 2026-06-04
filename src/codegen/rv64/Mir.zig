@@ -51,6 +51,7 @@ pub const Inst = union(enum) {
     li: struct { dst: VReg, imm: i64 },
     frame_addr: struct { dst: VReg, offset: u32 },
     symbol_addr: struct { dst: VReg, global: u32 },
+    va_start: struct { dst: VReg, named: u32 },
     beqz: struct { src: VReg, target: Label },
     j: Label,
     label: Label,
@@ -67,7 +68,7 @@ pub const Inst = union(enum) {
     /// Calls `f(ctx, vreg)` for each vreg this instruction defines.
     pub fn forEachDef(inst: Inst, ctx: anytype, comptime f: fn (@TypeOf(ctx), VReg) void) void {
         switch (inst) {
-            inline .arg, .li, .frame_addr, .symbol_addr, .bin, .un, .cast, .load => |p| f(ctx, p.dst),
+            inline .arg, .li, .frame_addr, .symbol_addr, .va_start, .bin, .un, .cast, .load => |p| f(ctx, p.dst),
             .call => |p| f(ctx, p.dst),
             .store, .beqz, .j, .label, .set_ret, .set_arg, .ret => {},
         }
@@ -76,7 +77,7 @@ pub const Inst = union(enum) {
     /// Calls `f(ctx, vreg)` for each vreg this instruction uses.
     pub fn forEachUse(inst: Inst, ctx: anytype, comptime f: fn (@TypeOf(ctx), VReg) void) void {
         switch (inst) {
-            .arg, .li, .frame_addr, .symbol_addr, .j, .label, .ret, .call => {},
+            .arg, .li, .frame_addr, .symbol_addr, .va_start, .j, .label, .ret, .call => {},
             .un => |p| f(ctx, p.src),
             .cast => |p| f(ctx, p.src),
             .load => |p| f(ctx, p.addr),
@@ -113,6 +114,7 @@ fn aliasesArg(args: []const VReg, next: VReg) ?usize {
 insts: std.ArrayList(Inst),
 num_vregs: u32,
 alloca_bytes: u32,
+is_variadic: bool,
 
 const Mir = @This();
 
@@ -138,7 +140,17 @@ pub fn build(gpa: std.mem.Allocator, recv: *const Recursive, sched: *const Sched
     }
 
     try b.emitRegion(.root);
-    return .{ .insts = b.insts, .num_vregs = b.next_vreg, .alloca_bytes = b.alloca_off };
+
+    const is_variadic = for (recv.nodes.items) |node| {
+        if (node.tag == .va_start) break true;
+    } else false;
+
+    return .{
+        .insts = b.insts,
+        .num_vregs = b.next_vreg,
+        .alloca_bytes = b.alloca_off,
+        .is_variadic = is_variadic,
+    };
 }
 
 pub fn deinit(m: *Mir, gpa: std.mem.Allocator) void {
@@ -244,6 +256,7 @@ const Builder = struct {
                 try b.add(.{ .frame_addr = .{ .dst = n, .offset = off } });
             },
             .global_addr => try b.add(.{ .symbol_addr = .{ .dst = n, .global = node.data.global_addr.id } }),
+            .va_start => try b.add(.{ .va_start = .{ .dst = n, .named = node.data.va_start.named } }),
             .project => {
                 if (b.sched.is_mem[@intFromEnum(n)]) return; // memory state, no register
                 const project = node.data.project;

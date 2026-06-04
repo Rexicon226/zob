@@ -1,4 +1,4 @@
-// CHECK: foo(200) == -56 && foo(5) == 5 && foo(-1) == -1
+// CHECK: foo(200) == 200 && foo(5) == 5 && foo(-1) == 255
 int foo(int n) {
     char c = n;
     return c;

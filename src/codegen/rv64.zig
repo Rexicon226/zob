@@ -102,8 +102,11 @@ pub const Global = struct {
     pub const Data = union(enum) {
         declared,
         bss: struct { size: u64, @"align": u32 },
-        bytes: struct { bytes: []const u8, @"align": u32 },
+        bytes: struct { bytes: []const u8, relocs: []const Reloc, @"align": u32 },
     };
+
+    /// An 8-byte slot at `offset` holding the address of global `target`.
+    pub const Reloc = struct { offset: u64, target: u32, addend: i64 };
 };
 
 /// Emits one function per `Recursive`. `names` is indexed by lambda id.
@@ -160,7 +163,22 @@ fn emitGlobals(globals: []const Global, w: *std.Io.Writer) !void {
                 try w.print(".type {s}, @object\n", .{g.name});
                 try w.print(".align {d}\n", .{std.math.log2_int(u32, @max(1, b.@"align"))});
                 try w.print("{s}:\n", .{g.name});
-                for (b.bytes) |byte| try w.print("    .byte {d}\n", .{byte});
+                var i: u64 = 0;
+                var ri: usize = 0;
+                while (i < b.bytes.len) {
+                    if (ri < b.relocs.len and b.relocs[ri].offset == i) {
+                        const r = b.relocs[ri];
+                        if (r.addend != 0)
+                            try w.print("    .quad {s}+{d}\n", .{ globals[r.target].name, r.addend })
+                        else
+                            try w.print("    .quad {s}\n", .{globals[r.target].name});
+                        i += 8;
+                        ri += 1;
+                    } else {
+                        try w.print("    .byte {d}\n", .{b.bytes[i]});
+                        i += 1;
+                    }
+                }
                 try w.print(".size {s}, {d}\n", .{ g.name, b.bytes.len });
             },
         }
@@ -197,6 +215,11 @@ const Emitter = struct {
                 try e.emitLine("sd {t}, {d}(sp)", .{ reg, e.savedOffset(j) });
             }
             if (e.has_call) try e.emitLine("sd ra, {d}(sp)", .{e.raOffset()});
+            if (e.mir.is_variadic) {
+                for (arg_regs, 0..) |reg, i| {
+                    try e.emitLine("sd {t}, {d}(sp)", .{ reg, e.varargBase() + i * slot_size });
+                }
+            }
         }
 
         for (e.mir.insts.items) |inst| try e.emitInst(inst, frame);
@@ -224,6 +247,11 @@ const Emitter = struct {
             .symbol_addr => |a| {
                 const dst, const slot = e.defReg(a.dst);
                 try e.emitLine("la {t}, {s}", .{ dst, e.globals[a.global].name });
+                try e.finishDef(dst, slot);
+            },
+            .va_start => |a| {
+                const dst, const slot = e.defReg(a.dst);
+                try e.emitLine("addi {t}, sp, {d}", .{ dst, e.varargBase() + @as(u64, a.named) * slot_size });
                 try e.finishDef(dst, slot);
             },
             .un => |a| {
@@ -370,8 +398,13 @@ const Emitter = struct {
         return (@as(u64, e.ra.num_spills) + e.ra.used_saved.len + ra_slots) * slot_size;
     }
 
+    fn varargBase(e: *Emitter) u64 {
+        return e.allocaBase() + e.mir.alloca_bytes;
+    }
+
     fn frameSize(e: *Emitter) u64 {
-        return std.mem.alignForward(u64, e.allocaBase() + e.mir.alloca_bytes, 16);
+        const vararg_bytes: u64 = if (e.mir.is_variadic) arg_regs.len * slot_size else 0;
+        return std.mem.alignForward(u64, e.varargBase() + vararg_bytes, 16);
     }
 
     fn emitLine(e: *Emitter, comptime fmt: []const u8, args: anytype) !void {

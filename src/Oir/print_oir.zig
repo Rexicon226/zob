@@ -221,6 +221,7 @@ pub const Writer = struct {
             .call => try w.printCall(node, repr, stream),
             .alloca => try w.printAlloca(node, stream),
             .global_addr => try stream.print("@{d}", .{node.data.global_addr.id}),
+            .va_start => try stream.print("named {d}", .{node.data.va_start.named}),
         }
         try stream.writeAll(")");
     }

@@ -41,7 +41,7 @@ pub const Recursive = struct {
             .load => node.data.load.bits,
             .trunc, .sext, .zext => node.data.cast.bits,
             .cmp_eq, .cmp_lt, .cmp_gt, .cmp_ult, .cmp_ugt => 1,
-            .alloca, .global_addr => 64,
+            .alloca, .global_addr, .va_start => 64,
             .add,
             .sub,
             .mul,

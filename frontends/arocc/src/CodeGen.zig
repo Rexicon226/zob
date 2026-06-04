@@ -29,6 +29,7 @@ fn_names: std.ArrayList([]const u8),
 cur_fn: u32 = 0,
 /// Return-value width of the function currently being lowereed (0 if void).
 cur_ret_bits: u16 = 0,
+cur_named: u32 = 0,
 cur_sret: ?Oir.Class.Index = null,
 /// Names whose address is taken somewhere in the current function.
 addressed: std.StringHashMapUnmanaged(void),
@@ -165,7 +166,10 @@ pub fn deinit(cg: *CodeGen, allocator: std.mem.Allocator) void {
     cg.fn_names.deinit(allocator);
     cg.globals.deinit(allocator);
     for (cg.global_defs.items) |g| switch (g.data) {
-        .bytes => |p| allocator.free(p.bytes),
+        .bytes => |p| {
+            allocator.free(p.bytes);
+            allocator.free(p.relocs);
+        },
         else => {},
     };
     cg.global_defs.deinit(allocator);
@@ -264,6 +268,7 @@ fn buildFn(cg: *CodeGen, decl: Tree.Node.Index) !void {
             const func_ty = func.qt.base(tree.comp).type.func;
             const id = cg.fn_ids.get(tree.tokSlice(func.name_tok)).?;
             cg.cur_fn = id;
+            cg.cur_named = @intCast(func_ty.params.len);
             const returns_aggregate = !func_ty.return_type.is(tree.comp, .void) and
                 cg.isAggregate(func_ty.return_type);
             cg.cur_ret_bits = if (func_ty.return_type.is(tree.comp, .void) or returns_aggregate)
@@ -440,11 +445,14 @@ fn buildStmt(cg: *CodeGen, stmt: Tree.Node.Index) Error!bool {
         .bit_or_assign_expr,
         .bit_xor_assign_expr,
         .comma_expr,
+        .paren_expr,
+        .builtin_call_expr,
         => {
             _ = try cg.buildExpr(stmt);
             return true;
         },
         .labeled_stmt => |l| return cg.buildStmt(l.body),
+        .null_stmt => return true, // empty statement `;`
         else => std.debug.panic("TODO: {s}", .{@tagName(node_tags[@intFromEnum(stmt)])}),
     }
 }
@@ -1002,14 +1010,26 @@ fn mergeReturns(cg: *CodeGen) !struct { Oir.Class.Index, ?Oir.Class.Index } {
     return cg.mergeReturnList(cg.returns.items);
 }
 
+fn mergeValue(cg: *CodeGen, r: Return, want: bool) !?Oir.Class.Index {
+    if (!want) return null;
+    return r.value orelse try cg.oir.add(.constant(0));
+}
+
 fn mergeReturnList(cg: *CodeGen, rs: []const Return) !struct { Oir.Class.Index, ?Oir.Class.Index } {
+    // If any path returns a value, the function is value-producing.
+    const wants_value = for (rs) |r| {
+        if (r.value != null) break true;
+    } else false;
+
     var mem = rs[rs.len - 1].mem;
-    var value = rs[rs.len - 1].value;
+    var value = try cg.mergeValue(rs[rs.len - 1], wants_value);
     var i = rs.len - 1;
-    while (i > 0) {
-        i -= 1;
+    while (i > 0) : (i -= 1) {
         mem = try cg.gammaIfNe(rs[i].pred, rs[i].mem, mem);
-        if (value) |v| value = try cg.oir.add(.gamma(rs[i].pred, rs[i].value.?, v));
+        if (wants_value) {
+            const new = try cg.mergeValue(rs[i], wants_value);
+            value = try cg.oir.add(.gamma(rs[i].pred, new.?, value.?));
+        }
     }
     return .{ mem, value };
 }
@@ -1582,6 +1602,11 @@ fn buildExpr(cg: *CodeGen, expr: Tree.Node.Index) Error!Oir.Class.Index {
         .bit_or_assign_expr,
         .bit_xor_assign_expr,
         => return cg.buildCompoundAssign(expr),
+        .paren_expr => return cg.buildExpr(expr.get(tree).paren_expr.operand),
+        .stmt_expr => return cg.buildStmtExpr(expr),
+        .bool_and_expr => return cg.buildLogical(expr.get(tree).bool_and_expr, .@"and"),
+        .bool_or_expr => return cg.buildLogical(expr.get(tree).bool_or_expr, .@"or"),
+        .cond_expr => return cg.buildCond(expr.get(tree).cond_expr),
         else => {},
     }
 
@@ -1624,24 +1649,6 @@ fn buildExpr(cg: *CodeGen, expr: Tree.Node.Index) Error!Oir.Class.Index {
                 else => unreachable,
             };
         },
-        // TODO: make these short-circuiting
-        .bool_and_expr => |bin| try oir.add(.binOp(
-            .@"and",
-            try cg.toBool(try cg.buildExpr(bin.lhs)),
-            try cg.toBool(try cg.buildExpr(bin.rhs)),
-        )),
-        .bool_or_expr => |bin| try oir.add(.binOp(
-            .@"or",
-            try cg.toBool(try cg.buildExpr(bin.lhs)),
-            try cg.toBool(try cg.buildExpr(bin.rhs)),
-        )),
-        // `c ? a : b`
-        .cond_expr => |c| cond: {
-            const pred = try cg.toBool(try cg.buildExpr(c.cond));
-            const then = try cg.buildExpr(c.then_expr);
-            const els = try cg.buildExpr(c.else_expr);
-            break :cond try cg.gammaIfNe(pred, then, els);
-        },
         // `a, b`. Evalute `a` for its side effects, yield `b`.
         .comma_expr => |bin| comma: {
             _ = try cg.buildExpr(bin.lhs);
@@ -1674,6 +1681,8 @@ fn buildExpr(cg: *CodeGen, expr: Tree.Node.Index) Error!Oir.Class.Index {
         .string_literal_expr,
         => try cg.buildLval(expr),
         .int_literal => unreachable, // handled in the value_map above
+        .sizeof_expr => |ti| try oir.add(.constantTyped(@intCast(ti.operand_qt.sizeof(tree.comp)), cg.widthOf(ti.qt))),
+        .alignof_expr => |ti| try oir.add(.constantTyped(@intCast(ti.operand_qt.alignof(tree.comp)), cg.widthOf(ti.qt))),
         .cast => |cast| try cg.buildCast(cast),
         .builtin_call_expr => |call| b: {
             const name = cg.tree.tokSlice(call.builtin_tok);
@@ -1747,6 +1756,18 @@ fn buildExpr(cg: *CodeGen, expr: Tree.Node.Index) Error!Oir.Class.Index {
 
                     break :b try oir.add(.binOp(.@"or", d0, d1));
                 },
+                // `va_start(ap, last)`
+                // Point the `va_list` at the first variadic argument
+                // in the function's save area.
+                // TODO: this is riscv specific, uhh, i dunno how varargs work
+                .__builtin_va_start, .__builtin_c23_va_start => {
+                    const area = try oir.add(.vaStart(cg.cur_named));
+                    try cg.storeToScalarLval(cg.lvalNode(call.args[0]), area);
+                    break :b area;
+                },
+                // `va_end`/`va_copy` need no cleanup for a pointer `va_list`.
+                // TODO: also riscv specific
+                .__builtin_va_end, .__builtin_va_copy => break :b try oir.add(.constant(0)),
                 else => |t| std.debug.panic("TODO: implement builtin: {t}", .{t}),
             }
         },
@@ -1757,12 +1778,64 @@ fn buildExpr(cg: *CodeGen, expr: Tree.Node.Index) Error!Oir.Class.Index {
     return class;
 }
 
+/// Lowers a GNU statement expression `({ stmts...; value })`.
+/// Run the leading statements, then yields the last one's value.
+fn buildStmtExpr(cg: *CodeGen, expr: Tree.Node.Index) Error!Oir.Class.Index {
+    const tree = cg.tree;
+    const un = expr.get(tree).stmt_expr;
+    const body = un.operand.get(tree).compound_stmt.body;
+    if (body.len == 0 or un.qt.is(tree.comp, .void)) {
+        _ = try cg.buildSeq(body);
+        return cg.oir.add(.constant(0));
+    }
+    _ = try cg.buildSeq(body[0 .. body.len - 1]);
+    return cg.buildExpr(body[body.len - 1]);
+}
+
+/// Lowers `a && b` / `a || b` with the short-circuit semantics.
+/// The RHS is evaluated on its own memory chain, then merged with a gamma on
+/// the LHS so the RHS's side effects are conditional.
+fn buildLogical(cg: *CodeGen, bin: anytype, op: enum { @"and", @"or" }) Error!Oir.Class.Index {
+    const la = try cg.toBool(try cg.buildExpr(bin.lhs));
+    const mem0 = cg.mem_state;
+    const rb = try cg.toBool(try cg.buildExpr(bin.rhs));
+    const mem_rhs = cg.mem_state;
+    switch (op) {
+        .@"and" => {
+            cg.mem_state = try cg.gammaIfNe(la, mem_rhs, mem0);
+            cg.node_to_class.clearRetainingCapacity();
+            return cg.gammaIfNe(la, rb, try cg.oir.add(.constant(0)));
+        },
+        .@"or" => {
+            cg.mem_state = try cg.gammaIfNe(la, mem0, mem_rhs);
+            cg.node_to_class.clearRetainingCapacity();
+            return cg.gammaIfNe(la, try cg.oir.add(.constant(1)), rb);
+        },
+    }
+}
+
+/// Lowers `c ? t : e`.
+/// Each arm is evaluated on its own memory chain from the pre-condition state,
+/// then merged with a gamma so only the taken arm's side effects run.
+fn buildCond(cg: *CodeGen, c: anytype) Error!Oir.Class.Index {
+    const pc = try cg.toBool(try cg.buildExpr(c.cond));
+    const mem0 = cg.mem_state;
+    const t = try cg.buildExpr(c.then_expr);
+    const mem_t = cg.mem_state;
+    cg.mem_state = mem0;
+    cg.node_to_class.clearRetainingCapacity();
+    const e = try cg.buildExpr(c.else_expr);
+    const mem_e = cg.mem_state;
+    cg.mem_state = try cg.gammaIfNe(pc, mem_t, mem_e);
+    cg.node_to_class.clearRetainingCapacity();
+    return cg.gammaIfNe(pc, t, e);
+}
+
 /// Lowers `foo(args...)` into a `call` node. The call reads the current memory
 /// state and produces a tuple `(mem', result)`; we advance `mem_state` to `mem'`
 /// and return `result`.
 fn buildCall(cg: *CodeGen, call: Tree.Node.Call) Error!Oir.Class.Index {
-    const callee = cg.fn_ids.get(cg.calleeName(call.callee)) orelse
-        std.debug.panic("TODO: call to unknown function", .{});
+    const callee = try cg.resolveCallee(cg.calleeName(call.callee));
 
     const returns_aggregate = !call.qt.is(cg.tree.comp, .void) and cg.isAggregate(call.qt);
 
@@ -1792,6 +1865,14 @@ fn buildCall(cg: *CodeGen, call: Tree.Node.Call) Error!Oir.Class.Index {
     if (sret) |slot| return slot;
     const ret_bits: u16 = if (call.qt.is(cg.tree.comp, .void)) 0 else cg.widthOf(call.qt);
     return cg.oir.add(.project(1, node, .data, ret_bits));
+}
+
+fn resolveCallee(cg: *CodeGen, name: []const u8) Error!u32 {
+    if (cg.fn_ids.get(name)) |id| return id;
+    const id: u32 = @intCast(cg.fn_names.items.len);
+    try cg.fn_ids.put(cg.gpa, name, id);
+    try cg.fn_names.append(cg.gpa, name);
+    return id;
 }
 
 /// Lowers the aro `cast` into `trunc`/`sext`/`zext` for the target.
@@ -1829,6 +1910,14 @@ fn buildCast(cg: *CodeGen, cast: Tree.Node.Cast) Error!Oir.Class.Index {
             const zero = try cg.oir.add(.constant(0));
             break :blk try cg.oir.add(.binOp(.cmp_ult, zero, v));
         },
+        // `(void)expr`.
+        // Evaluate for side effects, then value is discarded.
+        .to_void => blk: {
+            _ = try cg.buildExpr(cast.operand);
+            break :blk try cg.oir.add(.constant(0));
+        },
+        // `NULL`, simply zero address for us
+        .null_to_pointer => try cg.oir.add(.constant(0)),
         else => std.debug.panic("TODO: cast {s}", .{@tagName(cast.kind)}),
     };
 }
@@ -2039,8 +2128,14 @@ fn registerGlobal(cg: *CodeGen, v: Tree.Node.Variable) Error!void {
         if (v.initializer) |i| {
             const buf = try cg.gpa.alloc(u8, @intCast(size));
             @memset(buf, 0);
-            try cg.lowerInitBytes(buf, 0, qt, i);
-            break :blk .{ .bytes = .{ .bytes = buf, .@"align" = alignment } };
+            var relocs: std.ArrayList(zob.rv64.Global.Reloc) = .empty;
+            errdefer relocs.deinit(cg.gpa);
+            try cg.lowerInitBytes(buf, &relocs, 0, qt, i);
+            break :blk .{ .bytes = .{
+                .bytes = buf,
+                .relocs = try relocs.toOwnedSlice(cg.gpa),
+                .@"align" = alignment,
+            } };
         }
         if (v.storage_class == .@"extern") break :blk .declared;
         break :blk .{ .bss = .{ .size = size, .@"align" = alignment } };
@@ -2090,13 +2185,15 @@ fn internString(cg: *CodeGen, node: Tree.Node.Index) Error!u32 {
     try cg.global_defs.append(cg.gpa, .{
         .name = name,
         .external = false,
-        .data = .{ .bytes = .{ .bytes = buf, .@"align" = 1 } },
+        .data = .{ .bytes = .{ .bytes = buf, .relocs = &.{}, .@"align" = 1 } },
     });
     try cg.string_pool.put(cg.gpa, ref, id);
     return id;
 }
 
-fn lowerInitBytes(cg: *CodeGen, buf: []u8, off: u64, qt: aro.QualType, init_node: Tree.Node.Index) Error!void {
+const Relocs = std.ArrayList(zob.rv64.Global.Reloc);
+
+fn lowerInitBytes(cg: *CodeGen, buf: []u8, relocs: *Relocs, off: u64, qt: aro.QualType, init_node: Tree.Node.Index) Error!void {
     const tree = cg.tree;
     const comp = tree.comp;
     switch (init_node.get(tree)) {
@@ -2108,7 +2205,7 @@ fn lowerInitBytes(cg: *CodeGen, buf: []u8, off: u64, qt: aro.QualType, init_node
                 .array_filler_expr => |f| index += f.count, // remaining stay zero
                 .default_init_expr => index += 1, // zero
                 else => {
-                    try cg.lowerInitElem(buf, off + index * elem_size, elem_qt, item);
+                    try cg.lowerInitElem(buf, relocs, off + index * elem_size, elem_qt, item);
                     index += 1;
                 },
             };
@@ -2119,7 +2216,7 @@ fn lowerInitBytes(cg: *CodeGen, buf: []u8, off: u64, qt: aro.QualType, init_node
                 const field = rec.fields[i];
                 if (field.bit_width.unpack() != null) @panic("TODO: bit-field global initializer");
                 if (item.get(tree) == .default_init_expr) continue; // zero
-                try cg.lowerInitElem(buf, off + field.layout.offset_bits / 8, field.qt, item);
+                try cg.lowerInitElem(buf, relocs, off + field.layout.offset_bits / 8, field.qt, item);
             }
         },
         // `char g[] = "abs"`. Copy the literal's bytes into the object.
@@ -2129,13 +2226,38 @@ fn lowerInitBytes(cg: *CodeGen, buf: []u8, off: u64, qt: aro.QualType, init_node
             const n = @min(buf.len - off, bytes.len);
             @memcpy(buf[off..][0..n], bytes[0..n]);
         },
-        else => try cg.writeScalarInit(buf, off, qt, init_node),
+        else => try cg.lowerInitScalar(buf, relocs, off, qt, init_node),
     }
 }
 
-fn lowerInitElem(cg: *CodeGen, buf: []u8, off: u64, qt: aro.QualType, node: Tree.Node.Index) Error!void {
-    if (cg.isAggregate(qt)) return cg.lowerInitBytes(buf, off, qt, node);
+fn lowerInitElem(cg: *CodeGen, buf: []u8, relocs: *Relocs, off: u64, qt: aro.QualType, node: Tree.Node.Index) Error!void {
+    if (cg.isAggregate(qt)) return cg.lowerInitBytes(buf, relocs, off, qt, node);
+    return cg.lowerInitScalar(buf, relocs, off, qt, node);
+}
+
+fn lowerInitScalar(cg: *CodeGen, buf: []u8, relocs: *Relocs, off: u64, qt: aro.QualType, node: Tree.Node.Index) Error!void {
+    if (try cg.globalReloc(node)) |r| {
+        try relocs.append(cg.gpa, .{ .offset = off, .target = r.target, .addend = r.addend });
+        return;
+    }
     return cg.writeScalarInit(buf, off, qt, node);
+}
+
+fn globalReloc(cg: *CodeGen, node: Tree.Node.Index) Error!?struct { target: u32, addend: i64 } {
+    const tree = cg.tree;
+    var n = node;
+    while (true) switch (n.get(tree)) {
+        .cast => |c| n = c.operand,
+        .paren_expr => |p| n = p.operand,
+        .addr_of_expr => |u| n = u.operand,
+        .string_literal_expr => return .{ .target = try cg.internString(n), .addend = 0 },
+        .decl_ref_expr => |d| {
+            const name = tree.tokSlice(d.name_tok);
+            if (cg.globals.get(name)) |g| return .{ .target = g.id, .addend = 0 };
+            return null;
+        },
+        else => return null,
+    };
 }
 
 fn writeScalarInit(cg: *CodeGen, buf: []u8, off: u64, qt: aro.QualType, node: Tree.Node.Index) Error!void {

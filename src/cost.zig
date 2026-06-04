@@ -35,6 +35,8 @@ pub fn getCost(tag: Oir.Node.Tag) u32 {
         .alloca,
         // A global address materializes as a single `la`.
         .global_addr,
+        // `va_start` materializes as a single `addi sp`.
+        .va_start,
         => 1,
 
         // Compare

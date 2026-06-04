@@ -87,6 +87,13 @@ fn computeBestNodes(e: *SimpleExtractor) !void {
 
                 var total: u32 = cost.getCost(node.tag);
                 for (node.operands(oir)) |child| {
+                    // A node referencing its own class can't be materialized
+                    // acyclically. Skip it, so the class's acyclic alternative
+                    // is chosen instead.
+                    if (oir.union_find.find(child) == class_idx) {
+                        total = infinite;
+                        break;
+                    }
                     const child_cost = best_cost.get(oir.union_find.find(child)) orelse infinite;
                     if (child_cost == infinite) {
                         total = infinite;
@@ -297,7 +304,7 @@ fn extractClass(e: *SimpleExtractor, class_idx: Class.Index, recv: *Recursive) !
             try e.map.put(gpa, class_idx, new_node_idx);
             return new_node_idx;
         },
-        .constant, .alloca, .global_addr => {
+        .constant, .alloca, .global_addr, .va_start => {
             const idx = try recv.addNode(gpa, best_node);
             try e.map.put(gpa, class_idx, idx);
             return idx;

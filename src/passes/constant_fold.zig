@@ -119,6 +119,7 @@ pub fn run(oir: *Oir) !bool {
             .param => {}, // a leaf function argument / memory state
             .call => {}, // TODO: constant-fold / inline calls
             .global_addr => {}, // TODO: unsure here
+            .va_start => {},
         }
     }
 
