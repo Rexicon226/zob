@@ -106,7 +106,7 @@ pub const NodeContext = struct {
 
         switch (a.data) {
             .constant => |p| {
-                return p == b.data.constant;
+                return p.val == b.data.constant.val and p.bits == b.data.constant.bits;
             },
             .project => |p| {
                 if (p.index != b.data.project.index) return false;
@@ -334,7 +334,7 @@ pub const Node = struct {
 
     const Data = union(enum) {
         none: void,
-        constant: i64,
+        constant: Constant,
         /// NOTE: For future reference, we use an array here so that the operands()
         /// function can return a slice, otherwise padding between struct elements
         /// would be undefined and it wouldn't be safe.
@@ -642,8 +642,15 @@ pub const Node = struct {
         };
     }
 
+    /// An integer constant. `bits == 0` implies that the width is derived
+    /// from usages.
+    pub const Constant = struct { val: i64, bits: u16 = 0 };
+
     pub fn constant(value: i64) Node {
-        return .{ .tag = .constant, .data = .{ .constant = value } };
+        return .{ .tag = .constant, .data = .{ .constant = .{ .val = value } } };
+    }
+    pub fn constantTyped(value: i64, bits: u16) Node {
+        return .{ .tag = .constant, .data = .{ .constant = .{ .val = value, .bits = bits } } };
     }
 
     pub fn format(
@@ -726,6 +733,10 @@ const passes: []const Pass = &.{
     .{
         .name = "known-bits",
         .func = @import("passes/known_bits.zig").run,
+    },
+    .{
+        .name = "load-forward",
+        .func = @import("passes/load_forward.zig").run,
     },
 };
 
@@ -875,6 +886,7 @@ fn typeOfDepth(oir: *const Oir, idx: Class.Index, depth: u8) ?u16 {
             .trunc, .sext, .zext => return node.data.cast.bits,
             .cmp_eq, .cmp_lt, .cmp_gt, .cmp_ult, .cmp_ugt => return 1,
             .alloca => return 64, // TODO: depends on the target
+            .constant => if (node.data.constant.bits != 0) return node.data.constant.bits,
             else => {},
         }
     }

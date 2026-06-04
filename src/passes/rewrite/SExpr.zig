@@ -59,7 +59,7 @@ pub const Entry = union(enum) {
             switch (e.builtin.tag) {
                 .known_pow2 => {
                     if (n.tag != .constant) return false;
-                    const value = n.data.constant;
+                    const value = n.data.constant.val;
                     if (value > 0 and std.math.isPowerOfTwo(value)) return true;
                     return false;
                 },
@@ -68,7 +68,7 @@ pub const Entry = union(enum) {
         }
         if (n.tag != e.tag()) return false;
         if (n.operands(oir).len != e.operands().len) return false;
-        if (n.tag == .constant and n.data.constant != e.constant) return false;
+        if (n.tag == .constant and n.data.constant.val != e.constant) return false;
         return true;
     }
 

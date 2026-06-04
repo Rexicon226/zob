@@ -251,7 +251,7 @@ const Builder = struct {
                     else => std.debug.panic("project of {s}", .{@tagName(tuple.tag)}),
                 }
             },
-            .constant => try b.add(.{ .li = .{ .dst = n, .imm = node.data.constant } }),
+            .constant => try b.add(.{ .li = .{ .dst = n, .imm = node.data.constant.val } }),
             .add, .sub, .mul, .@"and", .@"or", .shl, .shr, .sar, .div_trunc, .udiv, .div_exact => {
                 const ops = node.data.bin_op;
                 const width = b.recv.typeOf(ops[0]);

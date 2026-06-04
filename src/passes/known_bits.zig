@@ -48,8 +48,12 @@ pub fn run(oir: *Oir) !bool {
     for (actions.items) |action| {
         switch (action) {
             .to_const => |a| {
-                const c = try oir.add(.constant(a.value));
-                if (try oir.@"union"(oir.union_find.find(a.class), c)) changed = true;
+                const leader = oir.union_find.find(a.class);
+                const c = if (oir.typeOfOpt(leader)) |w|
+                    try oir.add(.constantTyped(a.value, w))
+                else
+                    try oir.add(.constant(a.value));
+                if (try oir.@"union"(leader, c)) changed = true;
             },
             .to_operand => |a| {
                 if (try oir.@"union"(oir.union_find.find(a.class), oir.union_find.find(a.operand)))

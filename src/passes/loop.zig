@@ -295,7 +295,7 @@ fn evaluateConstantLoops(oir: *Oir) !bool {
         for (1..count) |s| {
             try lv2slot.put(gpa, loop.args[s], s);
             const init_idx = oir.classContains(loop.inits[s], .constant) orelse continue :outer;
-            state[s] = oir.getNode(init_idx).data.constant;
+            state[s] = oir.getNode(init_idx).data.constant.val;
         }
 
         for (0..@intCast(trip)) |_| {
@@ -518,7 +518,7 @@ fn evalConst(
     for (cls.bag.items) |node_idx| {
         const node = oir.getNode(node_idx);
         const value: ?i64 = if (node.tag == .constant)
-            node.data.constant
+            node.data.constant.val
         else if (eval.isScalarBinOp(node.tag)) v: {
             const ops = node.data.bin_op;
             const a = (try evalConst(oir, ops[0], lv2slot, state, memo, depth + 1)) orelse break :v null;
@@ -536,7 +536,7 @@ fn evalConst(
 
 fn constOf(oir: *Oir, class: Class.Index) ?i64 {
     const idx = oir.classContains(class, .constant) orelse return null;
-    return oir.getNode(idx).data.constant;
+    return oir.getNode(idx).data.constant.val;
 }
 
 /// Whether `class` reaches none of the `variant` loopvars.

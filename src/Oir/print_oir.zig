@@ -282,7 +282,7 @@ pub const Writer = struct {
     }
 
     fn printConstant(_: *Writer, node: Oir.Node, stream: *std.Io.Writer) !void {
-        const constant = node.data.constant;
+        const constant = node.data.constant.val;
         try stream.print("{d}", .{constant});
     }
 
@@ -318,7 +318,7 @@ fn printNodeLabel(
 ) !void {
     switch (node.tag) {
         .constant => {
-            const val = node.data.constant;
+            const val = node.data.constant.val;
             try stream.print("constant:{d}", .{val});
         },
         .project => {

@@ -303,7 +303,7 @@ const Program = struct {
         while (iter.next()) |class| {
             switch (root) {
                 .constant => |value| if (oir.classContains(class.index, .constant)) |idx| {
-                    const node_value = oir.getNode(idx).data.constant;
+                    const node_value = oir.getNode(idx).data.constant.val;
                     if (value == node_value) {
                         try matches.append(oir.allocator, .{
                             .bindings = .{},

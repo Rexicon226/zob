@@ -83,7 +83,7 @@ fn truncBits(a: KnownBits, dst_bits: u16) KnownBits {
 /// `top` if it doesn't know anything.
 fn transfer(oir: *const Oir, facts: *const Facts, node: Node) KnownBits {
     return switch (node.tag) {
-        .constant => KnownBits.fromConst(node.data.constant),
+        .constant => KnownBits.fromConst(node.data.constant.val),
         .@"and" => blk: {
             const a = factOf(oir, facts, node.data.bin_op[0]);
             const b = factOf(oir, facts, node.data.bin_op[1]);

@@ -153,7 +153,7 @@ fn constInClass(oir: *Oir, idx: Class.Index) ?i64 {
         const class = oir.classes.get(c) orelse continue;
         for (class.bag.items) |node_idx| {
             const node = oir.getNode(node_idx);
-            if (node.tag == .constant) return node.data.constant;
+            if (node.tag == .constant) return node.data.constant.val;
         }
     }
     return null;

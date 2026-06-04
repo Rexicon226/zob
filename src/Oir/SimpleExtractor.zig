@@ -4,6 +4,7 @@ const std = @import("std");
 const Oir = @import("../Oir.zig");
 const cost = @import("../cost.zig");
 const extraction = @import("extraction.zig");
+const alias = @import("alias.zig");
 
 const Class = Oir.Class;
 const Node = Oir.Node;
@@ -18,6 +19,7 @@ oir: *const Oir,
 /// The chosen lowest-cost node for each canonical class.
 best_node: std.AutoHashMapUnmanaged(Class.Index, Node.Index),
 map: std.AutoHashMapUnmanaged(Class.Index, Class.Index),
+dead_slots: std.AutoHashMapUnmanaged(u32, void),
 
 /// Sentinel cost for a class that has no finite-cost (acyclic) extraction yet.
 const infinite = std.math.maxInt(u32);
@@ -29,6 +31,7 @@ pub fn extract(oir: *const Oir) ![]Recursive {
         .oir = oir,
         .best_node = .{},
         .map = .{},
+        .dead_slots = try alias.deadSlots(oir, oir.allocator),
     };
     defer e.deinit();
 
@@ -79,7 +82,6 @@ fn computeBestNodes(e: *SimpleExtractor) !void {
             const class_idx = entry.key_ptr.*;
             const class = entry.value_ptr.*;
 
-            var current = best_cost.get(class_idx) orelse infinite;
             for (class.bag.items) |node_idx| {
                 const node = oir.getNode(node_idx);
 
@@ -92,11 +94,20 @@ fn computeBestNodes(e: *SimpleExtractor) !void {
                     }
                     total += child_cost;
                 }
+                if (total == infinite) continue;
 
-                const clamped: u32 = @min(infinite, total);
-                if (clamped < current) {
-                    current = clamped;
-                    try best_cost.put(gpa, class_idx, clamped);
+                // We always prefer a non-load instruction to a load one.
+                const cur_node = e.best_node.get(class_idx);
+                const cur_cost = best_cost.get(class_idx) orelse infinite;
+                const new_is_load = node.tag == .load;
+                const better = better: {
+                    const cb = cur_node orelse break :better true;
+                    const cur_is_load = oir.getNode(cb).tag == .load;
+                    if (cur_is_load != new_is_load) break :better !new_is_load;
+                    break :better total < cur_cost;
+                };
+                if (better) {
+                    try best_cost.put(gpa, class_idx, total);
                     try e.best_node.put(gpa, class_idx, node_idx);
                     changed = true;
                 }
@@ -133,6 +144,14 @@ fn extractClass(e: *SimpleExtractor, class_idx: Class.Index, recv: *Recursive) !
         },
         .store => {
             const ops = best_node.data.store.ops;
+
+            if (alias.decompose(oir, ops[1]).base) |id| {
+                if (e.dead_slots.contains(id)) {
+                    const pred = try e.extractClass(ops[0], recv);
+                    try e.map.put(gpa, class_idx, pred);
+                    return pred;
+                }
+            }
 
             const mem_state = try e.extractClass(ops[0], recv);
             const address = try e.extractClass(ops[1], recv);
@@ -287,4 +306,5 @@ pub fn deinit(e: *SimpleExtractor) void {
     const allocator = e.oir.allocator;
     e.best_node.deinit(allocator);
     e.map.deinit(allocator);
+    e.dead_slots.deinit(allocator);
 }
