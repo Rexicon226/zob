@@ -16,6 +16,10 @@ pub fn build(b: *std.Build) !void {
     });
     main.addImport("aro", aro.module("aro"));
 
+    const options = b.addOptions();
+    options.addOptionPath("resource_dir", aro.path("."));
+    main.addOptions("build_options", options);
+
     const exe = b.addExecutable(.{
         .name = "arocc",
         .root_module = main,

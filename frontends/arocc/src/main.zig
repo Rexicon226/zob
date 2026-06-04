@@ -3,6 +3,8 @@ const aro = @import("aro");
 const zob = @import("zob");
 const builtin = @import("builtin");
 
+const build_options = @import("build_options");
+
 const cli = @import("cli.zig");
 const CodeGen = @import("CodeGen.zig");
 
@@ -98,11 +100,18 @@ pub fn main(init: std.process.Init) !void {
     var driver: aro.Driver = .{
         .comp = &comp,
         .diagnostics = &diagnostics,
+        .resource_dir = build_options.resource_dir,
     };
     defer driver.deinit();
 
     const source = try comp.addSourceFromPath(input);
     try driver.inputs.append(gpa, source);
+
+    var toolchain: aro.Toolchain = .{ .driver = &driver };
+    defer toolchain.deinit();
+    try toolchain.discover();
+    try toolchain.defineSystemIncludes();
+    try comp.initSearchPath(driver.includes.items, false);
 
     // Parse header files.
     const builtin_macros = try comp.generateBuiltinMacros(.include_system_defines);
