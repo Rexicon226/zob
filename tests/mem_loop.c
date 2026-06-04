@@ -1,4 +1,4 @@
-// CHECK: foo(buf, 5) == 4 && buf[0] == 4
+// EXPECT: foo(buf, 5) == 4 && buf[0] == 4
 int foo(int *p, int n) {
     int i = 0;
     while (i < n) {

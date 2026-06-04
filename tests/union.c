@@ -1,4 +1,4 @@
-// CHECK: foo()==42
+// EXPECT: foo()==42
 union U { int i; int j; };
 int foo(void) {
     union U u;

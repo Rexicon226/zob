@@ -1,4 +1,4 @@
-// CHECK: foo()==6
+// EXPECT: foo()==6
 int sum3(int *p) { return *p + *(p + 1) + p[2]; }
 int foo(void) {
     int a[3];

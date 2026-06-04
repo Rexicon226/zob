@@ -1,5 +1,5 @@
 // Struct assignment copies all members by value.
-// CHECK: foo()==12
+// EXPECT: foo()==12
 struct P { int x; int y; };
 int foo(void) {
     struct P a; a.x = 1; a.y = 2;

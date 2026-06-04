@@ -1,4 +1,4 @@
-// CHECK: foo(10)==35
+// EXPECT: foo(10)==35
 void add(int *p, int v) { *p = *p + v; }
 int foo(int x) {
     int s = 0;

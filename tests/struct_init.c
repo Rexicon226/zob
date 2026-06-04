@@ -1,5 +1,5 @@
 // Struct initializer list and a partial (default-zeroed) initializer.
-// CHECK: foo()==63
+// EXPECT: foo()==63
 struct Q { int a; int b; int c; };
 int foo(void) {
     struct Q q = {10, 20, 30};

@@ -1,4 +1,4 @@
-// CHECK: foo()==123
+// EXPECT: foo()==123
 struct Inner { int a; int b; };
 struct Outer { struct Inner in; int c; };
 int foo(void) {

@@ -1,4 +1,4 @@
-// CHECK: foo(text, 0x000020AC)==3 && text[0]==0xE2 && text[1]==0x82 && text[2]==0xAC
+// EXPECT: foo(text, 0x000020AC)==3 && text[0]==0xE2 && text[1]==0x82 && text[2]==0xAC
 #include <stdint.h>
 int foo(char *buf, uint32_t c) {
   if (c <= 0x7F) {

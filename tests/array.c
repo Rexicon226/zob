@@ -1,4 +1,4 @@
-// CHECK: foo(3)==9 && foo(10)==30
+// EXPECT: foo(3)==9 && foo(10)==30
 int foo(int n) {
     int a[4];
     a[0] = n;

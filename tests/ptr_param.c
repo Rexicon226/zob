@@ -1,4 +1,4 @@
-// CHECK: foo()==42
+// EXPECT: foo()==42
 void set(int *p, int v) { *p = v; }
 int foo(void) {
     int a[2];

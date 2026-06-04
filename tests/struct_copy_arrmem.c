@@ -1,5 +1,4 @@
-// Struct containing an array, copied by value; independent after copy.
-// CHECK: foo()==34
+// EXPECT: foo()==34
 struct A { int n; int data[3]; };
 int foo(void) {
     struct A a; a.n = 5; a.data[1] = 20;

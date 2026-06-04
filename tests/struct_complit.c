@@ -1,4 +1,4 @@
-// CHECK: foo()==79
+// EXPECT: foo()==79
 struct P { int x; int y; };
 int foo(void) {
     struct P p = (struct P){7, 8};

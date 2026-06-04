@@ -1,5 +1,5 @@
 // Array of structs, indexed and member-accessed; also nested via pointer walk.
-// CHECK: foo()==303
+// EXPECT: foo()==303
 struct V { int lo; int hi; };
 int foo(void) {
     struct V v[3];

@@ -1,4 +1,4 @@
-// CHECK: foo()==30
+// EXPECT: foo()==30
 struct S { int x; char y; long z; };
 struct S s[2] = { {.x = 10}, {.y = 20} };
 

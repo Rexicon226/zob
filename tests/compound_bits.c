@@ -1,4 +1,4 @@
-// CHECK: foo(0xFF) == 0x28
+// EXPECT: foo(0xFF) == 0x28
 int foo(int x) {
     x &= 0x3C;
     x |= 0x80;

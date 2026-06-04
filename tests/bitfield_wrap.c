@@ -1,5 +1,5 @@
 // Writing more than the field width truncates to the field's bits.
-// CHECK: foo()==5
+// EXPECT: foo()==5
 struct F { unsigned a : 3; unsigned b : 3; };
 int foo(void) {
     struct F f;

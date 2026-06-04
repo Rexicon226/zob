@@ -1,4 +1,4 @@
-// CHECK: foo(0)==12 && foo(1)==99
+// EXPECT: foo(0)==12 && foo(1)==99
 struct P { int x; int y; };
 struct P pick(int c) {
     struct P p;

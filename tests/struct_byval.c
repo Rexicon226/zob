@@ -1,5 +1,5 @@
 // Struct passed by value: callee mutates its copy; caller's struct is unchanged.
-// CHECK: foo()==140
+// EXPECT: foo()==140
 struct P { int x; int y; };
 int sum(struct P p) { p.x = p.x + 100; return p.x + p.y; }
 int foo(void) {

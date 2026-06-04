@@ -1,4 +1,4 @@
-// CHECK: foo(10)==53
+// EXPECT: foo(10)==53
 int y[3];
 int sum(int *p) {
     return p[0] + p[1] + p[2];

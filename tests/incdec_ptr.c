@@ -1,4 +1,4 @@
-// CHECK: foo(buf) == 7
+// EXPECT: foo(buf) == 7
 int foo(int *p) {
     p[0] = 3;
     p[1] = 4;

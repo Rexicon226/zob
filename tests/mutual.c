@@ -1,4 +1,4 @@
-// CHECK: foo(4) == 1 && foo(7) == 0 && foo(0) == 1
+// EXPECT: foo(4) == 1 && foo(7) == 0 && foo(0) == 1
 int is_odd(int n);
 int is_even(int n) {
     if (n == 0) return 1;

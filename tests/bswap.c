@@ -1,4 +1,4 @@
-// CHECK: foo(0, 0xAABB)==0xBBAA && foo(1, 0xAABBCCDDU)==0xDDCCBBAAU && foo(2, 0x0011223344556677UL)==0x7766554433221100UL
+// EXPECT: foo(0, 0xAABB)==0xBBAA && foo(1, 0xAABBCCDDU)==0xDDCCBBAAU && foo(2, 0x0011223344556677UL)==0x7766554433221100UL
 #include <stdint.h>
 #include <stdlib.h>
 uint64_t foo(int c, uint64_t input) {

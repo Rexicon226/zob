@@ -1,4 +1,4 @@
-// CHECK: foo()==14
+// EXPECT: foo()==14
 struct P { int x; int y; };
 int gety(struct P *p) { return p->y; }
 void setx(struct P *p, int v) { p->x = v; }

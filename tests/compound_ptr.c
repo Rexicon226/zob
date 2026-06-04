@@ -1,4 +1,4 @@
-// CHECK: foo() == 30
+// EXPECT: foo() == 30
 int foo(void) {
     int a[5];
     a[0] = 10;

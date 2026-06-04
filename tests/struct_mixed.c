@@ -1,5 +1,4 @@
-// Mixed-width fields exercise field offsets + sub-word load/store widths.
-// CHECK: foo()==1007
+// EXPECT: foo()==1007
 struct M { char c; int n; };
 int foo(void) {
     struct M m;

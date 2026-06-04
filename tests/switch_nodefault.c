@@ -1,4 +1,4 @@
-// CHECK: foo(1)==5 && foo(9)==-1
+// EXPECT: foo(1)==5 && foo(9)==-1
 int foo(int x) {
     int r = -1;
     switch (x) {

@@ -1,4 +1,4 @@
-// CHECK: foo()==683
+// EXPECT: foo()==683
 struct P { int x; int y; };
 struct P dbl(struct P p) { p.x = p.x * 2; p.y = p.y * 2; return p; }
 int foo(void) {

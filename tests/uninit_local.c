@@ -1,4 +1,4 @@
-// CHECK: foo(7) == 8
+// EXPECT: foo(7) == 8
 int foo(int x) {
     int n;
     n = x + 1;

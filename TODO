@@ -1,8 +1,0 @@
-- write parser for Zig style SSA and start figuring out input relooper / blocker
-
-For the C frontend:
-
-- break/continues
-- switch
-- integer types / lattice repr, highest/lowest/see through bits
-- multi function analysis, keep everything in one Oir with lambdas

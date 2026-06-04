@@ -1,4 +1,4 @@
-// CHECK: foo()==527
+// EXPECT: foo()==527
 struct F { unsigned a : 3; unsigned b : 5; int c : 4; };
 int foo(void) {
     struct F f;

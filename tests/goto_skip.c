@@ -1,4 +1,4 @@
-// CHECK: foo(5)==6 && foo(0)==1
+// EXPECT: foo(5)==6 && foo(0)==1
 int foo(int x) {
     int r = 1;
     goto skip;

@@ -1,4 +1,4 @@
-// CHECK: foo(5) == 5 && foo(0) == 0 && foo(10) == 10
+// EXPECT: foo(5) == 5 && foo(0) == 0 && foo(10) == 10
 int inc(int x) {
     return x + 1;
 }
