@@ -1,8 +1,7 @@
 const std = @import("std");
 
 const frontends = .{
-    // .{ "scc", "C" },
-    .{ "arocc", "C-aro" },
+    .{ "arocc", "aro" },
 };
 
 pub fn build(b: *std.Build) !void {

@@ -11,6 +11,5 @@
             .lazy = true,
         },
         .arocc = .{ .path = "frontends/arocc" },
-        .scc = .{ .path = "frontends/scc" },
     },
 }

@@ -103,17 +103,20 @@ pub fn main(init: std.process.Init) !void {
 
     const source = try comp.addSourceFromPath(input);
     try driver.inputs.append(gpa, source);
-    std.debug.assert(driver.inputs.items.len == 1);
 
+    // Parse header files.
     const builtin_macros = try comp.generateBuiltinMacros(.include_system_defines);
-
     var pp = try aro.Preprocessor.init(&comp, .{ .base_file = source.id });
     defer pp.deinit();
-    try pp.preprocessSources(.{ .main = source, .builtin = builtin_macros });
+    pp.preprocessSources(.{ .main = source, .builtin = builtin_macros }) catch |err| switch (err) {
+        error.FatalError => std.process.exit(1), // already printed the msg to stderr
+        else => |e| return e,
+    };
 
     var tree = try pp.parse();
     defer tree.deinit();
 
+    // Construction the Oir of the translation unit.
     var oir: zob.Oir = .init(gpa);
     defer oir.deinit();
 
@@ -126,6 +129,7 @@ pub fn main(init: std.process.Init) !void {
         gpa.free(recvs);
     }
 
+    // Codegen it into assembly.
     try zob.rv64.generate(recvs, cg.fn_names.items, gpa, stdout_w);
 }
 
