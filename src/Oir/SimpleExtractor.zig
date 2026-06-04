@@ -70,8 +70,14 @@ fn computeBestNodes(e: *SimpleExtractor) !void {
     const oir = e.oir;
     const gpa = oir.allocator;
 
-    var best_cost: std.AutoHashMapUnmanaged(Class.Index, u32) = .{};
+    var best_cost: std.AutoHashMapUnmanaged(Class.Index, u64) = .{};
     defer best_cost.deinit(gpa);
+
+    var cycle_stack: std.ArrayList(Class.Index) = .empty;
+    defer cycle_stack.deinit(gpa);
+
+    var cycle_seen: std.AutoHashMapUnmanaged(Class.Index, void) = .{};
+    defer cycle_seen.deinit(gpa);
 
     var changed: bool = true;
     while (changed) {
@@ -85,7 +91,7 @@ fn computeBestNodes(e: *SimpleExtractor) !void {
             for (class.bag.items) |node_idx| {
                 const node = oir.getNode(node_idx);
 
-                var total: u32 = cost.getCost(node.tag);
+                var total: u64 = cost.getCost(node.tag);
                 for (node.operands(oir)) |child| {
                     // A node referencing its own class can't be materialized
                     // acyclically. Skip it, so the class's acyclic alternative
@@ -107,13 +113,29 @@ fn computeBestNodes(e: *SimpleExtractor) !void {
                 const cur_node = e.best_node.get(class_idx);
                 const cur_cost = best_cost.get(class_idx) orelse infinite;
                 const new_is_load = node.tag == .load;
+                // Marks the only selection that can violate cost monotonicity,
+                // replacing a `load` with a costlier non-`load` node. In the
+                // future, there is definitely a better way of performing this
+                // extraction, but I don't really see it yet.
+                var override_flip = false;
                 const better = better: {
                     const cb = cur_node orelse break :better true;
                     const cur_is_load = oir.getNode(cb).tag == .load;
-                    if (cur_is_load != new_is_load) break :better !new_is_load;
+                    if (cur_is_load != new_is_load) {
+                        override_flip = cur_is_load and !new_is_load;
+                        break :better !new_is_load;
+                    }
                     break :better total < cur_cost;
                 };
                 if (better) {
+                    // If the non-`load` preference would close a cyclic in the
+                    // best-node graph, we want to keep the acylic load.
+                    if (override_flip and try e.createsCycle(
+                        class_idx,
+                        node,
+                        &cycle_stack,
+                        &cycle_seen,
+                    )) continue;
                     try best_cost.put(gpa, class_idx, total);
                     try e.best_node.put(gpa, class_idx, node_idx);
                     changed = true;
@@ -121,6 +143,33 @@ fn computeBestNodes(e: *SimpleExtractor) !void {
             }
         }
     }
+}
+
+fn createsCycle(
+    e: *SimpleExtractor,
+    class_idx: Class.Index,
+    node: Node,
+    stack: *std.ArrayList(Class.Index),
+    seen: *std.AutoHashMapUnmanaged(Class.Index, void),
+) !bool {
+    const oir = e.oir;
+    const gpa = oir.allocator;
+    const target = oir.union_find.find(class_idx);
+
+    stack.clearRetainingCapacity();
+    seen.clearRetainingCapacity();
+    for (node.operands(oir)) |child| try stack.append(gpa, oir.union_find.find(child));
+
+    while (stack.pop()) |c| {
+        if (c == target) return true;
+        const gop = try seen.getOrPut(gpa, c);
+        if (gop.found_existing) continue;
+        const node_idx = e.best_node.get(c) orelse continue;
+        for (oir.getNode(node_idx).operands(oir)) |child| {
+            try stack.append(gpa, oir.union_find.find(child));
+        }
+    }
+    return false;
 }
 
 fn extractClass(e: *SimpleExtractor, class_idx: Class.Index, recv: *Recursive) !Class.Index {

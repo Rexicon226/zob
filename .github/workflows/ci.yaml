@@ -10,17 +10,22 @@ jobs:
     steps:
       - uses: actions/checkout@v2
 
-      - name: setup-zig
+      - name: Setup Zig
         uses: mlugg/setup-zig@v2
         with:
           version: 0.16.0
 
-      - name: build
+      - name: Install QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-user
+
+      - name: Build
         run: zig build
 
-      - name: test
+      - name: Unit Tests
         run: zig build test --summary all
 
-      # TODO: figure out how github like works or something, how to get qemu
-      # - name: rv64
-      #   run: make test
+      - name: E2E Tests
+        run: |
+          python3 tools/test.py

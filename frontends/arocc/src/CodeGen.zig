@@ -453,6 +453,16 @@ fn buildStmt(cg: *CodeGen, stmt: Tree.Node.Index) Error!bool {
         },
         .labeled_stmt => |l| return cg.buildStmt(l.body),
         .null_stmt => return true, // empty statement `;`
+        // Compile-time-only constructs, so no code.
+        .struct_decl,
+        .union_decl,
+        .enum_decl,
+        .struct_forward_decl,
+        .union_forward_decl,
+        .enum_forward_decl,
+        .typedef,
+        .static_assert,
+        => return true,
         else => std.debug.panic("TODO: {s}", .{@tagName(node_tags[@intFromEnum(stmt)])}),
     }
 }
@@ -1024,7 +1034,8 @@ fn mergeReturnList(cg: *CodeGen, rs: []const Return) !struct { Oir.Class.Index, 
     var mem = rs[rs.len - 1].mem;
     var value = try cg.mergeValue(rs[rs.len - 1], wants_value);
     var i = rs.len - 1;
-    while (i > 0) : (i -= 1) {
+    while (i > 0) {
+        i -= 1;
         mem = try cg.gammaIfNe(rs[i].pred, rs[i].mem, mem);
         if (wants_value) {
             const new = try cg.mergeValue(rs[i], wants_value);
@@ -1441,6 +1452,7 @@ fn buildAggregateInit(cg: *CodeGen, base: Oir.Class.Index, qt: aro.QualType, ini
     switch (init_node.get(cg.tree)) {
         .array_init_expr => return cg.buildArrayInit(base, cg.widthOf(qt.get(cg.tree.comp, .array).?.elem), init_node),
         .struct_init_expr => return cg.buildStructInit(base, qt, init_node),
+        .union_init_expr => |u| return cg.buildUnionInit(base, u),
         .string_literal_expr => return cg.buildStringInit(base, qt, init_node),
         else => {
             const src = try cg.buildExpr(init_node);
@@ -1520,6 +1532,38 @@ fn buildStructInit(cg: *CodeGen, base: Oir.Class.Index, record_qt: aro.QualType,
             }
         },
         else => std.debug.panic("TODO: struct initializer {s}", .{@tagName(init_node.get(tree))}),
+    }
+}
+
+fn buildUnionInit(cg: *CodeGen, base: Oir.Class.Index, un: Tree.Node.UnionInit) Error!void {
+    const tree = cg.tree;
+    try cg.zeroBytes(base, un.union_qt.sizeof(tree.comp));
+
+    const initializer = un.initializer orelse return; // `{}` => all-zero
+    if (initializer.get(tree) == .default_init_expr) return; // already zeroed
+
+    const field = cg.recordOf(un.union_qt).fields[un.field_index];
+    if (field.bit_width.unpack() != null) {
+        const bf = try cg.makeBitField(base, un.union_qt, un.field_index);
+        return cg.storeBitField(bf, try cg.buildExpr(initializer));
+    }
+    if (cg.isAggregate(field.qt)) return cg.buildAggregateInit(base, field.qt, initializer);
+
+    const fbits = cg.widthOf(field.qt);
+    const v = try cg.coerceTo(try cg.buildExpr(initializer), fbits);
+    cg.mem_state = try cg.oir.add(.store(cg.mem_state, base, v, fbits));
+}
+
+fn zeroBytes(cg: *CodeGen, base: Oir.Class.Index, size: u64) Error!void {
+    var off: u64 = 0;
+    var remaining = size;
+    while (remaining > 0) {
+        const bytes: u16 = if (remaining >= 8) 8 else if (remaining >= 4) 4 else if (remaining >= 2) 2 else 1;
+        const bits: u16 = bytes * 8;
+        const v = try cg.oir.add(.constantTyped(0, bits));
+        cg.mem_state = try cg.oir.add(.store(cg.mem_state, try cg.addByteOffset(base, off), v, bits));
+        off += bytes;
+        remaining -= bytes;
     }
 }
 
@@ -1918,6 +1962,8 @@ fn buildCast(cg: *CodeGen, cast: Tree.Node.Cast) Error!Oir.Class.Index {
         },
         // `NULL`, simply zero address for us
         .null_to_pointer => try cg.oir.add(.constant(0)),
+        // A function designator decays to its address: `la <name>`.
+        .function_to_pointer => try cg.funcAddr(cg.calleeName(cast.operand)),
         else => std.debug.panic("TODO: cast {s}", .{@tagName(cast.kind)}),
     };
 }
@@ -1936,6 +1982,18 @@ fn canonValue(value: i64, bits: u16) i64 {
 
 fn unsignedQt(cg: *CodeGen, qt: aro.QualType) bool {
     return qt.signedness(cg.tree.comp) == .unsigned;
+}
+
+/// Address of a named function. If the name doesn't already exist, created a
+/// new `declared` global so that we emit `la <name>`.
+fn funcAddr(cg: *CodeGen, name: []const u8) Error!Oir.Class.Index {
+    const id = if (cg.globals.get(name)) |g| g.id else blk: {
+        const id: u32 = @intCast(cg.global_defs.items.len);
+        try cg.global_defs.append(cg.gpa, .{ .name = name, .external = true, .data = .declared });
+        try cg.globals.put(cg.gpa, name, .{ .id = id, .bits = 64, .aggregate = false });
+        break :blk id;
+    };
+    return cg.oir.add(.globalAddr(id));
 }
 
 fn calleeName(cg: *CodeGen, idx: Tree.Node.Index) []const u8 {

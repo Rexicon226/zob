@@ -2,18 +2,23 @@ const std = @import("std");
 const build_options = @import("build_options");
 
 pub const Trace = if (build_options.enable_trace) struct {
-    buffered: std.io.BufferedWriter(4096, std.fs.File.Writer),
-    start_time: std.time.Instant,
-    stream: std.fs.File,
+    stream: std.Io.File.Writer,
+    file: std.Io.File,
+    start_time: std.Io.Timestamp,
+    io: std.Io,
 
-    pub fn init() Trace {
+    pub fn init(io: std.Io) Trace {
         errdefer @panic("failed to init trace");
-        const file = try std.fs.cwd().createFile("trace.json", .{});
-        try file.writer().writeByte('[');
+        const file = try std.Io.Dir.cwd().createFile(io, "trace.json", .{});
+        errdefer file.close(io);
+
+        var stream = file.writer(io, &.{});
+        try stream.interface.writeByte('[');
         return .{
-            .stream = file,
-            .buffered = std.io.bufferedWriter(file.writer()),
-            .start_time = try std.time.Instant.now(),
+            .stream = stream,
+            .file = file,
+            .start_time = std.Io.Clock.now(.real, io),
+            .io = io,
         };
     }
 
@@ -23,10 +28,7 @@ pub const Trace = if (build_options.enable_trace) struct {
         comptime fmt: []const u8,
         args: anytype,
     ) Event {
-        const now = std.time.Instant.now() catch @panic("failed to now()");
-        const writer = t.buffered.writer();
-
-        writer.print(
+        t.writer().print(
             \\{{"cat":"function", "name":"{s}:{d}:{d} (
         ++ fmt ++
             \\)", "ph": "B", "pid": 0, "tid": 0, "ts": {d}}},
@@ -37,7 +39,7 @@ pub const Trace = if (build_options.enable_trace) struct {
             src.column,
         } ++
             args ++ .{
-            now.since(t.start_time) / 1_000,
+            t.start_time.untilNow(t.io, .real).nanoseconds,
         }) catch @panic("failed to write");
 
         return .{
@@ -47,12 +49,16 @@ pub const Trace = if (build_options.enable_trace) struct {
     }
 
     pub fn deinit(t: *Trace) void {
-        t.buffered.writer().writeAll("]\n") catch @panic("failed to print");
-        t.buffered.flush() catch @panic("failed to flush");
-        t.stream.close();
+        t.writer().writeAll("]\n") catch @panic("failed to print");
+        t.writer().flush() catch @panic("failed to flush");
+        t.file.close(t.io);
+    }
+
+    fn writer(t: *Trace) *std.Io.Writer {
+        return &t.stream.interface;
     }
 } else struct {
-    pub fn init() Trace {
+    pub fn init(_: void) Trace {
         return .{};
     }
 
@@ -74,13 +80,12 @@ const Event = struct {
 
     pub fn end(e: Event) void {
         if (!build_options.enable_trace) return;
-        const writer = e.trace.buffered.writer();
-        const now = std.time.Instant.now() catch @panic("failed to now()");
-        writer.print(
+        const trace = e.trace;
+        trace.writer().print(
             \\{{"cat":"function", "ph":"E", "ts":{d}, "pid":0, "tid":0}},
             \\
         ,
-            .{now.since(e.trace.start_time) / 1_000},
+            .{trace.start_time.untilNow(trace.io, .real).nanoseconds},
         ) catch @panic("failed to write");
     }
 };

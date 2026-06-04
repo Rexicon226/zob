@@ -149,29 +149,35 @@ pub fn main(init: std.process.Init) !void {
     defer tree.deinit();
 
     // Construction the Oir of the translation unit.
-    var oir: zob.Oir = .init(gpa);
+    var oir: zob.Oir = .init(gpa, .default(io));
     defer oir.deinit();
 
     var cg = try CodeGen.init(&oir, gpa, &tree, &comp);
     defer cg.deinit(gpa);
 
-    const recvs = try cg.build(io, .{
-        .graphs = cmd.graphs,
-        .verbose_oir = cmd.verbose_oir,
-    });
+    const recvs = r: {
+        const t = oir.trace.start(@src(), "construction", .{});
+        defer t.end();
+        break :r try cg.build(io, .{ .graphs = cmd.graphs, .verbose_oir = cmd.verbose_oir });
+    };
     defer {
         for (recvs) |*recv| recv.deinit(gpa);
         gpa.free(recvs);
     }
 
-    // Codegen it into assembly.
-    try zob.rv64.generate(
-        recvs,
-        cg.fn_names.items,
-        cg.global_defs.items,
-        gpa,
-        stdout_w,
-    );
+    {
+        const t = oir.trace.start(@src(), "codegen", .{});
+        defer t.end();
+
+        // Codegen it into assembly.
+        try zob.rv64.generate(
+            recvs,
+            cg.fn_names.items,
+            cg.global_defs.items,
+            gpa,
+            stdout_w,
+        );
+    }
 }
 
 fn fail(comptime fmt: []const u8, args: anytype) noreturn {

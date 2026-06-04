@@ -21,7 +21,9 @@ COLOR = sys.stdout.isatty() and "NO_COLOR" not in os.environ
 def c(text, color):
     if not COLOR:
         return text
-    return f"\033[{dict(red=31,green=32,yellow=33,blue=34,grey=90)[color]}m{text}\033[0m"
+    return (
+        f"\033[{dict(red=31,green=32,yellow=33,blue=34,grey=90)[color]}m{text}\033[0m"
+    )
 
 
 def directives(src):
@@ -44,8 +46,12 @@ def directives(src):
     return d
 
 
-def regex(pattern):
-    return re.compile(re.sub(r"\{\{(.*?)\}\}", r"(\1)", re.escape(pattern)))
+def regex(pat):
+    parts = re.split(r"(\{\{.*?\}\})", pat)
+
+    return re.compile(
+        "".join(p[2:-2] if p.startswith("{{") else re.escape(p) for p in parts)
+    )
 
 
 def snapshot(name, asm, bless):
@@ -104,7 +110,7 @@ def test_file(path, args):
                 pos = i + 1
                 break
         else:
-            return ("FAIL", name, f"ASM not found: {pat}")
+            return ("FAIL", name, f"ASM not found: {pat}\nFound:\n{asm}")
 
     for pat in d["asm_not"]:
         rx = regex(pat)
@@ -138,10 +144,7 @@ def main():
         for p in TESTS.rglob("*.c")
         if not p.name.startswith("_")
         and SNAPS not in p.parents
-        and (
-            not args.tests
-            or any(t in p.stem or t in str(p) for t in args.tests)
-        )
+        and (not args.tests or any(t in p.stem or t in str(p) for t in args.tests))
         and (not args.k or args.k in str(p))
     ]
 

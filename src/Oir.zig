@@ -826,7 +826,16 @@ pub fn optimize(
     }
 }
 
-pub fn init(allocator: std.mem.Allocator) Oir {
+pub const Config = struct {
+    /// Used for logging traces, if enabled.
+    io: if (build_options.enable_trace) std.Io else void,
+
+    pub fn default(io: std.Io) Config {
+        return .{ .io = if (build_options.enable_trace) io else {} };
+    }
+};
+
+pub fn init(allocator: std.mem.Allocator, config: Config) Oir {
     return .{
         .allocator = allocator,
         .nodes = .{},
@@ -835,7 +844,7 @@ pub fn init(allocator: std.mem.Allocator) Oir {
         .extra = .empty,
         .union_find = .{},
         .pending = .empty,
-        .trace = .init(),
+        .trace = .init(config.io),
         .exit_list = .empty,
         .clean = true,
     };
@@ -1283,6 +1292,8 @@ pub fn listToSpan(oir: *Oir, list: []const Class.Index) !Node.Span {
 const Oir = @This();
 const std = @import("std");
 const builtin = @import("builtin");
+const build_options = @import("build_options");
+
 const print_oir = @import("Oir/print_oir.zig");
 pub const extraction = @import("Oir/extraction.zig");
 const Trace = @import("trace.zig").Trace;
