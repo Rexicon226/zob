@@ -30,6 +30,8 @@ pub fn getCost(tag: Oir.Node.Tag) u32 {
 
         // A stack-slot address materializes as a single `addi sp`.
         .alloca,
+        // A global address materializes as a single `la`.
+        .global_addr,
         => 1,
 
         // Compare

@@ -294,7 +294,7 @@ fn extractClass(e: *SimpleExtractor, class_idx: Class.Index, recv: *Recursive) !
             try e.map.put(gpa, class_idx, new_node_idx);
             return new_node_idx;
         },
-        .constant, .alloca => {
+        .constant, .alloca, .global_addr => {
             const idx = try recv.addNode(gpa, best_node);
             try e.map.put(gpa, class_idx, idx);
             return idx;

@@ -1,7 +1,8 @@
-#include <stdint.h>
-#include <stddef.h>
-// #include <stdlib.h>
+#include <stdlib.h>
+#include <stdio.h>
 
-int foo( size_t x ) {
-  return 10 + x;
+int y;
+
+int foo( void ) {
+  return y;
 }

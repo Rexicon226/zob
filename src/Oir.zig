@@ -131,6 +131,9 @@ pub const NodeContext = struct {
                 // Unique allocation id: distinct allocas never compare equal.
                 return p.id == b.data.alloca.id;
             },
+            .global_addr => |p| {
+                return p.id == b.data.global_addr.id;
+            },
             .loop => |p| {
                 if (p.id != b.data.loop.id) return false;
                 if (p.count != b.data.loop.count) return false;
@@ -258,6 +261,9 @@ pub const Node = struct {
         /// Allocates a unique stack slot and produces its address.
         /// Uses the `alloca` payload `(id, size, align)`.
         alloca,
+        /// The address of a file-scope symbol. Uses the `global_addr` payload.
+        /// Produces the address.
+        global_addr,
 
         pub fn isCanonical(tag: Tag) bool {
             return switch (tag) {
@@ -311,6 +317,8 @@ pub const Node = struct {
                 => .load,
                 .alloca,
                 => .alloca,
+                .global_addr,
+                => .global_addr,
                 .cmp_gt,
                 .cmp_lt,
                 .cmp_ult,
@@ -352,12 +360,17 @@ pub const Node = struct {
         load: Load,
         store: Store,
         alloca: Alloca,
+        global_addr: GlobalAddr,
     };
 
     pub const Alloca = struct {
         id: u32,
         size: u32,
         @"align": u32,
+    };
+
+    pub const GlobalAddr = struct {
+        id: u32,
     };
 
     pub const Cast = struct {
@@ -476,7 +489,7 @@ pub const Node = struct {
     pub fn operands(node: *const Node, repr: anytype) []const Class.Index {
         if (node.tag == .start) return &.{}; // no real operands
         return switch (node.data) {
-            .none, .constant, .loopvar, .param, .alloca => &.{},
+            .none, .constant, .loopvar, .param, .alloca, .global_addr => &.{},
             .bin_op => |*bin_op| bin_op,
             .tri_op => |*tri_op| tri_op,
             .un_op => |*un_op| un_op[0..1],
@@ -494,7 +507,7 @@ pub const Node = struct {
     pub fn mutableOperands(node: *Node, repr: anytype) []Class.Index {
         if (node.tag == .start) return &.{}; // no real operands
         return switch (node.data) {
-            .none, .constant, .loopvar, .param, .alloca => &.{},
+            .none, .constant, .loopvar, .param, .alloca, .global_addr => &.{},
             .bin_op => |*bin_op| bin_op,
             .tri_op => |*tri_op| tri_op,
             .un_op => |*un_op| un_op[0..1],
@@ -539,6 +552,7 @@ pub const Node = struct {
             .call,
             .param,
             .alloca,
+            .global_addr,
             => .data,
             .start,
             .ret,
@@ -598,6 +612,10 @@ pub const Node = struct {
 
     pub fn alloca(id: u32, size: u32, alignment: u32) Node {
         return .{ .tag = .alloca, .data = .{ .alloca = .{ .id = id, .size = size, .@"align" = alignment } } };
+    }
+
+    pub fn globalAddr(id: u32) Node {
+        return .{ .tag = .global_addr, .data = .{ .global_addr = .{ .id = id } } };
     }
 
     /// Conditional: selects `then` when `pred` is non-zero, else `els`.
@@ -885,7 +903,7 @@ fn typeOfDepth(oir: *const Oir, idx: Class.Index, depth: u8) ?u16 {
             .load => return node.data.load.bits,
             .trunc, .sext, .zext => return node.data.cast.bits,
             .cmp_eq, .cmp_lt, .cmp_gt, .cmp_ult, .cmp_ugt => return 1,
-            .alloca => return 64, // TODO: depends on the target
+            .alloca, .global_addr => return 64, // TODO: depends on the target
             .constant => if (node.data.constant.bits != 0) return node.data.constant.bits,
             else => {},
         }

@@ -129,7 +129,7 @@ pub fn main(init: std.process.Init) !void {
     var oir: zob.Oir = .init(gpa);
     defer oir.deinit();
 
-    var cg = try CodeGen.init(&oir, gpa, &tree);
+    var cg = try CodeGen.init(&oir, gpa, &tree, &comp);
     defer cg.deinit(gpa);
 
     const recvs = try cg.build(io, cmd.graphs);
@@ -139,7 +139,7 @@ pub fn main(init: std.process.Init) !void {
     }
 
     // Codegen it into assembly.
-    try zob.rv64.generate(recvs, cg.fn_names.items, gpa, stdout_w);
+    try zob.rv64.generate(recvs, cg.fn_names.items, cg.global_defs.items, gpa, stdout_w);
 }
 
 fn fail(comptime fmt: []const u8, args: anytype) noreturn {

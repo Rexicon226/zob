@@ -1,5 +1,6 @@
 // A bit of K&R tom-foolery, so that any declaration we insert will work here.
-extern int foo();
+#include <stdint.h>
+extern uint64_t foo();
 
 int buf[64];
 

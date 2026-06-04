@@ -41,7 +41,7 @@ pub const Recursive = struct {
             .load => node.data.load.bits,
             .trunc, .sext, .zext => node.data.cast.bits,
             .cmp_eq, .cmp_lt, .cmp_gt, .cmp_ult, .cmp_ugt => 1,
-            .alloca => 64,
+            .alloca, .global_addr => 64,
             .add, .sub, .mul, .@"and", .@"or", .shl, .shr, .sar, .div_trunc, .udiv, .div_exact => {
                 const ops = node.data.bin_op;
                 return r.typeOfRec(ops[0], depth + 1) orelse r.typeOfRec(ops[1], depth + 1);

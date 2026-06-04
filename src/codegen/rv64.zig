@@ -92,11 +92,24 @@ pub fn isSaved(reg: Register) bool {
     };
 }
 
+pub const Global = struct {
+    name: []const u8,
+    external: bool,
+    data: Data,
+
+    pub const Data = union(enum) {
+        declared,
+        bss: struct { size: u64, @"align": u32 },
+        bytes: struct { bytes: []const u8, @"align": u32 },
+    };
+};
+
 /// Emits one function per `Recursive`. `names` is indexed by lambda id.
 /// This will likely all be tied in differently in the future.
 pub fn generate(
     recvs: []const Recursive,
     names: []const []const u8,
+    globals: []const Global,
     gpa: std.mem.Allocator,
     stream: *std.Io.Writer,
 ) !void {
@@ -112,8 +125,43 @@ pub fn generate(
         var regalloc = try RegAlloc.run(gpa, &mir, mir.num_vregs);
         defer regalloc.deinit(gpa);
 
-        var emitter: Emitter = .{ .w = stream, .mir = &mir, .ra = &regalloc, .names = names };
-        try emitter.run(names[lambda.id]);
+        var emitter: Emitter = .{
+            .w = stream,
+            .mir = &mir,
+            .ra = &regalloc,
+            .names = names,
+            .globals = globals,
+            .func = names[lambda.id],
+        };
+        try emitter.run();
+    }
+
+    try emitGlobals(globals, stream);
+}
+
+fn emitGlobals(globals: []const Global, w: *std.Io.Writer) !void {
+    for (globals) |g| {
+        switch (g.data) {
+            .declared => continue, // extern decl, defined elsewhere
+            .bss => |b| {
+                try w.print(".bss\n", .{});
+                if (g.external) try w.print(".globl {s}\n", .{g.name});
+                try w.print(".type {s}, @object\n", .{g.name});
+                try w.print(".align {d}\n", .{std.math.log2_int(u32, @max(1, b.@"align"))});
+                try w.print("{s}:\n", .{g.name});
+                try w.print("    .zero {d}\n", .{b.size});
+                try w.print(".size {s}, {d}\n", .{ g.name, b.size });
+            },
+            .bytes => |b| {
+                try w.print(".data\n", .{});
+                if (g.external) try w.print(".globl {s}\n", .{g.name});
+                try w.print(".type {s}, @object\n", .{g.name});
+                try w.print(".align {d}\n", .{std.math.log2_int(u32, @max(1, b.@"align"))});
+                try w.print("{s}:\n", .{g.name});
+                for (b.bytes) |byte| try w.print("    .byte {d}\n", .{byte});
+                try w.print(".size {s}, {d}\n", .{ g.name, b.bytes.len });
+            },
+        }
     }
 }
 
@@ -122,13 +170,14 @@ const Emitter = struct {
     mir: *const Mir,
     ra: *const RegAlloc.Result,
     names: []const []const u8,
+    globals: []const Global,
     /// Whether this function makes any call.
     has_call: bool = false,
     /// Name of the function being emitted.
-    func: []const u8 = "",
+    func: []const u8,
 
-    fn run(e: *Emitter, name: []const u8) !void {
-        e.func = name;
+    fn run(e: *Emitter) !void {
+        const name = e.func;
         e.has_call = for (e.mir.insts.items) |inst| {
             if (inst == .call) break true;
         } else false;
@@ -168,6 +217,11 @@ const Emitter = struct {
             .frame_addr => |a| {
                 const dst, const slot = e.defReg(a.dst);
                 try e.emitLine("addi {t}, sp, {d}", .{ dst, e.allocaBase() + a.offset });
+                try e.finishDef(dst, slot);
+            },
+            .symbol_addr => |a| {
+                const dst, const slot = e.defReg(a.dst);
+                try e.emitLine("la {t}, {s}", .{ dst, e.globals[a.global].name });
                 try e.finishDef(dst, slot);
             },
             .un => |a| {

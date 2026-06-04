@@ -8,7 +8,7 @@
 #   3. Runs the resulting ELF with qemu; a zero exit status means CHECK held.
 #
 # Usage:
-#   make    	    # build + run ever test
+#   make    	     # build + run ever test
 #   make run-{test}  # build + run {test}
 #   make build/add.s # just see the generated assembly for a test
 
@@ -45,7 +45,7 @@ $(BUILD):
 
 $(BUILD)/%.s: tests/%.c FORCE | $(BUILD)
 	@echo "ASM   $*"
-	@$(ZIG) build arocc -- $< 2>/dev/null | sed -n '/^\.text/,/^\.size/p' > $@
+	@$(ZIG) build arocc -- $< > $@ 2>/dev/null
 	@test -s $@ || { echo "  no assembly produced for $<"; rm -f $@; exit 1; }
 
 $(BUILD)/%.elf: $(BUILD)/%.s tests/_driver.c

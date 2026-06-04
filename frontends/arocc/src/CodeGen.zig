@@ -4,12 +4,15 @@ const zob = @import("zob");
 const CodeGen = @This();
 
 const Tree = aro.Tree;
+const Compilation = aro.Compilation;
 const Oir = zob.Oir;
 const Recursive = zob.Recursive;
 
 gpa: std.mem.Allocator,
 oir: *Oir,
 tree: *const Tree,
+comp: *const Compilation,
+
 exits: *std.ArrayList(Oir.Class.Index),
 node_to_class: std.AutoHashMapUnmanaged(Tree.Node.Index, Oir.Class.Index),
 symbol_table: SymbolTable,
@@ -43,11 +46,20 @@ labels: std.StringHashMapUnmanaged(LabelInfo),
 /// Stack of enclosing breadkable scopes. `break` targets the innermost
 /// frame, `continue` the inner most loop frame.
 frames: std.ArrayList(Frame),
+globals: std.StringHashMapUnmanaged(GlobalInfo),
+// TODO: we need to store these in a non-backend specific way
+global_defs: std.ArrayList(zob.rv64.Global),
 
 const Error = error{OutOfMemory};
 const SymbolTable = std.ArrayList(std.StringHashMapUnmanaged(Oir.Class.Index));
 
 const MemVar = struct {
+    bits: u16,
+    aggregate: bool,
+};
+
+const GlobalInfo = struct {
+    id: u32,
     bits: u16,
     aggregate: bool,
 };
@@ -100,6 +112,7 @@ pub fn init(
     oir: *Oir,
     gpa: std.mem.Allocator,
     tree: *const Tree,
+    comp: *const Compilation,
 ) !CodeGen {
     _ = try oir.add(.{
         .tag = .start,
@@ -113,6 +126,7 @@ pub fn init(
         .gpa = gpa,
         .oir = oir,
         .tree = tree,
+        .comp = comp,
         .node_to_class = .empty,
         .exits = &oir.exit_list,
         .symbol_table = symbol_table,
@@ -125,15 +139,45 @@ pub fn init(
         .addressed = .empty,
         .frames = .empty,
         .fn_names = .empty,
+        .globals = .empty,
+        .global_defs = .empty,
     };
 }
 
+pub fn deinit(cg: *CodeGen, allocator: std.mem.Allocator) void {
+    cg.node_to_class.deinit(allocator);
+    for (cg.symbol_table.items) |*table| {
+        table.deinit(allocator);
+    }
+    cg.symbol_table.deinit(allocator);
+    cg.returns.deinit(allocator);
+    cg.clearLabels();
+    cg.labels.deinit(allocator);
+    cg.mem_vars.deinit(allocator);
+    cg.addressed.deinit(allocator);
+    cg.frames.deinit(allocator);
+    cg.fn_ids.deinit(allocator);
+    cg.fn_names.deinit(allocator);
+    cg.globals.deinit(allocator);
+    for (cg.global_defs.items) |g| switch (g.data) {
+        .bytes => |p| allocator.free(p.bytes),
+        else => {},
+    };
+    cg.global_defs.deinit(allocator);
+}
+
 pub fn build(cg: *CodeGen, io: std.Io, graphs: ?[]const u8) ![]Recursive {
-    var stdout_writer = std.Io.File.stdout().writer(io, &.{});
-    const stdout = &stdout_writer.interface;
+    var stderr_writer = std.Io.File.stderr().writer(io, &.{});
+    const stderr = &stderr_writer.interface;
 
     const tree = cg.tree;
     const node_tags = tree.nodes.items(.tag);
+
+    for (cg.tree.root_decls.items) |node| {
+        if (node.get(tree) == .variable) {
+            try cg.registerGlobal(node.get(tree).variable);
+        }
+    }
 
     // Assign every function an Id before lowering any body, so a `call` can name
     // its callee by Id even for forward references / recursion.
@@ -157,6 +201,7 @@ pub fn build(cg: *CodeGen, io: std.Io, graphs: ?[]const u8) ![]Recursive {
             .struct_forward_decl,
             .union_forward_decl,
             .enum_forward_decl,
+            .variable,
             => {},
             else => std.debug.panic("TODO: root decl {s}", .{@tagName(node_tags[@intFromEnum(node)])}),
         }
@@ -164,24 +209,24 @@ pub fn build(cg: *CodeGen, io: std.Io, graphs: ?[]const u8) ![]Recursive {
 
     try cg.oir.rebuild();
 
-    try stdout.writeAll("unoptimized OIR:\n");
-    try cg.oir.print(stdout);
-    try stdout.writeAll("end OIR\n");
+    try stderr.writeAll("unoptimized OIR:\n");
+    try cg.oir.print(stderr);
+    try stderr.writeAll("end OIR\n");
 
     try cg.oir.optimize(io, .saturate, graphs);
 
-    try stdout.writeAll("before extraction OIR:\n");
-    try cg.oir.print(stdout);
-    try stdout.writeAll("end OIR\n");
+    try stderr.writeAll("before extraction OIR:\n");
+    try cg.oir.print(stderr);
+    try stderr.writeAll("end OIR\n");
 
     const recvs = try cg.oir.extract(.auto);
 
-    try stdout.writeAll("optimized OIR:\n");
+    try stderr.writeAll("optimized OIR:\n");
     for (recvs) |recv| {
-        try recv.print(stdout);
-        try stdout.writeAll("--\n");
+        try recv.print(stderr);
+        try stderr.writeAll("--\n");
     }
-    try stdout.writeAll("end OIR\n");
+    try stderr.writeAll("end OIR\n");
 
     return recvs;
 }
@@ -1034,7 +1079,7 @@ fn storeToScalarLval(cg: *CodeGen, lhs: Tree.Node.Index, value: Oir.Class.Index)
         // A scalar SSA local just rebinds its value; a stack-backed scalar is stored.
         .decl_ref_expr => |decl_ref| {
             const name = tree.tokSlice(decl_ref.name_tok);
-            if (cg.mem_vars.get(name) == null) {
+            if (cg.mem_vars.get(name) == null and cg.globals.get(name) == null) {
                 if (cg.findIdentifier(name)) |existing| {
                     existing.* = value;
                 } else {
@@ -1429,6 +1474,7 @@ fn storeElem(cg: *CodeGen, base: Oir.Class.Index, elem_bits: u16, index: u64, va
 
 fn buildExpr(cg: *CodeGen, expr: Tree.Node.Index) Error!Oir.Class.Index {
     const tree = cg.tree;
+    const oir = cg.oir;
     const node_tags = tree.nodes.items(.tag);
 
     if (cg.node_to_class.get(expr)) |c| return c;
@@ -1461,22 +1507,24 @@ fn buildExpr(cg: *CodeGen, expr: Tree.Node.Index) Error!Oir.Class.Index {
         .greater_than_equal_expr,
         .less_than_expr,
         .less_than_equal_expr,
+        .bit_or_expr,
         => |bin, t| bin: {
             const lhs = try cg.buildExpr(bin.lhs);
             const rhs = try cg.buildExpr(bin.rhs);
             const uns = cg.unsignedQt(bin.lhs.qt(tree));
             break :bin switch (t) {
-                .mul_expr => try cg.oir.add(.binOp(.mul, lhs, rhs)),
-                .div_expr => try cg.oir.add(.binOp(if (uns) .udiv else .div_trunc, lhs, rhs)),
-                .bit_and_expr => try cg.oir.add(.binOp(.@"and", lhs, rhs)),
-                .shl_expr => try cg.oir.add(.binOp(.shl, lhs, rhs)),
-                .shr_expr => try cg.oir.add(.binOp(if (uns) .shr else .sar, lhs, rhs)),
-                .equal_expr => try cg.oir.add(.binOp(.cmp_eq, lhs, rhs)),
-                .not_equal_expr => try cg.notPred(try cg.oir.add(.binOp(.cmp_eq, lhs, rhs))),
-                .greater_than_expr => try cg.oir.add(.binOp(if (uns) .cmp_ugt else .cmp_gt, lhs, rhs)),
-                .less_than_expr => try cg.oir.add(.binOp(if (uns) .cmp_ult else .cmp_lt, lhs, rhs)),
-                .greater_than_equal_expr => try cg.notPred(try cg.oir.add(.binOp(if (uns) .cmp_ult else .cmp_lt, lhs, rhs))),
-                .less_than_equal_expr => try cg.notPred(try cg.oir.add(.binOp(if (uns) .cmp_ugt else .cmp_gt, lhs, rhs))),
+                .mul_expr => try oir.add(.binOp(.mul, lhs, rhs)),
+                .div_expr => try oir.add(.binOp(if (uns) .udiv else .div_trunc, lhs, rhs)),
+                .bit_and_expr => try oir.add(.binOp(.@"and", lhs, rhs)),
+                .shl_expr => try oir.add(.binOp(.shl, lhs, rhs)),
+                .shr_expr => try oir.add(.binOp(if (uns) .shr else .sar, lhs, rhs)),
+                .equal_expr => try oir.add(.binOp(.cmp_eq, lhs, rhs)),
+                .not_equal_expr => try cg.notPred(try oir.add(.binOp(.cmp_eq, lhs, rhs))),
+                .greater_than_expr => try oir.add(.binOp(if (uns) .cmp_ugt else .cmp_gt, lhs, rhs)),
+                .less_than_expr => try oir.add(.binOp(if (uns) .cmp_ult else .cmp_lt, lhs, rhs)),
+                .greater_than_equal_expr => try cg.notPred(try oir.add(.binOp(if (uns) .cmp_ult else .cmp_lt, lhs, rhs))),
+                .less_than_equal_expr => try cg.notPred(try oir.add(.binOp(if (uns) .cmp_ugt else .cmp_gt, lhs, rhs))),
+                .bit_or_expr => try oir.add(.binOp(.@"or", lhs, rhs)),
                 else => unreachable,
             };
         },
@@ -1484,16 +1532,17 @@ fn buildExpr(cg: *CodeGen, expr: Tree.Node.Index) Error!Oir.Class.Index {
         // TODO: add binary/bitwise negate variants to IR?
         .negate_expr => |un| neg: {
             const v = try cg.buildExpr(un.operand);
-            const zero = try cg.oir.add(.constant(0));
-            break :neg try cg.oir.add(.binOp(.sub, zero, v));
+            const zero = try oir.add(.constant(0));
+            break :neg try oir.add(.binOp(.sub, zero, v));
         },
         .bit_not_expr => |un| not: {
             // ~x == -1 - x
             const v = try cg.buildExpr(un.operand);
-            const ones = try cg.oir.add(.constant(-1));
-            break :not try cg.oir.add(.binOp(.sub, ones, v));
+            const ones = try oir.add(.constant(-1));
+            break :not try oir.add(.binOp(.sub, ones, v));
         },
         .bool_not_expr => |un| try cg.notPred(try cg.buildExpr(un.operand)),
+
         .addr_of_expr => |un| try cg.buildAddress(un.operand),
         .paren_expr => |p| try cg.buildExpr(p.operand),
         .decl_ref_expr,
@@ -1505,6 +1554,81 @@ fn buildExpr(cg: *CodeGen, expr: Tree.Node.Index) Error!Oir.Class.Index {
         => try cg.buildLval(expr),
         .int_literal => unreachable, // handled in the value_map above
         .cast => |cast| try cg.buildCast(cast),
+        .builtin_call_expr => |call| b: {
+            const name = cg.tree.tokSlice(call.builtin_tok);
+            const builtin = cg.comp.builtins.lookup(name);
+            // TODO: if the aro.Builtins namespace was accessible, we'd have a wrapper
+            // can ask Vexu to fix later
+            switch (builtin.tag.common) {
+                // TODO: implement these in a better way, probably want to have a bswap Oir instruction
+                .__builtin_bswap16 => {
+                    std.debug.assert(call.args.len == 1);
+                    const operand = try cg.buildExpr(call.args[0]);
+
+                    const lo = try oir.add(.binOp(.@"and", operand, try oir.add(.constantTyped(0x00FF, 16))));
+                    const hi = try oir.add(.binOp(.@"and", operand, try oir.add(.constantTyped(0xFF00, 16))));
+
+                    const slo = try oir.add(.binOp(.shl, lo, try oir.add(.constantTyped(8, 16))));
+                    const shi = try oir.add(.binOp(.shr, hi, try oir.add(.constantTyped(8, 16))));
+
+                    break :b try oir.add(.binOp(.@"or", slo, shi));
+                },
+                .__builtin_bswap32 => {
+                    std.debug.assert(call.args.len == 1);
+                    const operand = try cg.buildExpr(call.args[0]);
+
+                    const b0 = try oir.add(.binOp(.@"and", operand, try oir.add(.constantTyped(0x000000FF, 32))));
+                    const b1 = try oir.add(.binOp(.@"and", operand, try oir.add(.constantTyped(0x0000FF00, 32))));
+                    const b2 = try oir.add(.binOp(.@"and", operand, try oir.add(.constantTyped(0x00FF0000, 32))));
+                    const b3 = try oir.add(.binOp(.@"and", operand, try oir.add(.constantTyped(0xFF000000, 32))));
+
+                    const c0 = try oir.add(.binOp(.shl, b0, try oir.add(.constantTyped(24, 32))));
+                    const c1 = try oir.add(.binOp(.shl, b1, try oir.add(.constantTyped(8, 32))));
+                    const c2 = try oir.add(.binOp(.shr, b2, try oir.add(.constantTyped(8, 32))));
+                    const c3 = try oir.add(.binOp(.shr, b3, try oir.add(.constantTyped(24, 32))));
+
+                    const t0 = try oir.add(.binOp(.@"or", c0, c1));
+                    const t1 = try oir.add(.binOp(.@"or", c2, c3));
+
+                    break :b try oir.add(.binOp(.@"or", t0, t1));
+                },
+                .__builtin_bswap64 => {
+                    std.debug.assert(call.args.len == 1);
+                    const operand = try cg.buildExpr(call.args[0]);
+
+                    const b0 = try oir.add(.binOp(.@"and", operand, try oir.add(.constantTyped(0x00000000000000FF, 64))));
+                    const b1 = try oir.add(.binOp(.@"and", operand, try oir.add(.constantTyped(0x000000000000FF00, 64))));
+                    const b2 = try oir.add(.binOp(.@"and", operand, try oir.add(.constantTyped(0x0000000000FF0000, 64))));
+                    const b3 = try oir.add(.binOp(.@"and", operand, try oir.add(.constantTyped(0x00000000FF000000, 64))));
+                    const b4 = try oir.add(.binOp(.@"and", operand, try oir.add(.constantTyped(0x000000FF00000000, 64))));
+                    const b5 = try oir.add(.binOp(.@"and", operand, try oir.add(.constantTyped(0x0000FF0000000000, 64))));
+                    const b6 = try oir.add(.binOp(.@"and", operand, try oir.add(.constantTyped(0x00FF000000000000, 64))));
+                    // TODO: constants rework plz
+                    const b7 = try oir.add(.binOp(.@"and", operand, try oir.add(.constantTyped(@bitCast(@as(u64, 0xFF00000000000000)), 64))));
+
+                    const c0 = try oir.add(.binOp(.shl, b0, try oir.add(.constantTyped(56, 64))));
+                    const c1 = try oir.add(.binOp(.shl, b1, try oir.add(.constantTyped(40, 64))));
+                    const c2 = try oir.add(.binOp(.shl, b2, try oir.add(.constantTyped(24, 64))));
+                    const c3 = try oir.add(.binOp(.shl, b3, try oir.add(.constantTyped(8, 64))));
+
+                    const c4 = try oir.add(.binOp(.shr, b4, try oir.add(.constantTyped(8, 64))));
+                    const c5 = try oir.add(.binOp(.shr, b5, try oir.add(.constantTyped(24, 64))));
+                    const c6 = try oir.add(.binOp(.shr, b6, try oir.add(.constantTyped(40, 64))));
+                    const c7 = try oir.add(.binOp(.shr, b7, try oir.add(.constantTyped(56, 64))));
+
+                    const t0 = try oir.add(.binOp(.@"or", c0, c1));
+                    const t1 = try oir.add(.binOp(.@"or", c2, c3));
+                    const t2 = try oir.add(.binOp(.@"or", c4, c5));
+                    const t3 = try oir.add(.binOp(.@"or", c6, c7));
+
+                    const d0 = try oir.add(.binOp(.@"or", t0, t1));
+                    const d1 = try oir.add(.binOp(.@"or", t2, t3));
+
+                    break :b try oir.add(.binOp(.@"or", d0, d1));
+                },
+                else => |t| std.debug.panic("TODO: implement builtin: {t}", .{t}),
+            }
+        },
         else => std.debug.panic("TODO: {s}", .{@tagName(node_tags[@intFromEnum(expr)])}),
     };
 
@@ -1634,6 +1758,12 @@ fn buildLval(cg: *CodeGen, idx: Tree.Node.Index) Error!Oir.Class.Index {
                 try cg.node_to_class.put(cg.gpa, idx, c);
                 return c;
             }
+            if (cg.globals.get(name)) |g| {
+                const addr = try cg.oir.add(.globalAddr(g.id));
+                // A scalar loads its value, while an aggregate decays to its address.
+                if (g.aggregate) return addr;
+                return cg.oir.add(.load(cg.mem_state, addr, g.bits));
+            }
             @panic("TODO: unknown identifier");
         },
         .deref_expr, .array_access_expr, .member_access_expr, .member_access_ptr_expr => {
@@ -1670,6 +1800,7 @@ fn buildAddress(cg: *CodeGen, idx: Tree.Node.Index) Error!Oir.Class.Index {
             const name = tree.tokSlice(decl_ref.name_tok);
             // Only memory-backed locals have an address; the binding *is* it.
             if (cg.mem_vars.get(name) != null) return cg.findIdentifier(name).?.*;
+            if (cg.globals.get(name)) |g| return cg.oir.add(.globalAddr(g.id));
             std.debug.panic("TODO: address of non-stack local '{s}'", .{name});
         },
         // `&*p` is just `p`.
@@ -1767,6 +1898,109 @@ fn findIdentifier(cg: *CodeGen, ident: []const u8) ?*Oir.Class.Index {
     return null;
 }
 
+/// Registers a variable in the global table and records how we should emit it.
+fn registerGlobal(cg: *CodeGen, v: Tree.Node.Variable) Error!void {
+    const tree = cg.tree;
+    const comp = tree.comp;
+    const name = tree.tokSlice(v.name_tok);
+    const qt = v.qt;
+    const aggregate = cg.isAggregate(qt);
+    const size = qt.sizeof(comp);
+    const alignment: u32 = @intCast(qt.alignof(comp));
+    // `static` has internal linkage, everything else is externally visible.
+    const external = v.storage_class != .static;
+
+    const data: zob.rv64.Global.Data = blk: {
+        if (v.initializer) |i| {
+            const buf = try cg.gpa.alloc(u8, @intCast(size));
+            @memset(buf, 0);
+            try cg.lowerInitBytes(buf, 0, qt, i);
+            break :blk .{ .bytes = .{ .bytes = buf, .@"align" = alignment } };
+        }
+        if (v.storage_class == .@"extern") break :blk .declared;
+        break :blk .{ .bss = .{ .size = size, .@"align" = alignment } };
+    };
+
+    if (cg.globals.get(name)) |info| {
+        // (defined > tentative > declared).
+        const slot = &cg.global_defs.items[info.id];
+        if (strength(data) > strength(slot.data)) slot.* = .{ .name = name, .external = external, .data = data };
+        return;
+    }
+
+    const id: u32 = @intCast(cg.global_defs.items.len);
+    try cg.global_defs.append(cg.gpa, .{ .name = name, .external = external, .data = data });
+    try cg.globals.put(cg.gpa, name, .{
+        .id = id,
+        .bits = if (aggregate) 0 else cg.widthOf(qt),
+        .aggregate = aggregate,
+    });
+}
+
+fn strength(data: zob.rv64.Global.Data) u8 {
+    return switch (data) {
+        .declared => 0,
+        .bss => 1,
+        .bytes => 2,
+    };
+}
+
+fn lowerInitBytes(cg: *CodeGen, buf: []u8, off: u64, qt: aro.QualType, init_node: Tree.Node.Index) Error!void {
+    const tree = cg.tree;
+    const comp = tree.comp;
+    switch (init_node.get(tree)) {
+        .array_init_expr => |ci| {
+            const elem_qt = qt.get(comp, .array).?.elem;
+            const elem_size = elem_qt.sizeof(comp);
+            var index: u64 = 0;
+            for (ci.items) |item| switch (item.get(tree)) {
+                .array_filler_expr => |f| index += f.count, // remaining stay zero
+                .default_init_expr => index += 1, // zero
+                else => {
+                    try cg.lowerInitElem(buf, off + index * elem_size, elem_qt, item);
+                    index += 1;
+                },
+            };
+        },
+        .struct_init_expr => |ci| {
+            const rec = cg.recordOf(qt);
+            for (ci.items, 0..) |item, i| {
+                const field = rec.fields[i];
+                if (field.bit_width.unpack() != null) @panic("TODO: bit-field global initializer");
+                if (item.get(tree) == .default_init_expr) continue; // zero
+                try cg.lowerInitElem(buf, off + field.layout.offset_bits / 8, field.qt, item);
+            }
+        },
+        else => try cg.writeScalarInit(buf, off, qt, init_node),
+    }
+}
+
+fn lowerInitElem(cg: *CodeGen, buf: []u8, off: u64, qt: aro.QualType, node: Tree.Node.Index) Error!void {
+    if (cg.isAggregate(qt)) return cg.lowerInitBytes(buf, off, qt, node);
+    return cg.writeScalarInit(buf, off, qt, node);
+}
+
+fn writeScalarInit(cg: *CodeGen, buf: []u8, off: u64, qt: aro.QualType, node: Tree.Node.Index) Error!void {
+    const comp = cg.tree.comp;
+    const nbytes: u64 = @max(1, cg.widthOf(qt) / 8);
+    const val = cg.constValueOf(node) orelse @panic("TODO: non-constant global initializer");
+    const raw: u64 = val.toInt(u64, comp) orelse
+        @bitCast(val.toInt(i64, comp) orelse @panic("TODO: huge global initializer"));
+    for (0..nbytes) |k| buf[off + k] = @truncate(raw >> @intCast(k * 8));
+}
+
+fn constValueOf(cg: *CodeGen, node: Tree.Node.Index) ?aro.Value {
+    var n = node;
+    while (true) {
+        if (cg.tree.value_map.get(n)) |v| return v;
+        n = switch (n.get(cg.tree)) {
+            .cast => |c| c.operand,
+            .paren_expr => |p| p.operand,
+            else => return null,
+        };
+    }
+}
+
 fn buildConstant(cg: *CodeGen, idx: Tree.Node.Index, val: aro.Value) !Oir.Class.Index {
     const tree = cg.tree;
     const key = tree.comp.interner.get(val.ref());
@@ -1782,20 +2016,4 @@ fn buildConstant(cg: *CodeGen, idx: Tree.Node.Index, val: aro.Value) !Oir.Class.
 
     try cg.node_to_class.put(cg.gpa, idx, class);
     return class;
-}
-
-pub fn deinit(cg: *CodeGen, allocator: std.mem.Allocator) void {
-    cg.node_to_class.deinit(allocator);
-    for (cg.symbol_table.items) |*table| {
-        table.deinit(allocator);
-    }
-    cg.symbol_table.deinit(allocator);
-    cg.returns.deinit(allocator);
-    cg.clearLabels();
-    cg.labels.deinit(allocator);
-    cg.mem_vars.deinit(allocator);
-    cg.addressed.deinit(allocator);
-    cg.frames.deinit(allocator);
-    cg.fn_ids.deinit(allocator);
-    cg.fn_names.deinit(allocator);
 }

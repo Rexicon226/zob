@@ -48,6 +48,7 @@ pub const Inst = union(enum) {
     store: struct { value: VReg, addr: VReg, bits: u16 },
     li: struct { dst: VReg, imm: i64 },
     frame_addr: struct { dst: VReg, offset: u32 },
+    symbol_addr: struct { dst: VReg, global: u32 },
     beqz: struct { src: VReg, target: Label },
     j: Label,
     label: Label,
@@ -64,7 +65,7 @@ pub const Inst = union(enum) {
     /// Calls `f(ctx, vreg)` for each vreg this instruction defines.
     pub fn forEachDef(inst: Inst, ctx: anytype, comptime f: fn (@TypeOf(ctx), VReg) void) void {
         switch (inst) {
-            inline .arg, .li, .frame_addr, .bin, .un, .cast, .load => |p| f(ctx, p.dst),
+            inline .arg, .li, .frame_addr, .symbol_addr, .bin, .un, .cast, .load => |p| f(ctx, p.dst),
             .call => |p| f(ctx, p.dst),
             .store, .beqz, .j, .label, .set_ret, .set_arg, .ret => {},
         }
@@ -73,7 +74,7 @@ pub const Inst = union(enum) {
     /// Calls `f(ctx, vreg)` for each vreg this instruction uses.
     pub fn forEachUse(inst: Inst, ctx: anytype, comptime f: fn (@TypeOf(ctx), VReg) void) void {
         switch (inst) {
-            .arg, .li, .frame_addr, .j, .label, .ret, .call => {},
+            .arg, .li, .frame_addr, .symbol_addr, .j, .label, .ret, .call => {},
             .un => |p| f(ctx, p.src),
             .cast => |p| f(ctx, p.src),
             .load => |p| f(ctx, p.addr),
@@ -240,6 +241,7 @@ const Builder = struct {
                 b.alloca_off = off + a.size;
                 try b.add(.{ .frame_addr = .{ .dst = n, .offset = off } });
             },
+            .global_addr => try b.add(.{ .symbol_addr = .{ .dst = n, .global = node.data.global_addr.id } }),
             .project => {
                 if (b.sched.is_mem[@intFromEnum(n)]) return; // memory state, no register
                 const project = node.data.project;
