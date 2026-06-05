@@ -2,18 +2,24 @@
 .globl foo
 .type foo, @function
 foo:
-    mv t0, a0
-    mv t1, a1
-    li t2, 0
-    sltu t3, t2, t0
-    beqz t3, .Lfoo_0
-    li t3, 1
-    mv t0, t3
+    li t0, -16
+    add sp, sp, t0
+    sd s2, 0(sp)
+    mv t1, a0
+    mv t2, a1
+    li t3, 0
+    sltu s2, t3, t1
+    beqz s2, .Lfoo_0
+    li s2, 1
+    mv t1, s2
     j .Lfoo_1
 .Lfoo_0:
-    sltu t3, t2, t1
-    mv t0, t3
+    sltu s2, t3, t2
+    mv t1, s2
 .Lfoo_1:
-    mv a0, t0
+    mv a0, t1
+    ld s2, 0(sp)
+    li t0, 16
+    add sp, sp, t0
     ret
 .size foo, .-foo

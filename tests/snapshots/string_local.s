@@ -2,41 +2,46 @@
 .globl foo
 .type foo, @function
 foo:
-    addi sp, sp, -16
+    li t0, -32
+    add sp, sp, t0
     sd s2, 0(sp)
-    mv t0, a0
-    addi t1, sp, 8
-    li t2, 104
-    sb t2, 0(t1)
-    li t2, 1
-    add t3, t1, t2
-    li t2, 105
-    sb t2, 0(t3)
-    li t2, 2
-    add t3, t1, t2
-    li t2, 0
-    sb t2, 0(t3)
-    li t3, 3
-    add s2, t1, t3
-    sb t2, 0(s2)
-    li s2, 4
-    add t3, t1, s2
-    sb t2, 0(t3)
-    li t3, 5
-    add s2, t1, t3
-    sb t2, 0(s2)
-    li s2, 6
-    add t3, t1, s2
-    sb t2, 0(t3)
-    li t3, 7
-    add s2, t1, t3
-    sb t2, 0(s2)
-    mv t3, t0
-    add t0, t1, t3
-    lb t1, 0(t0)
-    andi t0, t1, 255
-    mv a0, t0
+    sd s3, 8(sp)
+    mv t1, a0
+    li t0, 16
+    add t2, sp, t0
+    li t3, 104
+    sb t3, 0(t2)
+    li t3, 1
+    add s2, t2, t3
+    li t3, 105
+    sb t3, 0(s2)
+    li t3, 2
+    add s2, t2, t3
+    li t3, 0
+    sb t3, 0(s2)
+    li s2, 3
+    add s3, t2, s2
+    sb t3, 0(s3)
+    li s3, 4
+    add s2, t2, s3
+    sb t3, 0(s2)
+    li s2, 5
+    add s3, t2, s2
+    sb t3, 0(s3)
+    li s3, 6
+    add s2, t2, s3
+    sb t3, 0(s2)
+    li s2, 7
+    add s3, t2, s2
+    sb t3, 0(s3)
+    mv s2, t1
+    add t1, t2, s2
+    lb t2, 0(t1)
+    andi t1, t2, 255
+    mv a0, t1
     ld s2, 0(sp)
-    addi sp, sp, 16
+    ld s3, 8(sp)
+    li t0, 32
+    add sp, sp, t0
     ret
 .size foo, .-foo

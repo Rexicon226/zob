@@ -54,6 +54,7 @@ pub fn getCost(tag: Oir.Node.Tag) u32 {
 
         // TODO: we'll need to price calls for real / inlining etc.
         .call => 5,
+        .call_ptr => 7,
 
         .start,
         .ret,

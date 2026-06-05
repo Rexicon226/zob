@@ -2,18 +2,20 @@
 .globl foo
 .type foo, @function
 foo:
-    addi sp, sp, -16
+    li t0, -16
+    add sp, sp, t0
     sd ra, 0(sp)
-    mv t0, a0
-    la t1, .Lstr3
-    mv a0, t1
-    mv a1, t0
-    call printf
     mv t1, a0
-    mv t0, t1
-    mv a0, t0
+    la t2, .Lstr3
+    mv a0, t2
+    mv a1, t1
+    call printf
+    mv t2, a0
+    mv t1, t2
+    mv a0, t1
     ld ra, 0(sp)
-    addi sp, sp, 16
+    li t0, 16
+    add sp, sp, t0
     ret
 .size foo, .-foo
 .data

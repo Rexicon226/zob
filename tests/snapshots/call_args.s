@@ -2,39 +2,47 @@
 .globl sum4
 .type sum4, @function
 sum4:
-    addi sp, sp, -16
+    li t0, -16
+    add sp, sp, t0
     sd s2, 0(sp)
-    mv t0, a3
-    mv t1, a2
-    mv t2, a0
-    mv t3, a1
-    addw s2, t2, t3
-    addw t3, t1, s2
-    addw s2, t0, t3
-    mv a0, s2
+    sd s3, 8(sp)
+    mv t1, a3
+    mv t2, a2
+    mv t3, a0
+    mv s2, a1
+    addw s3, t3, s2
+    addw s2, t2, s3
+    addw s3, t1, s2
+    mv a0, s3
     ld s2, 0(sp)
-    addi sp, sp, 16
+    ld s3, 8(sp)
+    li t0, 16
+    add sp, sp, t0
     ret
 .size sum4, .-sum4
 .text
 .globl foo
 .type foo, @function
 foo:
-    addi sp, sp, -16
-    sd ra, 0(sp)
-    mv t0, a0
-    li t1, 1
-    li t2, 2
-    li t3, 3
-    mv a0, t0
-    mv a1, t1
-    mv a2, t2
-    mv a3, t3
-    call sum4
+    li t0, -16
+    add sp, sp, t0
+    sd s2, 0(sp)
+    sd ra, 8(sp)
     mv t1, a0
-    mv t2, t1
-    mv a0, t2
-    ld ra, 0(sp)
-    addi sp, sp, 16
+    li t2, 1
+    li t3, 2
+    li s2, 3
+    mv a0, t1
+    mv a1, t2
+    mv a2, t3
+    mv a3, s2
+    call sum4
+    mv t2, a0
+    mv t3, t2
+    mv a0, t3
+    ld ra, 8(sp)
+    ld s2, 0(sp)
+    li t0, 16
+    add sp, sp, t0
     ret
 .size foo, .-foo

@@ -218,7 +218,9 @@ pub const Writer = struct {
             .start => try w.printStart(node, repr, stream),
             .lambda => try w.printLambda(node, repr, stream),
             .param => try w.printParam(node, stream),
-            .call => try w.printCall(node, repr, stream),
+            .call,
+            .call_ptr,
+            => try w.printCall(node, repr, stream),
             .alloca => try w.printAlloca(node, stream),
             .global_addr => try stream.print("@{d}", .{node.data.global_addr.id}),
             .va_start => try stream.print("named {d}", .{node.data.va_start.named}),
@@ -239,7 +241,11 @@ pub const Writer = struct {
 
     fn printCall(_: *Writer, node: Oir.Node, repr: anytype, stream: *std.Io.Writer) !void {
         const c = node.data.call;
-        try stream.print("#{d}, mem {f}", .{ c.callee, c.mem(repr) });
+        switch (node.tag) {
+            .call => try stream.print("#{d}, mem {f}", .{ c.callee, c.mem(repr) }),
+            .call_ptr => try stream.print("%{d}, mem {f}", .{ c.args(repr)[0], c.mem(repr) }),
+            else => unreachable,
+        }
         for (c.args(repr)) |a| try stream.print(", arg {f}", .{a});
     }
 

@@ -2,26 +2,30 @@
 .globl foo
 .type foo, @function
 foo:
-    addi sp, sp, -16
+    li t0, -16
+    add sp, sp, t0
     sd s2, 0(sp)
-    la t0, s
-    lw t1, 0(t0)
-    li t2, 4
-    add t3, t0, t2
-    lb s2, 0(t3)
-    andi t3, s2, 255
-    addw s2, t1, t3
-    li t3, 16
-    add t1, t0, t3
-    lw t3, 0(t1)
-    addw t0, s2, t3
-    add t3, t1, t2
-    lb t2, 0(t3)
-    andi t3, t2, 255
-    addw t2, t0, t3
-    mv a0, t2
+    sd s3, 8(sp)
+    la t1, s
+    lw t2, 0(t1)
+    li t3, 4
+    add s2, t1, t3
+    lb s3, 0(s2)
+    andi s2, s3, 255
+    addw s3, t2, s2
+    li s2, 16
+    add t2, t1, s2
+    lw s2, 0(t2)
+    addw t1, s3, s2
+    add s2, t2, t3
+    lb t3, 0(s2)
+    andi s2, t3, 255
+    addw t3, t1, s2
+    mv a0, t3
     ld s2, 0(sp)
-    addi sp, sp, 16
+    ld s3, 8(sp)
+    li t0, 16
+    add sp, sp, t0
     ret
 .size foo, .-foo
 .data

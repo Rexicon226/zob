@@ -56,7 +56,8 @@ pub const Register = enum(u5) {
 pub const arg_regs = [_]Register{ .a0, .a1, .a2, .a3, .a4, .a5, .a6, .a7 };
 
 /// The registers that the allocator may hand out, in preference order.
-pub const alloc_pool = [_]Register{ .t0, .t1, .t2, .t3, .s2, .s3, .s4, .s5, .s6, .s7, .s8, .s9, .s10, .s11 };
+/// Reserving t0 for loading big immediates, obviously not a good solution, but whatever.
+pub const alloc_pool = [_]Register{ .t1, .t2, .t3, .s2, .s3, .s4, .s5, .s6, .s7, .s8, .s9, .s10, .s11 };
 
 /// Scratch registers used only by the emitter to materialize spilled operands.
 /// Will rework all of this in the future with a real graph-color based RegAlloc.
@@ -210,14 +211,15 @@ const Emitter = struct {
         try e.w.print("{s}:\n", .{name});
 
         if (frame != 0) {
-            try e.emitLine("addi sp, sp, -{d}", .{frame});
+            try e.emitLine("li t0, -{d}", .{frame});
+            try e.emitLine("add sp, sp, t0", .{});
             for (e.ra.used_saved, 0..) |reg, j| {
-                try e.emitLine("sd {t}, {d}(sp)", .{ reg, e.savedOffset(j) });
+                try e.emitStore(reg, e.savedOffset(j));
             }
-            if (e.has_call) try e.emitLine("sd ra, {d}(sp)", .{e.raOffset()});
+            if (e.has_call) try e.emitStore(.ra, e.raOffset());
             if (e.mir.is_variadic) {
                 for (arg_regs, 0..) |reg, i| {
-                    try e.emitLine("sd {t}, {d}(sp)", .{ reg, e.varargBase() + i * slot_size });
+                    try e.emitStore(reg, e.varargBase() + i * slot_size);
                 }
             }
         }
@@ -241,7 +243,8 @@ const Emitter = struct {
             },
             .frame_addr => |a| {
                 const dst, const slot = e.defReg(a.dst);
-                try e.emitLine("addi {t}, sp, {d}", .{ dst, e.allocaBase() + a.offset });
+                try e.emitLine("li t0, {d}", .{e.allocaBase() + a.offset});
+                try e.emitLine("add {t}, sp, t0", .{dst});
                 try e.finishDef(dst, slot);
             },
             .symbol_addr => |a| {
@@ -251,7 +254,8 @@ const Emitter = struct {
             },
             .va_start => |a| {
                 const dst, const slot = e.defReg(a.dst);
-                try e.emitLine("addi {t}, sp, {d}", .{ dst, e.varargBase() + @as(u64, a.named) * slot_size });
+                try e.emitLine("li t0, {d}", .{e.varargBase() + @as(u64, a.named) * slot_size});
+                try e.emitLine("add {t}, sp, t0", .{dst});
                 try e.finishDef(dst, slot);
             },
             .un => |a| {
@@ -311,18 +315,25 @@ const Emitter = struct {
                 try e.emitLine("mv {t}, {t}", .{ arg_regs[a.index], src });
             },
             .call => |c| {
-                try e.emitLine("call {s}", .{e.names[c.callee]});
+                switch (c.target) {
+                    .normal => |id| try e.emitLine("call {s}", .{e.names[id]}),
+                    .ptr => |v| {
+                        const src = try e.useReg(v, scratch_src0);
+                        try e.emitLine("jalr ra, {t}, 0", .{src});
+                    },
+                }
                 const dst, const slot = e.defReg(c.dst);
                 try e.emitLine("mv {t}, a0", .{dst});
                 try e.finishDef(dst, slot);
             },
             .ret => {
                 if (frame != 0) {
-                    if (e.has_call) try e.emitLine("ld ra, {d}(sp)", .{e.raOffset()});
+                    if (e.has_call) try e.emitLoad(.ra, e.raOffset());
                     for (e.ra.used_saved, 0..) |reg, j| {
-                        try e.emitLine("ld {t}, {d}(sp)", .{ reg, e.savedOffset(j) });
+                        try e.emitLoad(reg, e.savedOffset(j));
                     }
-                    try e.emitLine("addi sp, sp, {d}", .{frame});
+                    try e.emitLine("li t0, {d}", .{frame});
+                    try e.emitLine("add sp, sp, t0", .{});
                 }
                 try e.emitLine("ret", .{});
             },
@@ -335,9 +346,28 @@ const Emitter = struct {
         switch (e.ra.locs[@intFromEnum(v)]) {
             .reg => |r| return r,
             .spill => |slot| {
-                try e.emitLine("ld {t}, {d}(sp)", .{ scratch, e.spillOffset(slot) });
+                try e.emitLoad(scratch, e.spillOffset(slot));
                 return scratch;
             },
+        }
+    }
+
+    fn emitLoad(e: *Emitter, dst: Register, off: u64) !void {
+        if (off >= -2048 and off <= 2047) {
+            try e.emitLine("ld {t}, {d}(sp)", .{ dst, off });
+        } else {
+            try e.emitLine("li t0, {d}", .{off});
+            try e.emitLine("add t0, sp, t0", .{});
+            try e.emitLine("ld {t}, 0(t0)", .{dst});
+        }
+    }
+    fn emitStore(e: *Emitter, src: Register, off: u64) !void {
+        if (off >= -2048 and off <= 2047) {
+            try e.emitLine("sd {t}, {d}(sp)", .{ src, off });
+        } else {
+            try e.emitLine("li t0, {d}", .{off});
+            try e.emitLine("add t0, sp, t0", .{});
+            try e.emitLine("sd {t}, 0(t0)", .{src});
         }
     }
 
@@ -351,7 +381,7 @@ const Emitter = struct {
     }
 
     fn finishDef(e: *Emitter, dst: Register, slot: ?u32) !void {
-        if (slot) |s| try e.emitLine("sd {t}, {d}(sp)", .{ dst, e.spillOffset(s) });
+        if (slot) |s| try e.emitStore(dst, e.spillOffset(s));
     }
 
     fn emitCast(e: *Emitter, kind: Mir.CastKind, dst: Register, src: Register, src_bits: u16, dst_bits: u16) !void {

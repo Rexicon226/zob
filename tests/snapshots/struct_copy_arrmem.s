@@ -2,35 +2,41 @@
 .globl foo
 .type foo, @function
 foo:
-    addi sp, sp, -48
+    li t0, -64
+    add sp, sp, t0
     sd s2, 0(sp)
     sd s3, 8(sp)
-    addi t0, sp, 16
-    li t1, 5
-    sw t1, 0(t0)
-    li t1, 4
-    add t2, t0, t1
-    add t3, t2, t1
-    li t2, 20
-    sw t2, 0(t3)
-    addi t2, sp, 32
-    ld t3, 0(t0)
-    sd t3, 0(t2)
-    li t3, 8
-    add s2, t2, t3
-    add s3, t0, t3
-    ld t3, 0(s3)
-    sd t3, 0(s2)
-    li s2, 9
-    sw s2, 0(t2)
-    add s2, t2, t1
-    add t2, s2, t1
-    lw t1, 0(t2)
-    li t2, 14
-    addw s2, t1, t2
-    mv a0, s2
+    sd s4, 16(sp)
+    li t0, 24
+    add t1, sp, t0
+    li t2, 5
+    sw t2, 0(t1)
+    li t2, 4
+    add t3, t1, t2
+    add s2, t3, t2
+    li t3, 20
+    sw t3, 0(s2)
+    li t0, 40
+    add t3, sp, t0
+    ld s2, 0(t1)
+    sd s2, 0(t3)
+    li s2, 8
+    add s3, t3, s2
+    add s4, t1, s2
+    ld s2, 0(s4)
+    sd s2, 0(s3)
+    li s3, 9
+    sw s3, 0(t3)
+    add s3, t3, t2
+    add t3, s3, t2
+    lw t2, 0(t3)
+    li t3, 14
+    addw s3, t2, t3
+    mv a0, s3
     ld s2, 0(sp)
     ld s3, 8(sp)
-    addi sp, sp, 48
+    ld s4, 16(sp)
+    li t0, 64
+    add sp, sp, t0
     ret
 .size foo, .-foo

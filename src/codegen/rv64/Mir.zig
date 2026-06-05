@@ -62,7 +62,13 @@ pub const Inst = union(enum) {
     /// `mv a{index}, src`, places a call argument into its ABI register.
     set_arg: struct { index: u32, src: VReg },
     /// `call {name}; mv dst, a0`. Clobbers the caller-saved registers.
-    call: struct { callee: u32, dst: VReg },
+    call: struct {
+        dst: VReg,
+        target: union(enum) {
+            normal: u32,
+            ptr: VReg,
+        },
+    },
     ret,
 
     /// Calls `f(ctx, vreg)` for each vreg this instruction defines.
@@ -77,7 +83,7 @@ pub const Inst = union(enum) {
     /// Calls `f(ctx, vreg)` for each vreg this instruction uses.
     pub fn forEachUse(inst: Inst, ctx: anytype, comptime f: fn (@TypeOf(ctx), VReg) void) void {
         switch (inst) {
-            .arg, .li, .frame_addr, .symbol_addr, .va_start, .j, .label, .ret, .call => {},
+            .arg, .li, .frame_addr, .symbol_addr, .va_start, .j, .label, .ret => {},
             .un => |p| f(ctx, p.src),
             .cast => |p| f(ctx, p.src),
             .load => |p| f(ctx, p.addr),
@@ -91,6 +97,10 @@ pub const Inst = union(enum) {
             .bin => |p| {
                 f(ctx, p.lhs);
                 f(ctx, p.rhs);
+            },
+            .call => |p| switch (p.target) {
+                .normal => {},
+                .ptr => |v| f(ctx, v),
             },
         }
     }
@@ -264,7 +274,7 @@ const Builder = struct {
                 switch (tuple.tag) {
                     .start => try b.add(.{ .arg = .{ .dst = n, .index = project.index - 1 } }),
                     .theta => try b.add(.mv(n, tuple.data.loop.args(b.recv)[project.index])),
-                    .call => try b.add(.mv(n, project.tuple)),
+                    .call, .call_ptr => try b.add(.mv(n, project.tuple)),
                     else => std.debug.panic("project of {s}", .{@tagName(tuple.tag)}),
                 }
             },
@@ -422,13 +432,23 @@ const Builder = struct {
                 try b.add(.ret);
             },
             .param => {},
-            .call => {
+            .call, .call_ptr => {
                 const c = node.data.call;
                 try b.emitObserversOf(c.mem(b.recv), b.sched.node_region[@intFromEnum(n)]);
-                for (c.args(b.recv), 0..) |arg, i| {
+                const offset = @intFromBool(node.tag == .call_ptr); // skip the fn_ptr
+                for (c.args(b.recv)[offset..], 0..) |arg, i| {
                     try b.add(.{ .set_arg = .{ .index = @intCast(i), .src = arg } });
                 }
-                try b.add(.{ .call = .{ .callee = c.callee, .dst = n } });
+                try b.add(.{
+                    .call = .{
+                        .dst = n,
+                        .target = switch (node.tag) {
+                            .call => .{ .normal = c.callee },
+                            .call_ptr => .{ .ptr = c.args(b.recv)[0] },
+                            else => unreachable,
+                        },
+                    },
+                });
             },
         }
     }

@@ -2,17 +2,17 @@
 .globl foo
 .type foo, @function
 foo:
-    mv t0, a0
-    li t1, 60
-    and t2, t0, t1
-    li t1, 128
-    or t0, t2, t1
-    li t1, 168
-    xor t2, t0, t1
-    li t1, 2
-    sllw t0, t2, t1
-    li t1, 1
-    sraw t2, t0, t1
-    mv a0, t2
+    mv t1, a0
+    li t2, 60
+    and t3, t1, t2
+    li t2, 128
+    or t1, t3, t2
+    li t2, 168
+    xor t3, t1, t2
+    li t2, 2
+    sllw t1, t3, t2
+    li t2, 1
+    sraw t3, t1, t2
+    mv a0, t3
     ret
 .size foo, .-foo

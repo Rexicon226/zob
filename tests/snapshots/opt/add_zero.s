@@ -2,7 +2,7 @@
 .globl foo
 .type foo, @function
 foo:
-    mv t0, a0
-    mv a0, t0
+    mv t1, a0
+    mv a0, t1
     ret
 .size foo, .-foo

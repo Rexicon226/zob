@@ -2,11 +2,14 @@
 .globl foo
 .type foo, @function
 foo:
-    addi sp, sp, -16
-    addi t0, sp, 0
-    li t1, 42
-    sw t1, 0(t0)
-    mv a0, t1
-    addi sp, sp, 16
+    li t0, -16
+    add sp, sp, t0
+    li t0, 0
+    add t1, sp, t0
+    li t2, 42
+    sw t2, 0(t1)
+    mv a0, t2
+    li t0, 16
+    add sp, sp, t0
     ret
 .size foo, .-foo

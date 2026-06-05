@@ -22,7 +22,7 @@ map: std.AutoHashMapUnmanaged(Class.Index, Class.Index),
 dead_slots: std.AutoHashMapUnmanaged(u32, void),
 
 /// Sentinel cost for a class that has no finite-cost (acyclic) extraction yet.
-const infinite = std.math.maxInt(u32);
+const infinite: u64 = std.math.maxInt(u32);
 
 /// Extracts the best program, producing one `Recursive` per function in
 /// `oir.exit_list`.
@@ -70,7 +70,9 @@ fn computeBestNodes(e: *SimpleExtractor) !void {
     const oir = e.oir;
     const gpa = oir.allocator;
 
-    var best_cost: std.AutoHashMapUnmanaged(Class.Index, u64) = .{};
+    // TODO: correct the exponential growth, we do *not* need to be using a u128 here,
+    // but I needed it to compile some larger (60k+ classes) files.
+    var best_cost: std.AutoHashMapUnmanaged(Class.Index, u128) = .{};
     defer best_cost.deinit(gpa);
 
     var cycle_stack: std.ArrayList(Class.Index) = .empty;
@@ -91,7 +93,7 @@ fn computeBestNodes(e: *SimpleExtractor) !void {
             for (class.bag.items) |node_idx| {
                 const node = oir.getNode(node_idx);
 
-                var total: u64 = cost.getCost(node.tag);
+                var total: u128 = cost.getCost(node.tag);
                 for (node.operands(oir)) |child| {
                     // A node referencing its own class can't be materialized
                     // acyclically. Skip it, so the class's acyclic alternative
@@ -285,7 +287,7 @@ fn extractClass(e: *SimpleExtractor, class_idx: Class.Index, recv: *Recursive) !
             try e.map.put(gpa, class_idx, new_node_idx);
             return new_node_idx;
         },
-        .call => {
+        .call, .call_ptr => {
             const c = best_node.data.call;
 
             var body: std.ArrayList(Class.Index) = .empty;
@@ -294,7 +296,11 @@ fn extractClass(e: *SimpleExtractor, class_idx: Class.Index, recv: *Recursive) !
             for (c.args(oir)) |a| try body.append(gpa, try e.extractClass(a, recv));
 
             const span = try recv.listToSpan(body.items, gpa);
-            const new_node_idx = try recv.addNode(gpa, .call(c.callee, span));
+            const new_node_idx = try recv.addNode(gpa, switch (best_node.tag) {
+                .call => .call(c.callee, span),
+                .call_ptr => .call_ptr(@enumFromInt(c.callee), span),
+                else => unreachable,
+            });
             try e.map.put(gpa, class_idx, new_node_idx);
             return new_node_idx;
         },

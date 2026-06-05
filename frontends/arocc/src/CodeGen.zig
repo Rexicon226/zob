@@ -755,6 +755,12 @@ fn buildSwitch(cg: *CodeGen, sw: anytype) Error!bool {
     try cg.frames.append(gpa, .{ .kind = .@"switch", .names = names, .breaks = .empty, .continues = .empty });
 
     // Lower each arm under its predicate on a copy of the environment.
+    //
+    // A group that falls off its bottom flows into the next group. Its end state
+    // is carried in `fall` and merged into that grou's direct entry. The two entry
+    // paths are disjoint, so their predicates sum. A fall-off from the last
+    // group leaves the switch, like a `break`.
+    var fall: ?Exit = null;
     for (groups.items, preds, 0..) |g, p, i| {
         const arm_pred = if (g.is_default)
             try cg.oir.add(.binOp(.add, p, not_any))
@@ -764,14 +770,31 @@ fn buildSwitch(cg: *CodeGen, sw: anytype) Error!bool {
         cg.freeEnv(&cg.symbol_table);
         cg.symbol_table = try cg.cloneEnv(env0);
         cg.node_to_class.clearRetainingCapacity();
-        cg.mem_state = mem0;
-        cg.active = try cg.andPred(active0, arm_pred);
+
+        const direct = try cg.andPred(active0, arm_pred);
+        if (fall) |f| {
+            cg.mem_state = try cg.gammaIfNe(f.pred, f.mem, mem0);
+            for (names, f.vals) |name, fv| {
+                const slot = cg.findIdentifier(name).?;
+                slot.* = try cg.gammaIfNe(f.pred, fv, slot.*);
+            }
+            cg.active = try cg.oir.add(.binOp(.add, direct, f.pred));
+            cg.gpa.free(f.vals);
+            fall = null;
+        } else {
+            cg.mem_state = mem0;
+            cg.active = direct;
+        }
 
         const falls = try cg.buildSeq(g.stmts.items);
         if (falls) {
-            if (i + 1 != groups.items.len) @panic("TODO: switch case fall-through");
-            const frame = &cg.frames.items[cg.frames.items.len - 1];
-            try frame.breaks.append(gpa, try cg.captureExit(names));
+            const exit = try cg.captureExit(names);
+            if (i + 1 == groups.items.len) {
+                const frame = &cg.frames.items[cg.frames.items.len - 1];
+                try frame.breaks.append(gpa, exit);
+            } else {
+                fall = exit;
+            }
         }
     }
 
@@ -1191,6 +1214,32 @@ fn buildIncDec(cg: *CodeGen, operand: Tree.Node.Index, is_inc: bool, is_pre: boo
     return if (is_pre) new else old;
 }
 
+fn buildCompoundAssign(cg: *CodeGen, expr: Tree.Node.Index) Error!Oir.Class.Index {
+    const tree = cg.tree;
+    const bin = switch (expr.get(tree)) {
+        .add_assign_expr,
+        .sub_assign_expr,
+        .mul_assign_expr,
+        .div_assign_expr,
+        .mod_assign_expr,
+        .shl_assign_expr,
+        .shr_assign_expr,
+        .bit_and_assign_expr,
+        .bit_or_assign_expr,
+        .bit_xor_assign_expr,
+        => |b| b,
+        else => unreachable,
+    };
+
+    const prev = cg.compound_dummy;
+    defer cg.compound_dummy = prev;
+    cg.compound_dummy = try cg.buildLval(bin.lhs);
+
+    const new = try cg.buildExpr(bin.rhs);
+    try cg.storeToScalarLval(bin.lhs, new);
+    return new;
+}
+
 fn buildVariable(cg: *CodeGen, variable: anytype) Error!void {
     const tree = cg.tree;
     const comp = cg.tree.comp;
@@ -1338,6 +1387,14 @@ fn scanAddressed(cg: *CodeGen, node: Tree.Node.Index) Error!void {
         },
         else => {},
     }
+}
+
+fn lvalNode(cg: *CodeGen, node: Tree.Node.Index) Tree.Node.Index {
+    return switch (node.get(cg.tree)) {
+        .cast => |c| cg.lvalNode(c.operand),
+        .paren_expr => |p| cg.lvalNode(p.operand),
+        else => node,
+    };
 }
 
 fn lvalueName(cg: *CodeGen, node: Tree.Node.Index) ?[]const u8 {
@@ -1879,7 +1936,7 @@ fn buildCond(cg: *CodeGen, c: anytype) Error!Oir.Class.Index {
 /// state and produces a tuple `(mem', result)`; we advance `mem_state` to `mem'`
 /// and return `result`.
 fn buildCall(cg: *CodeGen, call: Tree.Node.Call) Error!Oir.Class.Index {
-    const callee = try cg.resolveCallee(cg.calleeName(call.callee));
+    const callee_name = cg.calleeName(call.callee);
 
     const returns_aggregate = !call.qt.is(cg.tree.comp, .void) and cg.isAggregate(call.qt);
 
@@ -1903,8 +1960,16 @@ fn buildCall(cg: *CodeGen, call: Tree.Node.Call) Error!Oir.Class.Index {
     } else null;
     body.items[0] = cg.mem_state; // captured after args (and their copies) are evaluated
 
-    const span = try cg.oir.listToSpan(body.items);
-    const node = try cg.oir.add(.call(callee, span));
+    const node = if (callee_name) |name| n: {
+        const span = try cg.oir.listToSpan(body.items);
+        const callee = try cg.resolveCallee(name);
+        break :n try cg.oir.add(.call(callee, span));
+    } else n: {
+        const fn_ptr = try cg.buildExpr(call.callee);
+        try body.insert(cg.gpa, 1, fn_ptr);
+        const span = try cg.oir.listToSpan(body.items);
+        break :n try cg.oir.add(.call_ptr(.dead, span));
+    };
     cg.mem_state = try cg.oir.add(.project(0, node, .data, 0));
     if (sret) |slot| return slot;
     const ret_bits: u16 = if (call.qt.is(cg.tree.comp, .void)) 0 else cg.widthOf(call.qt);
@@ -1963,7 +2028,7 @@ fn buildCast(cg: *CodeGen, cast: Tree.Node.Cast) Error!Oir.Class.Index {
         // `NULL`, simply zero address for us
         .null_to_pointer => try cg.oir.add(.constant(0)),
         // A function designator decays to its address: `la <name>`.
-        .function_to_pointer => try cg.funcAddr(cg.calleeName(cast.operand)),
+        .function_to_pointer => try cg.funcAddr(cg.calleeName(cast.operand).?),
         else => std.debug.panic("TODO: cast {s}", .{@tagName(cast.kind)}),
     };
 }
@@ -1996,12 +2061,13 @@ fn funcAddr(cg: *CodeGen, name: []const u8) Error!Oir.Class.Index {
     return cg.oir.add(.globalAddr(id));
 }
 
-fn calleeName(cg: *CodeGen, idx: Tree.Node.Index) []const u8 {
+fn calleeName(cg: *CodeGen, idx: Tree.Node.Index) ?[]const u8 {
     const tree = cg.tree;
     return switch (idx.get(tree)) {
         .cast => |c| cg.calleeName(c.operand),
         .paren_expr => |p| cg.calleeName(p.operand),
         .decl_ref_expr => |d| tree.tokSlice(d.name_tok),
+        .member_access_ptr_expr => null,
         else => |t| std.debug.panic("TODO: callee {s}", .{@tagName(t)}),
     };
 }
@@ -2309,6 +2375,7 @@ fn globalReloc(cg: *CodeGen, node: Tree.Node.Index) Error!?struct { target: u32,
         .paren_expr => |p| n = p.operand,
         .addr_of_expr => |u| n = u.operand,
         .string_literal_expr => return .{ .target = try cg.internString(n), .addend = 0 },
+        .compound_literal_expr => |lit| return .{ .target = try cg.internCompoundLiteral(lit), .addend = 0 },
         .decl_ref_expr => |d| {
             const name = tree.tokSlice(d.name_tok);
             if (cg.globals.get(name)) |g| return .{ .target = g.id, .addend = 0 };
@@ -2316,6 +2383,29 @@ fn globalReloc(cg: *CodeGen, node: Tree.Node.Index) Error!?struct { target: u32,
         },
         else => return null,
     };
+}
+
+fn internCompoundLiteral(cg: *CodeGen, lit: Tree.Node.CompoundLiteral) Error!u32 {
+    const comp = cg.tree.comp;
+    const buf = try cg.gpa.alloc(u8, @intCast(lit.qt.sizeof(comp)));
+    @memset(buf, 0);
+    var relocs: Relocs = .empty;
+    errdefer relocs.deinit(cg.gpa);
+    try cg.lowerInitBytes(buf, &relocs, 0, lit.qt, lit.initializer);
+
+    const id: u32 = @intCast(cg.global_defs.items.len);
+    const name = try std.fmt.allocPrint(cg.gpa, ".Lcl{d}", .{id});
+    try cg.string_names.append(cg.gpa, name);
+    try cg.global_defs.append(cg.gpa, .{
+        .name = name,
+        .external = false,
+        .data = .{ .bytes = .{
+            .bytes = buf,
+            .relocs = try relocs.toOwnedSlice(cg.gpa),
+            .@"align" = @intCast(lit.qt.alignof(comp)),
+        } },
+    });
+    return id;
 }
 
 fn writeScalarInit(cg: *CodeGen, buf: []u8, off: u64, qt: aro.QualType, node: Tree.Node.Index) Error!void {

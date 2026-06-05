@@ -228,6 +228,11 @@ pub const Node = struct {
         /// is `(mem_state, args...)` and which produces a tuple `(mem_state', result)`.
         /// `callee` is the id of the target `lambda`.
         call,
+        /// Same as `call`, except `callee` is the pointer to which we jump.
+        /// Here the `body` span is `(mem_state, ptr, args...)`, and produces
+        /// the same tuple.
+        /// TODO: don't store the ptr twice, just for ease of use for now.
+        call_ptr,
 
         // Integer arthimatics.
         add,
@@ -316,6 +321,7 @@ pub const Node = struct {
                 .lambda,
                 => .lambda,
                 .call,
+                .call_ptr,
                 => .call,
                 .param,
                 => .param,
@@ -571,6 +577,7 @@ pub const Node = struct {
             .theta,
             .loopvar,
             .call,
+            .call_ptr,
             .param,
             .alloca,
             .global_addr,
@@ -664,6 +671,9 @@ pub const Node = struct {
     }
     pub fn call(callee: u32, body: Span) Node {
         return .{ .tag = .call, .data = .{ .call = .{ .callee = callee, .body = body } } };
+    }
+    pub fn call_ptr(callee: Class.Index, body: Span) Node {
+        return .{ .tag = .call_ptr, .data = .{ .call = .{ .callee = @intFromEnum(callee), .body = body } } };
     }
 
     pub fn project(index: u32, tuple: Class.Index, ty: Type, bits: u16) Node {

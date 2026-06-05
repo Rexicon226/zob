@@ -2,9 +2,9 @@
 .globl foo
 .type foo, @function
 foo:
-    la t0, y
-    lw t1, 0(t0)
-    mv a0, t1
+    la t1, y
+    lw t2, 0(t1)
+    mv a0, t2
     ret
 .size foo, .-foo
 .data

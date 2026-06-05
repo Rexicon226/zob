@@ -2,16 +2,22 @@
 .globl foo
 .type foo, @function
 foo:
-    mv t0, a0
-    la t1, names
-    mv t2, t0
-    li t0, 3
-    sll t3, t2, t0
-    add t0, t1, t3
-    ld t1, 0(t0)
-    lb t0, 0(t1)
-    andi t1, t0, 255
-    mv a0, t1
+    li t0, -16
+    add sp, sp, t0
+    sd s2, 0(sp)
+    mv t1, a0
+    la t2, names
+    mv t3, t1
+    li t1, 3
+    sll s2, t3, t1
+    add t1, t2, s2
+    ld t2, 0(t1)
+    lb t1, 0(t2)
+    andi t2, t1, 255
+    mv a0, t2
+    ld s2, 0(sp)
+    li t0, 16
+    add sp, sp, t0
     ret
 .size foo, .-foo
 .data

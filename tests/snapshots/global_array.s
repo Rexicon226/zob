@@ -2,47 +2,57 @@
 .globl sum
 .type sum, @function
 sum:
-    mv t0, a0
-    lw t1, 0(t0)
-    li t2, 4
-    add t3, t0, t2
-    lw t2, 0(t3)
-    addw t3, t1, t2
-    li t2, 8
-    add t1, t0, t2
+    li t0, -16
+    add sp, sp, t0
+    sd s2, 0(sp)
+    mv t1, a0
     lw t2, 0(t1)
-    addw t1, t3, t2
-    mv a0, t1
+    li t3, 4
+    add s2, t1, t3
+    lw t3, 0(s2)
+    addw s2, t2, t3
+    li t3, 8
+    add t2, t1, t3
+    lw t3, 0(t2)
+    addw t2, s2, t3
+    mv a0, t2
+    ld s2, 0(sp)
+    li t0, 16
+    add sp, sp, t0
     ret
 .size sum, .-sum
 .text
 .globl foo
 .type foo, @function
 foo:
-    addi sp, sp, -16
+    li t0, -32
+    add sp, sp, t0
     sd s2, 0(sp)
-    sd ra, 8(sp)
-    mv t0, a0
-    la t1, y
-    sw t0, 0(t1)
-    li t2, 4
-    add t3, t1, t2
-    li t2, 1
-    sllw s2, t0, t2
-    sw s2, 0(t3)
-    li t2, 8
-    add t3, t1, t2
-    li t2, 3
-    addw t0, s2, t2
-    sw t0, 0(t3)
-    mv a0, t1
-    call sum
+    sd s3, 8(sp)
+    sd ra, 16(sp)
     mv t1, a0
-    mv t3, t1
-    mv a0, t3
-    ld ra, 8(sp)
+    la t2, y
+    sw t1, 0(t2)
+    li t3, 4
+    add s2, t2, t3
+    li t3, 1
+    sllw s3, t1, t3
+    sw s3, 0(s2)
+    li t3, 8
+    add s2, t2, t3
+    li t3, 3
+    addw t1, s3, t3
+    sw t1, 0(s2)
+    mv a0, t2
+    call sum
+    mv t2, a0
+    mv s2, t2
+    mv a0, s2
+    ld ra, 16(sp)
     ld s2, 0(sp)
-    addi sp, sp, 16
+    ld s3, 8(sp)
+    li t0, 32
+    add sp, sp, t0
     ret
 .size foo, .-foo
 .bss

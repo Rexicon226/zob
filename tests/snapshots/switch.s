@@ -2,36 +2,40 @@
 .globl foo
 .type foo, @function
 foo:
-    addi sp, sp, -16
+    li t0, -16
+    add sp, sp, t0
     sd s2, 0(sp)
-    mv t0, a0
-    li t1, 1
-    xor t2, t0, t1
-    seqz t2, t2
-    beqz t2, .Lfoo_0
-    li t2, 10
-    mv t1, t2
+    sd s3, 8(sp)
+    mv t1, a0
+    li t2, 1
+    xor t3, t1, t2
+    seqz t3, t3
+    beqz t3, .Lfoo_0
+    li t3, 10
+    mv t2, t3
     j .Lfoo_1
 .Lfoo_0:
-    li t2, 2
-    xor t3, t0, t2
-    seqz t3, t3
-    li t2, 3
-    xor s2, t0, t2
+    li t3, 2
+    xor s2, t1, t3
     seqz s2, s2
-    add t2, t3, s2
-    beqz t2, .Lfoo_2
-    li t3, 20
-    mv t2, t3
+    li t3, 3
+    xor s3, t1, t3
+    seqz s3, s3
+    add t3, s2, s3
+    beqz t3, .Lfoo_2
+    li s2, 20
+    mv t3, s2
     j .Lfoo_3
 .Lfoo_2:
-    li t3, 99
-    mv t2, t3
+    li s2, 99
+    mv t3, s2
 .Lfoo_3:
-    mv t1, t2
+    mv t2, t3
 .Lfoo_1:
-    mv a0, t1
+    mv a0, t2
     ld s2, 0(sp)
-    addi sp, sp, 16
+    ld s3, 8(sp)
+    li t0, 16
+    add sp, sp, t0
     ret
 .size foo, .-foo

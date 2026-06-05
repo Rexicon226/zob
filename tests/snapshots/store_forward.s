@@ -2,11 +2,11 @@
 .globl foo
 .type foo, @function
 foo:
-    mv t0, a0
-    li t1, 10
-    sw t1, 0(t0)
-    li t2, 20
-    sw t2, 0(t0)
-    mv a0, t1
+    mv t1, a0
+    li t2, 10
+    sw t2, 0(t1)
+    li t3, 20
+    sw t3, 0(t1)
+    mv a0, t2
     ret
 .size foo, .-foo
